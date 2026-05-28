@@ -1700,59 +1700,337 @@ def render_tab_resumen():
                 st.code(traceback.format_exc())
 
 
-# ── TAB 3 — Camiones T2 (PLACEHOLDER, Sprint 3) ────────────────────────────
+# ── TAB 3 — Camiones T2: Imprimir hojas desde Sheets ───────────────────────
+#
+#  LÓGICA:
+#  1. Usuario sube CAR.xlsx → se extraen los números de camión con datos
+#  2. Se construye la URL de impresión de la hoja correspondiente en el
+#     T2 Status Carga Sheets (cada camión tiene su propia hoja: "101", "102", etc.)
+#  3. Se abre cada URL en una nueva pestaña via JS → el browser lanza
+#     el diálogo de impresión nativo (con el visual del Sheets intacto)
+#
+#  SHEETS ID: 1QCoMtpHcUaTITp9p9-1mo914HsaH0siq_bHL7nmJ_DA
+#  URL de impresión por hoja: https://docs.google.com/spreadsheets/d/{ID}/export
+#    → Alternativa más confiable: abrir la hoja con ?gid=XXX&rm=print
+#    → Para abrir pestaña de impresión del browser: usar la URL de edit con
+#      el parámetro rm=print aplicado al gid específico de cada hoja.
+#
+#  NOTA: el gid de cada hoja (101, 102, etc.) se puede hardcodear o leer
+#  dinámicamente. En v4.8 se lee dinámicamente via gspread (opcional).
+#  Por ahora la estrategia es abrir la URL de cada hoja en modo "edit" con
+#  focus en esa hoja — el usuario imprime con Ctrl+P — O mejor aún: usar
+#  la URL de exportación a PDF directa de Google Sheets por hoja (sin login
+#  extra si ya está autenticado en el browser).
+#
+#  URL export PDF por hoja (requiere sesión Google activa en el browser):
+#  https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=pdf
+#    &gid={GID}&portrait=false&fitw=true&gridlines=false
+#    &top_margin=0.25&bottom_margin=0.25&left_margin=0.25&right_margin=0.25
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ID del Sheets T2 Status Carga (fijo)
+_T2_SHEETS_ID = "1QCoMtpHcUaTITp9p9-1mo914HsaH0siq_bHL7nmJ_DA"
+
+# Mapa camión → gid de la hoja en el Sheets.
+# Se completa con los gid reales del Sheets (se pueden ver en la URL al hacer
+# click en cada pestaña: ...#gid=XXXXXXX).
+# Si un camión no está en este mapa se usa la URL de la hoja por nombre.
+# IMPORTANTE: completar este dict con los gid reales del Sheets.
+# Los valores actuales son PLACEHOLDERS — reemplazar con los gid correctos.
+_T2_GID_MAP: dict[int, int] = {
+    # camion: gid  ← obtener de la URL del Sheets al clickear cada pestaña
+    101: 157072406,   # ejemplo real del screenshot
+    # 102: XXXXXXX,
+    # 103: XXXXXXX,
+    # ... completar según el Sheets real
+}
+
+
+def _t2_build_print_url(sheet_id: str, gid: int) -> str:
+    """
+    Construye la URL de exportación PDF de una hoja específica del Sheets.
+    Orientación horizontal, sin grillas, márgenes mínimos, ajustado a página.
+    Requiere que el usuario esté autenticado en Google en el browser.
+    """
+    base = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export"
+    params = (
+        f"?format=pdf"
+        f"&gid={gid}"
+        f"&portrait=false"
+        f"&fitw=true"
+        f"&gridlines=false"
+        f"&printtitle=false"
+        f"&sheetnames=false"
+        f"&pagenum=UNDEFINED"
+        f"&attachment=false"
+        f"&top_margin=0.25"
+        f"&bottom_margin=0.25"
+        f"&left_margin=0.25"
+        f"&right_margin=0.25"
+    )
+    return base + params
+
+
+def _t2_build_view_url(sheet_id: str, gid: int) -> str:
+    """URL de visualización directa de la hoja (fallback si export falla)."""
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit#gid={gid}"
+
+
+@st.cache_data(show_spinner=False)
+def _t2_load_camiones_car(car_bytes: bytes) -> list[int]:
+    """
+    Lee el CAR.xlsx y devuelve la lista de números de camión que tienen
+    datos (Bultos > 0), ordenados ascendentemente.
+    Usa la misma lógica de load_car pero simplificada: solo extrae transportes.
+    """
+    raw = pd.read_excel(io.BytesIO(car_bytes), sheet_name=0, header=None)
+    header = raw.iloc[0].tolist()
+
+    # Filas normales (fila 42 en adelante → índice 41+)
+    normal = raw.iloc[41:].copy()
+    normal.columns = header
+
+    col_trans = None
+    col_bult  = None
+    for c in header:
+        nc = _norm(str(c))
+        if nc in ("transporte",):
+            col_trans = c
+        if nc in ("bultos",):
+            col_bult = c
+
+    if col_trans is None:
+        raise ValueError("No se encontró columna 'Transporte' en el CAR.")
+
+    normal[col_trans] = pd.to_numeric(normal[col_trans], errors="coerce")
+    if col_bult:
+        normal[col_bult] = pd.to_numeric(normal[col_bult], errors="coerce").fillna(0)
+
+    normal = normal.dropna(subset=[col_trans])
+    normal = normal[normal[col_trans] > 0]
+    normal[col_trans] = normal[col_trans].apply(lambda x: int(float(x)))
+
+    if col_bult:
+        normal = normal[normal[col_bult] > 0]
+
+    camiones = sorted(normal[col_trans].unique().tolist())
+    return camiones
+
+
+def _t2_js_open_tabs(urls: list[str]) -> str:
+    """
+    Genera el HTML+JS que abre cada URL en una nueva pestaña del browser.
+    Usa window.open() con un pequeño delay entre pestañas para evitar que
+    el bloqueador de popups las cancele. Se avisa al usuario que debe
+    permitir popups para este sitio.
+    """
+    js_lines = []
+    for i, url in enumerate(urls):
+        delay_ms = i * 600  # 600ms entre pestañas
+        js_lines.append(
+            f"setTimeout(function(){{ window.open('{url}', '_blank'); }}, {delay_ms});"
+        )
+    js_block = "\n    ".join(js_lines)
+
+    html = f"""
+    <div style="
+        background: #f0f9ff;
+        border: 1px solid #0ea5e9;
+        border-radius: 8px;
+        padding: 14px 18px;
+        font-family: sans-serif;
+        font-size: 13px;
+        color: #0c4a6e;
+        margin-bottom: 10px;
+    ">
+        ⚠️ <b>Si el browser bloquea las pestañas:</b> hacé click en el ícono de popup
+        bloqueado en la barra de direcciones y seleccioná <i>"Permitir siempre"</i>.
+        Luego presioná el botón nuevamente.
+    </div>
+    <button
+        onclick="abrirHojas()"
+        style="
+            background: #1a3a6b;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            padding: 10px 22px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            letter-spacing: 0.3px;
+        "
+    >
+        🖨️ Abrir {len(urls)} hoja(s) para imprimir
+    </button>
+    <script>
+    function abrirHojas() {{
+        {js_block}
+    }}
+    </script>
+    """
+    return html
+
 
 def render_tab_t2():
-    st.subheader("🚛 Camiones T2 — Hojas de Carga")
+    import streamlit.components.v1 as components
+
+    st.subheader("🚛 Camiones T2 — Imprimir hojas")
     st.caption(
-        "Reemplaza el Sheet T2 Status Carga. Lee MASTER → Matriz Pall. "
-        "y genera 1 PDF batch con N páginas (1 por camión con Reparto=SI y TOTAL PALL>0). "
-        "**Sprint 3** — pendiente."
-    )
-    st.info(
-        "🔧 Esta tab está en desarrollo (Sprint 3).\n\n"
-        "**Alcance previsto:**\n"
-        "- Input: MASTER + T2_Status (referencia estática Pall. Camiones)\n"
-        "- Lógica plano del camión: 6×10 celdas, fórmulas portadas (sección 9 handoff)\n"
-        "- Rediseño visual profesional (NO réplica del Sheet actual — decisión #3)\n"
-        "- Output: PDF A4 horizontal, ~17 páginas\n"
-        "- Lógica simplificada: lee 1 sola columna por cancha (decisión #8 — sin E+Z / L+AG)"
+        "Subí el CAR del día → detecta los camiones con reparto → "
+        "abre las hojas del T2 Status Carga listas para imprimir (una pestaña por camión)."
     )
 
-    with st.expander("📐 Vista previa de datos disponibles", expanded=False):
-        st.markdown("Subí MASTER y T2_Status para inspeccionar los datos que va a usar Tab 3:")
-        master = _file_uploader(
-            "MASTER del día.xlsx (78 MB)", ["xlsx"], key="t3_master", required=False
+    # ── Instrucciones colapsables ─────────────────────────────────────────────
+    with st.expander("ℹ️ Cómo funciona", expanded=False):
+        st.markdown(
+            """
+            1. **Subís el CAR.xlsx** del día (el mismo que usás en Tab 1).
+            2. La app detecta automáticamente qué camiones tienen bultos asignados.
+            3. Presionás **"Abrir hojas para imprimir"** → se abre una pestaña
+               por camión directamente en el T2 Status Carga Sheets.
+            4. Cada pestaña abre en modo **PDF export** → el browser muestra el
+               diálogo de impresión con la hoja exacta como la ves en el Sheets.
+            5. Imprimís o guardás como PDF normalmente.
+
+            > **Requisito:** tenés que estar logueado en Google con la cuenta
+            > que tiene acceso al Sheets. El Sheets no necesita ser público.
+
+            > **Popups:** permitir popups para este sitio la primera vez.
+            """
         )
-        t2 = _file_uploader(
-            "T2_Status_Carga (referencia)", ["xlsx"], key="t3_t2", required=False
+
+    # ── GID Map status ────────────────────────────────────────────────────────
+    gid_configurados = [c for c in _T2_GID_MAP]
+    with st.expander(f"⚙️ GIDs configurados ({len(gid_configurados)} camiones)", expanded=False):
+        st.caption(
+            "El mapa camión→GID se completa en el código (`_T2_GID_MAP`). "
+            "Si un camión del CAR no está en el mapa, se muestra como 'sin GID' y se omite. "
+            "Para obtener el GID: abrí el Sheets → hacé click en la pestaña del camión → "
+            "copiá el número después de `#gid=` en la URL."
+        )
+        if gid_configurados:
+            gid_data = [{"Camión": c, "GID": _T2_GID_MAP[c]} for c in sorted(gid_configurados)]
+            st.dataframe(pd.DataFrame(gid_data), use_container_width=True, hide_index=True)
+        else:
+            st.warning("No hay GIDs configurados. Completá `_T2_GID_MAP` en el código.")
+
+    st.divider()
+
+    # ── Upload CAR ────────────────────────────────────────────────────────────
+    car_file = _file_uploader("CAR.xlsx del día", ["xlsx"], key="t3_car")
+
+    if not car_file:
+        st.info("Subí el CAR para detectar los camiones con reparto.")
+        return
+
+    # ── Detectar camiones ─────────────────────────────────────────────────────
+    try:
+        with st.spinner("Leyendo camiones del CAR..."):
+            camiones_car = _t2_load_camiones_car(car_file.getvalue())
+        log_event("info", f"T2: CAR leído → {len(camiones_car)} camiones: {camiones_car}")
+    except Exception as e:
+        st.error(f"❌ Error leyendo CAR: {e}")
+        log_event("error", f"T2: Error leyendo CAR: {e}")
+        return
+
+    if not camiones_car:
+        st.warning("No se encontraron camiones con bultos en el CAR.")
+        return
+
+    # ── Cruzar con GID map ────────────────────────────────────────────────────
+    con_gid    = [c for c in camiones_car if c in _T2_GID_MAP]
+    sin_gid    = [c for c in camiones_car if c not in _T2_GID_MAP]
+
+    # Métricas
+    col1, col2, col3 = st.columns(3)
+    col1.metric("🚛 Camiones en CAR", len(camiones_car))
+    col2.metric("✅ Con hoja configurada", len(con_gid))
+    col3.metric("⚠️ Sin GID (se omiten)", len(sin_gid))
+
+    if sin_gid:
+        st.warning(
+            f"Los siguientes camiones del CAR no tienen GID configurado y **no se imprimirán**: "
+            f"{', '.join(str(c) for c in sin_gid)}. "
+            f"Agregá su GID en `_T2_GID_MAP` del código."
         )
 
-        if master:
-            try:
-                df_pall, fecha = load_master_matriz_pall(master.getvalue())
-                st.success(f"Matriz Pall. cargada: {len(df_pall)} camiones | Fecha A1: {fecha}")
+    if not con_gid:
+        st.error(
+            "Ningún camión del CAR tiene GID configurado. "
+            "Completá `_T2_GID_MAP` con los GIDs del Sheets antes de continuar."
+        )
+        return
 
-                # Filtro preview: candidatos a Tab 3
-                df_si = df_pall[
-                    (df_pall["Reparto"] == "SI")
-                    & ((df_pall["UP_PICKING_AGR_FACT"] + df_pall["UP_AE_PALL_AGR_FACT"]) > 0)
-                ]
-                st.info(
-                    f"Camiones que entrarían al PDF T2 (Reparto=SI ∧ TOTAL>0): "
-                    f"**{len(df_si)}** de {len(df_pall)}"
-                )
-                st.dataframe(df_pall.head(15), use_container_width=True)
-            except Exception as e:
-                st.error(f"Error leyendo MASTER: {e}")
+    # ── Tabla de camiones a imprimir ──────────────────────────────────────────
+    st.markdown(f"#### 🖨️ Camiones a imprimir: **{len(con_gid)}**")
 
-        if t2:
-            try:
-                df_cam = load_pall_camiones(t2.getvalue())
-                st.success(f"Pall. Camiones cargado: {len(df_cam)} camiones maestros")
-                st.dataframe(df_cam.head(10), use_container_width=True)
-            except Exception as e:
-                st.error(f"Error leyendo T2_Status: {e}")
+    rows_preview = []
+    for c in sorted(con_gid):
+        gid = _T2_GID_MAP[c]
+        url = _t2_build_print_url(_T2_SHEETS_ID, gid)
+        rows_preview.append({
+            "Camión": c,
+            "GID": gid,
+            "URL (preview)": f"...gid={gid}&format=pdf",
+        })
+
+    st.dataframe(
+        pd.DataFrame(rows_preview),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # ── Opciones adicionales ──────────────────────────────────────────────────
+    st.markdown("---")
+    col_opt1, col_opt2 = st.columns(2)
+    with col_opt1:
+        modo = st.radio(
+            "Modo de apertura",
+            ["📄 Export PDF directo (recomendado)", "🔗 Abrir hoja en el Sheets (manual)"],
+            key="t3_modo",
+            help=(
+                "Export PDF: el browser abre el PDF del Sheets directamente para imprimir. "
+                "Hoja Sheets: abre la pestaña de edición del camión en el Sheets."
+            ),
+        )
+    with col_opt2:
+        camiones_sel = st.multiselect(
+            "Filtrar camiones (dejar vacío = todos)",
+            options=sorted(con_gid),
+            default=[],
+            key="t3_sel",
+            help="Seleccioná solo los camiones que querés imprimir ahora.",
+        )
+
+    camiones_a_imprimir = camiones_sel if camiones_sel else sorted(con_gid)
+
+    # ── Construir URLs ────────────────────────────────────────────────────────
+    use_export = "Export PDF" in modo
+    urls = []
+    for c in camiones_a_imprimir:
+        gid = _T2_GID_MAP[c]
+        if use_export:
+            urls.append(_t2_build_print_url(_T2_SHEETS_ID, gid))
+        else:
+            urls.append(_t2_build_view_url(_T2_SHEETS_ID, gid))
+
+    st.markdown(f"**{len(urls)} hoja(s) seleccionadas:** {', '.join(str(c) for c in camiones_a_imprimir)}")
+
+    # ── Botón JS para abrir pestañas ──────────────────────────────────────────
+    html_btn = _t2_js_open_tabs(urls)
+    components.html(html_btn, height=120)
+
+    # ── Links individuales como fallback ──────────────────────────────────────
+    with st.expander("🔗 Links individuales (fallback si el botón no funciona)", expanded=False):
+        for c, url in zip(camiones_a_imprimir, urls):
+            st.markdown(f"- **Camión {c}:** [Abrir hoja]({url})")
+
+    log_event(
+        "info",
+        f"T2: {len(urls)} URLs generadas | modo={'export' if use_export else 'view'} | "
+        f"camiones={camiones_a_imprimir}",
+    )
 
 
 
