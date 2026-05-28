@@ -36,7 +36,7 @@ from reportlab.pdfgen import canvas as rl_canvas
 from loguru import logger
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.10.0"
+APP_VERSION = "4.11.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -1651,58 +1651,78 @@ def render_tab_resumen():
     st.subheader("📋 Resumen de Carga por Camión")
     st.caption(
         "Genera un PDF compacto con bultos consolidados por SKU por camión "
-        "(hoja AGR del CAR). Útil para tildar al final de la carga."
+        "(hoja AGR del CAR). **Se genera automáticamente** al subir el CAR "
+        "en la pestaña 📦 Planilla de Carga."
     )
 
-    car_file = _file_uploader(
-        "CAR.xlsx (export Chess — debe tener hoja AGR)", ["xlsx"], key="t2_car"
-    )
+    # Auto-reusar del Tab 1 (Planilla)
+    car_use = st.session_state.get("t1_car") or st.session_state.get("t2_car")
 
-    if not car_file:
-        st.info("Subí el CAR.xlsx con la hoja AGR para generar el Resumen.")
-        return
-
-    if st.button("🚀 Generar Resumen por Camión", type="primary", key="t2_gen"):
-        try:
-            if st.session_state.get("dry_run"):
-                with st.spinner("Leyendo hoja AGR..."):
-                    df_agr = load_agr(car_file)
-                st.success(
-                    f"✓ DRY-RUN OK — {len(df_agr)} filas SKU/camión, "
-                    f"{df_agr['chofer'].nunique()} camiones."
-                )
-                st.dataframe(df_agr.head(30), width="stretch")
+    if not car_use:
+        st.info(
+            "Subí el **CAR.xlsx** en la pestaña **📦 Planilla de Carga** "
+            "para que este resumen se genere automáticamente."
+        )
+        with st.expander("…o subí el archivo acá mismo"):
+            car_file = _file_uploader(
+                "CAR.xlsx (export Chess — debe tener hoja AGR)", ["xlsx"], key="t2_car"
+            )
+            car_use = car_file or car_use
+            if not car_use:
                 return
 
-            with st.spinner("Generando PDF resumen..."):
-                pdf_bytes, stats = build_resumen_carga_pdf(car_file)
-
-            log_event("info", f"Resumen generado: {stats['camiones']} camiones, "
-                              f"{stats['filas_sku']} filas SKU, "
-                              f"{stats['total_pages']} páginas")
-
+    if st.session_state.get("dry_run"):
+        try:
+            df_agr = load_agr(car_use)
             st.success(
-                f"✓ Resumen listo — {stats['camiones']} camiones | "
-                f"{stats['filas_sku']} filas SKU | {stats['total_pages']} páginas"
+                f"✓ DRY-RUN OK — {len(df_agr)} filas SKU/camión, "
+                f"{df_agr['chofer'].nunique()} camiones."
             )
+            st.dataframe(df_agr.head(30), width="stretch")
+        except Exception as e:
+            st.error(f"❌ Error leyendo AGR: {e}")
+        return
 
-            st.download_button(
-                "⬇ Descargar Resumen por Camión (PDF)",
-                data=pdf_bytes,
-                file_name=_stamp("Resumen_Camiones", "pdf"),
-                mime="application/pdf",
-                type="primary",
-                width="stretch",
-            )
+    # ── Generación automática del PDF ────────────────────────────────────────
+    # Cacheamos el resultado en session_state usando hash del file para no
+    # regenerar el PDF en cada re-run de Streamlit.
+    car_hash = hashlib.md5(car_use.getvalue()).hexdigest()
+    cache_key = f"resumen_pdf_{car_hash}"
 
-            st.session_state["last_resumen_pdf"] = pdf_bytes
-
+    if cache_key not in st.session_state:
+        try:
+            with st.spinner("Generando PDF resumen automáticamente..."):
+                pdf_bytes, stats = build_resumen_carga_pdf(car_use)
+            st.session_state[cache_key] = (pdf_bytes, stats)
+            log_event("info",
+                      f"Resumen auto-generado: {stats['camiones']} cam, "
+                      f"{stats['filas_sku']} filas SKU, {stats['total_pages']} págs")
         except Exception as e:
             log_event("error", f"Error en Resumen: {e}")
             st.error(f"❌ Error generando Resumen: {e}")
             with st.expander("Stack trace"):
                 import traceback
                 st.code(traceback.format_exc())
+            return
+
+    pdf_bytes, stats = st.session_state[cache_key]
+
+    st.success(
+        f"✓ Resumen listo — {stats['camiones']} camiones | "
+        f"{stats['filas_sku']} filas SKU | {stats['total_pages']} páginas"
+    )
+
+    st.download_button(
+        "⬇ Descargar Resumen por Camión (PDF)",
+        data=pdf_bytes,
+        file_name=_stamp("Resumen_Camiones", "pdf"),
+        mime="application/pdf",
+        type="primary",
+        width="stretch",
+        key="resumen_dl",
+    )
+
+    st.session_state["last_resumen_pdf"] = pdf_bytes
 
 
 # ── TAB 3 — Camiones T2: Imprimir hojas desde Sheets ───────────────────────
@@ -2988,12 +3008,7 @@ def render_tab_proyeccion():
             f"- Fuente: {pdata['fuente']}"
         )
 
-    # ── Top 10 SKUs — se renderiza automáticamente si CAR + Frescura cargados ──
-    _render_top10_section(
-        pdata=pdata,
-        car_bytes=car_use.getvalue(),
-        fr_bytes=fr_use.getvalue(),
-    )
+    # NOTA v4.11: Top SKUs movido a tab propia "🏆 Top SKUs"
 
 
 # ── HELPER: Top 10 SKUs ────────────────────────────────────────────────────
@@ -3162,6 +3177,27 @@ def _build_top10_skus(car_bytes: bytes, fr_bytes: bytes) -> pd.DataFrame:
         df_grp["HL"] = (df_grp["BULTOS"] * df_grp["VALOR_HL"]).round(2)
     else:
         df_grp["HL"] = 0.0
+
+    # ── 3.b. FILTRO ALMACENES (DDM) ──────────────────────────────────────────
+    # Solo contar SKUs que existen en la DDM (= productos de almacén).
+    # Excluye automáticamente envases/esqueletos (ej. 2776 BOT ARACELI,
+    # 2731 Q CERVEZAS, 2730 Q PLAS, 2780 BOT AMBAR) que no son productos
+    # almacenables. Si la DDM no se pudo leer, se aplica fallback por
+    # lista negra hardcodeada.
+    if "VALOR_HL" in df_grp.columns and ddm_sheet is not None:
+        # DDM cargada exitosamente → universo válido = SKUs presentes en DDM
+        # Un SKU está "en DDM" si tiene VALOR_HL no-NaN tras el merge
+        # (puede ser 0, pero existir). Para distinguir 0-en-DDM vs ausente,
+        # creamos un set de SKUs DDM explícitamente.
+        try:
+            ddm_skus = set(ddm_lookup["CODIGO"].dropna().astype(int).tolist())
+            df_grp["__en_ddm"] = df_grp["CODIGO"].astype(int).isin(ddm_skus)
+            df_grp = df_grp[df_grp["__en_ddm"]].drop(columns="__en_ddm")
+        except Exception:
+            # Fallback: lista negra clásica
+            df_grp = df_grp[~df_grp["CODIGO"].astype(int).isin(EXCLUDED_SKUS)]
+    else:
+        df_grp = df_grp[~df_grp["CODIGO"].astype(int).isin(EXCLUDED_SKUS)]
 
     # ── 4. Top 10 por Bultos ───────────────────────────────────────────────
     df_top = (
@@ -3445,8 +3481,9 @@ def _build_clasificacion_retornables(car_bytes: bytes, fr_bytes: bytes) -> tuple
         return pd.DataFrame(columns=["Camión", "Bultos Retornables", "Pallets Equivalentes"]), \
                {"bultos": 0, "pallets": 0.0, "camiones": 0}
 
-    # ── 2. DDM → Bultos x Pallet ──────────────────────────────────────────────
+    # ── 2. DDM → Bultos x Pallet + universo de SKUs almacén ───────────────
     bxp_lookup = {}
+    ddm_skus = set()  # SKUs válidos = los que aparecen en DDM (= productos almacén)
     try:
         wb_fr = _ox.load_workbook(io.BytesIO(fr_bytes), read_only=True, data_only=True)
         if "DDM" in wb_fr.sheetnames:
@@ -3457,21 +3494,42 @@ def _build_clasificacion_retornables(car_bytes: bytes, fr_bytes: bytes) -> tuple
             ddm = pd.DataFrame(rd[1:], columns=hd).dropna(how="all")
             c_art = find_col(ddm, "ARTÍCULO", "ARTICULO", "Artículo")
             c_bxp = find_col(ddm, "BULTOS X PALLET", "Bultos x Pallet")
-            if c_art and c_bxp:
+            if c_art:
                 ddm[c_art] = pd.to_numeric(ddm[c_art], errors="coerce")
-                ddm[c_bxp] = pd.to_numeric(ddm[c_bxp], errors="coerce")
-                tmp = ddm.dropna(subset=[c_art]).drop_duplicates(subset=[c_art])
-                bxp_lookup = dict(zip(tmp[c_art], tmp[c_bxp]))
+                ddm_skus = set(ddm[ddm[c_art].notna()][c_art].astype(int).tolist())
+                if c_bxp:
+                    ddm[c_bxp] = pd.to_numeric(ddm[c_bxp], errors="coerce")
+                    tmp = ddm.dropna(subset=[c_art]).drop_duplicates(subset=[c_art])
+                    bxp_lookup = dict(zip(tmp[c_art].astype(int), tmp[c_bxp]))
         else:
             wb_fr.close()
     except Exception:
         bxp_lookup = {}
+        ddm_skus = set()
+
+    # ── 2.b. FILTRO ALMACENES (DDM) ──────────────────────────────────────────
+    # Solo SKUs presentes en DDM. Excluye envases/esqueletos (2776, 2731,
+    # 2730, 2780, 5192) que no son productos almacenables.
+    if ddm_skus and col_art:
+        df_ret[col_art] = df_ret[col_art].astype("Int64")
+        df_ret = df_ret[df_ret[col_art].isin(ddm_skus)]
+    else:
+        # Fallback: lista negra clásica
+        if col_art:
+            df_ret = df_ret[~df_ret[col_art].isin(EXCLUDED_SKUS)]
+
+    if df_ret.empty:
+        return pd.DataFrame(columns=["Camión", "Bultos Retornables", "Pallets Equivalentes"]), \
+               {"bultos": 0, "pallets": 0.0, "camiones": 0}
 
     # ── 3. Pallets equivalentes por fila ──────────────────────────────────────
     def _pallets(row):
         if not col_art:
             return 0.0
-        bxp = bxp_lookup.get(row[col_art])
+        art = row[col_art]
+        if pd.isna(art):
+            return 0.0
+        bxp = bxp_lookup.get(int(art))
         if bxp and bxp > 0:
             return row[col_bul] / bxp
         return 0.0
@@ -3501,30 +3559,364 @@ def _build_clasificacion_retornables(car_bytes: bytes, fr_bytes: bytes) -> tuple
     return out, tot
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# PDF GENERATORS — Clasificación y Top SKUs (v4.11)
+# ════════════════════════════════════════════════════════════════════════════
+
+def build_clasificacion_pdf(df_cl: pd.DataFrame, tot: dict, fecha_str: str = "") -> bytes:
+    """
+    PDF a color vertical A4 con la clasificación por camión.
+    Diseño inspirado en la planilla del Sheets (header azul, filas alternadas,
+    semáforo en pallets, total destacado). Omite camiones con 0 carga.
+    """
+    from reportlab.lib.pagesizes import A4 as _A4
+    from reportlab.lib import colors as _col
+    from reportlab.lib.units import mm as _mm
+    from reportlab.pdfgen import canvas as _cv
+    import io as _io
+
+    # Filtrar camiones con 0 bultos (omitir camiones sin carga)
+    df = df_cl[df_cl["Bultos Retornables"] > 0].copy()
+    if df.empty:
+        # PDF con mensaje
+        bio = _io.BytesIO()
+        c = _cv.Canvas(bio, pagesize=_A4)
+        c.setFont("Helvetica-Bold", 14)
+        c.drawString(40 * _mm, 250 * _mm, "Sin camiones con retornables hoy")
+        c.save()
+        return bio.getvalue()
+
+    PW, PH = _A4
+    M = 14 * _mm
+
+    DARK = _col.HexColor("#1a3a6b")
+    MED  = _col.HexColor("#2e5fa3")
+    YELLOW_HDR = _col.HexColor("#f8d772")
+    BAND_LIGHT = _col.HexColor("#f4f6fa")
+    BAND_WHITE = _col.white
+    RED_BG  = _col.HexColor("#f5b7b1")
+    GREEN_BG = _col.HexColor("#a9dfbf")
+    AMBER_BG = _col.HexColor("#fad7a0")
+    BORDER  = _col.HexColor("#8c8c8c")
+    TOTAL_BG = _col.HexColor("#1a3a6b")
+
+    bio = _io.BytesIO()
+    c = _cv.Canvas(bio, pagesize=_A4)
+
+    # ─ Header banner ─
+    HDR_H = 22 * _mm
+    c.setFillColor(DARK)
+    c.rect(0, PH - HDR_H, PW, HDR_H, fill=1, stroke=0)
+    c.setFillColor(_col.white)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(M, PH - 11 * _mm, "CLASIFICACIÓN — Retornables por Camión")
+    c.setFont("Helvetica", 10)
+    c.drawString(M, PH - 17 * _mm, "Beccacece Hnos SA · DPO 2.1 — Pilar Almacén")
+    c.setFont("Helvetica-Bold", 11)
+    c.drawRightString(PW - M, PH - 11 * _mm, f"Fecha: {fecha_str}")
+    c.setFont("Helvetica", 9)
+    c.drawRightString(PW - M, PH - 17 * _mm, f"Camiones con carga: {len(df)}")
+
+    # ─ Tabla ─
+    y = PH - HDR_H - 8 * _mm
+    table_w = PW - 2 * M
+
+    # Columnas: Camión | Bultos | Pallets | Tendencia
+    col_widths = [
+        table_w * 0.18,   # Camión
+        table_w * 0.32,   # Bultos
+        table_w * 0.32,   # Pallets equivalentes
+        table_w * 0.18,   # Tendencia (semáforo)
+    ]
+    col_x = [M]
+    for w in col_widths[:-1]:
+        col_x.append(col_x[-1] + w)
+
+    # Header de tabla (amarillo Sheets-style)
+    THDR_H = 8 * _mm
+    c.setFillColor(YELLOW_HDR)
+    c.rect(M, y - THDR_H, table_w, THDR_H, fill=1, stroke=1)
+    c.setStrokeColor(BORDER)
+    c.setFillColor(DARK)
+    c.setFont("Helvetica-Bold", 10)
+    headers = ["CAMIÓN", "BULTOS", "PALLETS", "ESTADO"]
+    for i, h in enumerate(headers):
+        c.drawCentredString(col_x[i] + col_widths[i] / 2, y - THDR_H + 2.5 * _mm, h)
+    y -= THDR_H
+
+    # Estadística para semáforo: percentiles de pallets
+    pall_vals = df["Pallets Equivalentes"].values
+    p_high = sorted(pall_vals)[int(len(pall_vals) * 0.75)] if len(pall_vals) > 0 else 0
+    p_low  = sorted(pall_vals)[int(len(pall_vals) * 0.25)] if len(pall_vals) > 0 else 0
+
+    ROW_H = 7 * _mm
+    c.setFont("Helvetica", 9)
+
+    for i, row in df.reset_index(drop=True).iterrows():
+        # Banda alternada
+        bg = BAND_LIGHT if i % 2 == 0 else BAND_WHITE
+        c.setFillColor(bg)
+        c.rect(M, y - ROW_H, table_w, ROW_H, fill=1, stroke=0)
+
+        # Semáforo: bg de la columna Pallets según percentiles
+        pal = float(row["Pallets Equivalentes"])
+        if pal >= p_high and pal > 0:
+            est_bg, est_txt, est_color = GREEN_BG, "ALTA", _col.HexColor("#0e6b3c")
+        elif pal <= p_low and pal > 0:
+            est_bg, est_txt, est_color = RED_BG, "BAJA", _col.HexColor("#8b1a0e")
+        else:
+            est_bg, est_txt, est_color = AMBER_BG, "MEDIA", _col.HexColor("#7d5a00")
+
+        # Pintar la celda de Pallets con el bg del semáforo (sutil)
+        c.setFillColor(est_bg)
+        c.rect(col_x[2], y - ROW_H, col_widths[2], ROW_H, fill=1, stroke=0)
+        # Estado celda
+        c.setFillColor(est_bg)
+        c.rect(col_x[3], y - ROW_H, col_widths[3], ROW_H, fill=1, stroke=0)
+
+        # Bordes
+        c.setStrokeColor(BORDER)
+        c.setLineWidth(0.3)
+        c.rect(M, y - ROW_H, table_w, ROW_H, fill=0, stroke=1)
+        for cx in col_x[1:]:
+            c.line(cx, y - ROW_H, cx, y)
+
+        # Texto
+        c.setFillColor(_col.black)
+        c.setFont("Helvetica-Bold", 10)
+        c.drawCentredString(col_x[0] + col_widths[0] / 2, y - ROW_H + 2.3 * _mm, str(row["Camión"]))
+        c.setFont("Helvetica", 9)
+        c.drawCentredString(col_x[1] + col_widths[1] / 2, y - ROW_H + 2.3 * _mm,
+                            f"{float(row['Bultos Retornables']):,.0f}".replace(",", "."))
+        c.drawCentredString(col_x[2] + col_widths[2] / 2, y - ROW_H + 2.3 * _mm,
+                            f"{pal:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        c.setFillColor(est_color)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawCentredString(col_x[3] + col_widths[3] / 2, y - ROW_H + 2.3 * _mm, est_txt)
+
+        y -= ROW_H
+
+        # Salto de página
+        if y < 35 * _mm:
+            c.showPage()
+            # Re-pintar header al tope de página nueva
+            c.setFillColor(DARK)
+            c.rect(0, PH - HDR_H, PW, HDR_H, fill=1, stroke=0)
+            c.setFillColor(_col.white)
+            c.setFont("Helvetica-Bold", 16)
+            c.drawString(M, PH - 11 * _mm, "CLASIFICACIÓN — Retornables por Camión (cont.)")
+            c.setFont("Helvetica", 10)
+            c.drawString(M, PH - 17 * _mm, "Beccacece Hnos SA · DPO 2.1")
+            c.drawRightString(PW - M, PH - 11 * _mm, f"Fecha: {fecha_str}")
+            y = PH - HDR_H - 8 * _mm
+            # Re-pintar header de tabla
+            c.setFillColor(YELLOW_HDR)
+            c.rect(M, y - THDR_H, table_w, THDR_H, fill=1, stroke=1)
+            c.setFillColor(DARK)
+            c.setFont("Helvetica-Bold", 10)
+            for i2, h in enumerate(headers):
+                c.drawCentredString(col_x[i2] + col_widths[i2] / 2, y - THDR_H + 2.5 * _mm, h)
+            y -= THDR_H
+            c.setFont("Helvetica", 9)
+
+    # ─ Fila TOTAL ─
+    TOT_H = 9 * _mm
+    c.setFillColor(TOTAL_BG)
+    c.rect(M, y - TOT_H, table_w, TOT_H, fill=1, stroke=1)
+    c.setFillColor(_col.white)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawCentredString(col_x[0] + col_widths[0] / 2, y - TOT_H + 3 * _mm, "TOTAL")
+    c.drawCentredString(col_x[1] + col_widths[1] / 2, y - TOT_H + 3 * _mm,
+                        f"{float(tot['bultos']):,.0f}".replace(",", "."))
+    c.drawCentredString(col_x[2] + col_widths[2] / 2, y - TOT_H + 3 * _mm,
+                        f"{tot['pallets']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    c.drawCentredString(col_x[3] + col_widths[3] / 2, y - TOT_H + 3 * _mm, f"{tot['camiones']} cam.")
+    y -= TOT_H
+
+    # ─ Footer ─
+    c.setFillColor(_col.HexColor("#555555"))
+    c.setFont("Helvetica-Oblique", 7)
+    c.drawString(M, 10 * _mm, "Sólo SKUs DDM (almacén). Excluye envases/esqueletos. Filtrado: anulados off, Depósito 1/3.")
+    c.drawRightString(PW - M, 10 * _mm, f"Picking Orchestrator v{APP_VERSION} · {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+
+    c.save()
+    return bio.getvalue()
+
+
+def build_top_skus_pdf(df_top: pd.DataFrame, fecha_str: str = "") -> bytes:
+    """
+    PDF a color vertical A4 con el ranking de SKUs por bultos. Diseño tipo
+    tabla con header azul, ABC coloreado (verde/amarillo/rojo), totales.
+    """
+    from reportlab.lib.pagesizes import A4 as _A4
+    from reportlab.lib import colors as _col
+    from reportlab.lib.units import mm as _mm
+    from reportlab.pdfgen import canvas as _cv
+    import io as _io
+
+    PW, PH = _A4
+    M = 12 * _mm
+
+    DARK = _col.HexColor("#1a3a6b")
+    MED  = _col.HexColor("#2e5fa3")
+    GOLD = _col.HexColor("#f8d772")
+    BAND_LIGHT = _col.HexColor("#f4f6fa")
+    BAND_WHITE = _col.white
+    BORDER = _col.HexColor("#8c8c8c")
+    ABC_A = _col.HexColor("#a9dfbf")
+    ABC_B = _col.HexColor("#fad7a0")
+    ABC_C = _col.HexColor("#f5b7b1")
+    TOTAL_BG = _col.HexColor("#1a3a6b")
+
+    bio = _io.BytesIO()
+    c = _cv.Canvas(bio, pagesize=_A4)
+
+    # ─ Header banner ─
+    HDR_H = 22 * _mm
+    c.setFillColor(DARK)
+    c.rect(0, PH - HDR_H, PW, HDR_H, fill=1, stroke=0)
+    c.setFillColor(GOLD)
+    c.setFont("Helvetica-Bold", 17)
+    c.drawString(M, PH - 11 * _mm, "TOP SKUs — Día de Carga")
+    c.setFillColor(_col.white)
+    c.setFont("Helvetica", 10)
+    c.drawString(M, PH - 17 * _mm, "Beccacece Hnos SA · DPO 2.1 — Pilar Almacén")
+    c.setFont("Helvetica-Bold", 11)
+    c.drawRightString(PW - M, PH - 11 * _mm, f"Fecha: {fecha_str}")
+    tot_bultos = float(df_top["BULTOS"].sum()) if "BULTOS" in df_top.columns else 0
+    tot_hl     = float(df_top["HL"].sum()) if "HL" in df_top.columns else 0
+    c.setFont("Helvetica", 9)
+    c.drawRightString(PW - M, PH - 17 * _mm,
+                      f"Bultos: {tot_bultos:,.0f}  ·  HL: {tot_hl:,.2f}".replace(",", "."))
+
+    # ─ Tabla ─
+    y = PH - HDR_H - 8 * _mm
+    table_w = PW - 2 * M
+    # Columnas: # | Código | Descripción | Bultos | HL | Rubro | ABC
+    col_widths = [
+        table_w * 0.05,   # #
+        table_w * 0.10,   # Código
+        table_w * 0.36,   # Descripción
+        table_w * 0.11,   # Bultos
+        table_w * 0.10,   # HL
+        table_w * 0.18,   # Rubro
+        table_w * 0.10,   # ABC
+    ]
+    col_x = [M]
+    for w in col_widths[:-1]:
+        col_x.append(col_x[-1] + w)
+
+    # Header tabla
+    THDR_H = 8 * _mm
+    c.setFillColor(GOLD)
+    c.rect(M, y - THDR_H, table_w, THDR_H, fill=1, stroke=1)
+    c.setStrokeColor(BORDER)
+    c.setFillColor(DARK)
+    c.setFont("Helvetica-Bold", 9.5)
+    headers = ["#", "CÓDIGO", "DESCRIPCIÓN", "BULTOS", "HL", "RUBRO", "ABC"]
+    for i, h in enumerate(headers):
+        c.drawCentredString(col_x[i] + col_widths[i] / 2, y - THDR_H + 2.5 * _mm, h)
+    y -= THDR_H
+
+    ROW_H = 8 * _mm
+
+    for i, row in df_top.reset_index(drop=True).iterrows():
+        bg = BAND_LIGHT if i % 2 == 0 else BAND_WHITE
+        c.setFillColor(bg)
+        c.rect(M, y - ROW_H, table_w, ROW_H, fill=1, stroke=0)
+
+        # ABC color cell
+        abc = str(row.get("ABC", "")).strip().upper() if "ABC" in df_top.columns else ""
+        abc_bg = {"A": ABC_A, "B": ABC_B, "C": ABC_C}.get(abc)
+        if abc_bg:
+            c.setFillColor(abc_bg)
+            c.rect(col_x[6], y - ROW_H, col_widths[6], ROW_H, fill=1, stroke=0)
+
+        # Bordes
+        c.setStrokeColor(BORDER)
+        c.setLineWidth(0.3)
+        c.rect(M, y - ROW_H, table_w, ROW_H, fill=0, stroke=1)
+        for cx in col_x[1:]:
+            c.line(cx, y - ROW_H, cx, y)
+
+        # Texto
+        c.setFillColor(_col.black)
+        c.setFont("Helvetica-Bold", 10)
+        c.drawCentredString(col_x[0] + col_widths[0] / 2, y - ROW_H + 2.7 * _mm, str(i + 1))
+        c.setFont("Helvetica", 9)
+        c.drawCentredString(col_x[1] + col_widths[1] / 2, y - ROW_H + 2.7 * _mm,
+                            str(int(row["CODIGO"])) if pd.notna(row["CODIGO"]) else "—")
+        # Descripción truncada
+        desc = str(row.get("DESCRIPCION", "")).strip()[:48]
+        c.drawString(col_x[2] + 1.5 * _mm, y - ROW_H + 2.7 * _mm, desc)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawRightString(col_x[3] + col_widths[3] - 1.5 * _mm, y - ROW_H + 2.7 * _mm,
+                          f"{float(row['BULTOS']):,.0f}".replace(",", "."))
+        c.setFont("Helvetica", 9)
+        hl_val = float(row.get("HL", 0)) if pd.notna(row.get("HL", 0)) else 0
+        c.drawRightString(col_x[4] + col_widths[4] - 1.5 * _mm, y - ROW_H + 2.7 * _mm,
+                          f"{hl_val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if hl_val else "—")
+        rubro = str(row.get("RUBRO", "")).strip() if "RUBRO" in df_top.columns else ""
+        c.drawCentredString(col_x[5] + col_widths[5] / 2, y - ROW_H + 2.7 * _mm, rubro[:18])
+        c.setFont("Helvetica-Bold", 10)
+        c.drawCentredString(col_x[6] + col_widths[6] / 2, y - ROW_H + 2.7 * _mm, abc)
+
+        y -= ROW_H
+
+    # Fila TOTAL
+    TOT_H = 9 * _mm
+    c.setFillColor(TOTAL_BG)
+    c.rect(M, y - TOT_H, table_w, TOT_H, fill=1, stroke=1)
+    c.setFillColor(_col.white)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(col_x[0] + 2 * _mm, y - TOT_H + 3 * _mm, "TOTAL TOP " + str(len(df_top)))
+    c.drawRightString(col_x[3] + col_widths[3] - 1.5 * _mm, y - TOT_H + 3 * _mm,
+                      f"{tot_bultos:,.0f}".replace(",", "."))
+    c.drawRightString(col_x[4] + col_widths[4] - 1.5 * _mm, y - TOT_H + 3 * _mm,
+                      f"{tot_hl:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+
+    # Footer
+    c.setFillColor(_col.HexColor("#555555"))
+    c.setFont("Helvetica-Oblique", 7)
+    c.drawString(M, 10 * _mm, "Universo: SKUs en DDM (almacén). Excluye envases/esqueletos (2776, 2731, 2730, 2780, etc.).")
+    c.drawRightString(PW - M, 10 * _mm, f"Picking Orchestrator v{APP_VERSION} · {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+
+    c.save()
+    return bio.getvalue()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB CLASIFICACIÓN (v4.11) — auto-disparo + PDF a color
+# ════════════════════════════════════════════════════════════════════════════
+
 def render_tab_clasificacion():
     st.subheader("🏷️ Clasificación — Retornables (Almacén 1 y 3)")
     st.caption(
-        "Cantidad total **por camión** de los SKUs retornables (Almacén 1 y 3). "
+        "Cantidad total **por camión** de los SKUs retornables presentes en DDM. "
+        "Excluye envases/esqueletos (2776, 2731, 2730, 2780…). "
         "Pallets equivalentes = Bultos ÷ Bultos×Pallet (DDM Frescura). "
-        "Tabla lista para copiar en Sheets."
+        "**Se actualiza automáticamente** al subir CAR + Frescura en Planilla de Carga."
     )
 
-    # Reusar uploads de otras tabs
-    car_from = st.session_state.get("t4_car") or st.session_state.get("t1_car")
-    fr_from  = st.session_state.get("t4_fr")  or st.session_state.get("t1_fr")
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        car_file = _file_uploader("CAR.xlsx (export Chess)", ["xlsx"], key="tc_car")
-    with col_b:
-        fr_file = _file_uploader("Frescura 3.0.xlsx", ["xlsx"], key="tc_fr")
-
-    car_use = car_file or car_from
-    fr_use  = fr_file  or fr_from
+    # Reusar uploads de Tab 1 (Planilla) prioritariamente
+    car_use = st.session_state.get("t1_car") or st.session_state.get("t4_car") or st.session_state.get("tc_car")
+    fr_use  = st.session_state.get("t1_fr")  or st.session_state.get("t4_fr")  or st.session_state.get("tc_fr")
 
     if not (car_use and fr_use):
-        st.info("Subí el **CAR.xlsx** y la **Frescura 3.0** para generar la clasificación.")
-        return
+        st.info(
+            "Subí el **CAR.xlsx** y la **Frescura 3.0** en la pestaña "
+            "**📦 Planilla de Carga** para que esta clasificación se genere automáticamente."
+        )
+        with st.expander("…o subí los archivos acá mismo"):
+            col_a, col_b = st.columns(2)
+            with col_a:
+                car_file = _file_uploader("CAR.xlsx (export Chess)", ["xlsx"], key="tc_car")
+            with col_b:
+                fr_file = _file_uploader("Frescura 3.0.xlsx", ["xlsx"], key="tc_fr")
+            car_use = car_file or car_use
+            fr_use  = fr_file  or fr_use
+            if not (car_use and fr_use):
+                return
 
     try:
         df_cl, tot = _build_clasificacion_retornables(
@@ -3541,6 +3933,12 @@ def render_tab_clasificacion():
         st.warning("No se encontraron bultos retornables (Almacén 1/3) en el CAR del día.")
         return
 
+    # Omitir camiones con 0 carga (post-filtro DDM)
+    df_cl = df_cl[df_cl["Bultos Retornables"] > 0].reset_index(drop=True)
+    tot["camiones"] = int(len(df_cl))
+    tot["bultos"]   = float(df_cl["Bultos Retornables"].sum())
+    tot["pallets"]  = round(float(df_cl["Pallets Equivalentes"].sum()), 2)
+
     m1, m2, m3 = st.columns(3)
     m1.metric("Camiones con retornables", tot["camiones"])
     m2.metric("Bultos retornables totales", f"{tot['bultos']:,.0f}")
@@ -3550,14 +3948,31 @@ def render_tab_clasificacion():
     df_disp = df_cl.copy()
     df_disp["Bultos Retornables"]   = df_disp["Bultos Retornables"].map(lambda x: f"{x:,.0f}")
     df_disp["Pallets Equivalentes"] = df_disp["Pallets Equivalentes"].map(lambda x: f"{x:,.2f}")
-    # Fila TOTAL
     df_disp.loc[len(df_disp)] = ["TOTAL", f"{tot['bultos']:,.0f}", f"{tot['pallets']:,.2f}"]
 
     st.dataframe(df_disp, width="stretch", height=440, hide_index=True)
 
-    # Exportar TSV
+    # PDF + TSV
+    fecha_hoy = datetime.now().strftime("%d/%m/%Y")
+    try:
+        pdf_bytes = build_clasificacion_pdf(df_cl, tot, fecha_str=fecha_hoy)
+    except Exception as e:
+        pdf_bytes = None
+        st.error(f"❌ Error generando PDF Clasificación: {e}")
+
+    col_dl1, col_dl2 = st.columns(2)
+    if pdf_bytes:
+        col_dl1.download_button(
+            "⬇ Descargar PDF Clasificación (color)",
+            data=pdf_bytes,
+            file_name=_stamp("Clasificacion", "pdf"),
+            mime="application/pdf",
+            type="primary",
+            width="stretch",
+            key="clasif_pdf_dl",
+        )
     tsv = df_cl.to_csv(sep="\t", index=False)
-    st.download_button(
+    col_dl2.download_button(
         "📋 Descargar TSV (pegar en Sheets)",
         data=tsv.encode("utf-8"),
         file_name="clasificacion_retornables.tsv",
@@ -3569,10 +3984,142 @@ def render_tab_clasificacion():
     with st.expander("ℹ️ Metodología"):
         st.markdown(
             "- **Retornables**: SKUs de **Almacén 1 y 3** (los únicos retornables).\n"
+            "- **Filtro DDM**: solo SKUs presentes en la DDM. Excluye envases/esqueletos "
+            "(2776 BOT ARACELI, 2731 Q CERVEZAS, 2730 Q PLAS, 2780 BOT AMBAR, etc.).\n"
+            "- **Camiones omitidos**: los que quedan en 0 bultos tras el filtro.\n"
             "- **Camión**: columna `Transporte` del CAR.\n"
             "- **Bultos**: suma por camión, excluye remitos anulados.\n"
             "- **Pallets equivalentes**: `Bultos ÷ Bultos×Pallet` (col `BULTOS X PALLET` de la DDM).\n"
-            "- SKUs sin Bultos×Pallet en DDM aportan 0 pallets (revisar maestro)."
+            "- **Estado**: ALTA (top 25% pallets), BAJA (bottom 25%), MEDIA (resto)."
+        )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB TOP SKUs (v4.11) — tab propia con auto-disparo
+# ════════════════════════════════════════════════════════════════════════════
+
+def render_tab_top_skus():
+    st.subheader("🏆 Top SKUs — Totalidad de la Venta del Día")
+    st.caption(
+        "Ranking por **Bultos** del CAR del día (TOTAL venta, no solo picking). "
+        "HL calculado con **VALOR HL × Bultos** (DDM Frescura). "
+        "Universo: SKUs presentes en DDM (excluye envases/esqueletos). "
+        "**Se actualiza automáticamente** al subir CAR + Frescura en Planilla de Carga."
+    )
+
+    # Reusar uploads de Tab 1 (Planilla) prioritariamente
+    car_use = st.session_state.get("t1_car") or st.session_state.get("t4_car") or st.session_state.get("ts_car")
+    fr_use  = st.session_state.get("t1_fr")  or st.session_state.get("t4_fr")  or st.session_state.get("ts_fr")
+
+    if not (car_use and fr_use):
+        st.info(
+            "Subí el **CAR.xlsx** y la **Frescura 3.0** en la pestaña "
+            "**📦 Planilla de Carga** para que este Top SKUs se genere automáticamente."
+        )
+        with st.expander("…o subí los archivos acá mismo"):
+            col_a, col_b = st.columns(2)
+            with col_a:
+                car_file = _file_uploader("CAR.xlsx (export Chess)", ["xlsx"], key="ts_car")
+            with col_b:
+                fr_file = _file_uploader("Frescura 3.0.xlsx", ["xlsx"], key="ts_fr")
+            car_use = car_file or car_use
+            fr_use  = fr_file  or fr_use
+            if not (car_use and fr_use):
+                return
+
+    try:
+        df_top = _build_top10_skus(car_use.getvalue(), fr_use.getvalue())
+    except Exception as e:
+        st.error(f"❌ Error construyendo Top SKUs: {e}")
+        with st.expander("Stack trace"):
+            import traceback
+            st.code(traceback.format_exc())
+        return
+
+    if df_top.empty:
+        st.warning("No se encontraron SKUs con bultos > 0 (post-filtro DDM).")
+        return
+
+    fecha_hoy = datetime.now().strftime("%d/%m/%Y")
+    tot_bultos = df_top["BULTOS"].sum()
+    tot_hl     = df_top["HL"].sum() if "HL" in df_top.columns else 0
+
+    mc1, mc2, mc3 = st.columns(3)
+    mc1.metric("SKUs únicos en Top",     len(df_top))
+    mc2.metric("Bultos acumulados",      f"{tot_bultos:,.0f}")
+    mc3.metric("HL acumulados",          f"{tot_hl:,.2f}")
+
+    # Tabla display
+    df_display = df_top.copy()
+    df_display.insert(0, "#", range(1, len(df_display) + 1))
+    df_display["BULTOS"] = df_display["BULTOS"].map(lambda x: f"{x:,.0f}")
+    df_display["HL"]     = df_display["HL"].map(lambda x: f"{x:,.2f}" if x else "—")
+    if "U_PAQUETE" in df_display.columns:
+        df_display["U_PAQUETE"] = df_display["U_PAQUETE"].map(
+            lambda x: f"{x:,.2f}" if pd.notna(x) and x != 0 else "—"
+        )
+    df_display["CODIGO"] = df_display["CODIGO"].astype(int).astype(str)
+    rename_display = {
+        "CODIGO":      "Código",
+        "DESCRIPCION": "Descripción",
+        "BULTOS":      "Bultos",
+        "HL":          "HL",
+        "U_PAQUETE":   "U. Paquete",
+        "RUBRO":       "Rubro",
+        "ABC":         "ABC",
+    }
+    df_display.rename(columns={k: v for k, v in rename_display.items() if k in df_display.columns}, inplace=True)
+
+    def _style_abc(val):
+        colors_abc = {"A": "background-color:#d4edda;color:#155724;font-weight:bold",
+                      "B": "background-color:#fff3cd;color:#856404",
+                      "C": "background-color:#f8d7da;color:#721c24"}
+        return colors_abc.get(str(val).strip().upper(), "")
+
+    try:
+        styler = df_display.style.hide(axis="index")
+        if "ABC" in df_display.columns and not df_display["ABC"].isna().all() and hasattr(styler, "map"):
+            styler = styler.map(_style_abc, subset=["ABC"])
+        st.dataframe(styler, width="stretch", height=440)
+    except Exception:
+        st.dataframe(df_display, width="stretch", height=440, hide_index=True)
+
+    # PDF + TSV
+    try:
+        pdf_bytes = build_top_skus_pdf(df_top, fecha_str=fecha_hoy)
+    except Exception as e:
+        pdf_bytes = None
+        st.error(f"❌ Error generando PDF Top SKUs: {e}")
+
+    col_dl1, col_dl2 = st.columns(2)
+    if pdf_bytes:
+        col_dl1.download_button(
+            "⬇ Descargar PDF Top SKUs (color)",
+            data=pdf_bytes,
+            file_name=_stamp("Top_SKUs", "pdf"),
+            mime="application/pdf",
+            type="primary",
+            width="stretch",
+            key="topskus_pdf_dl",
+        )
+    tsv_raw = df_display.to_csv(sep="\t", index=False)
+    col_dl2.download_button(
+        "📋 Descargar TSV (pegar en Sheets)",
+        data=tsv_raw.encode("utf-8"),
+        file_name=f"top_skus_{fecha_hoy.replace('/', '-')}.tsv",
+        mime="text/tab-separated-values",
+        width="stretch",
+        key="topskus_tsv_dl",
+    )
+
+    with st.expander("ℹ️ Metodología"):
+        st.markdown(
+            "- **Bultos**: suma de todos los remitos del CAR del día (excluye anulados).\n"
+            "- **HL**: `Bultos × VALOR HL` — factor de la DDM (Frescura 3.0).\n"
+            "- **Filtro DDM**: solo SKUs del universo almacén. Excluye envases/esqueletos "
+            "(2776 BOT ARACELI, 2731 Q CERVEZAS, 2730 Q PLAS, 2780 BOT AMBAR, 5192, etc.).\n"
+            "- **Rubro / ABC**: clasificación CMQ (maestro).\n"
+            "- El ranking es del **día de carga actual** — no es histórico."
         )
 
 
@@ -3613,6 +4160,7 @@ def main():
         "🚛 Camiones T2",
         "📊 Proyección Picking ×4",
         "🏷️ Clasificación",
+        "🏆 Top SKUs",
         "📤 Extraíbles Sheets",
         "✅ Validación + Log",
     ])
@@ -3621,8 +4169,9 @@ def main():
     with tabs[2]: render_tab_t2()
     with tabs[3]: render_tab_proyeccion()
     with tabs[4]: render_tab_clasificacion()
-    with tabs[5]: render_tab_extraibles()
-    with tabs[6]: render_tab_validacion()
+    with tabs[5]: render_tab_top_skus()
+    with tabs[6]: render_tab_extraibles()
+    with tabs[7]: render_tab_validacion()
 
 
 if __name__ == "__main__":
