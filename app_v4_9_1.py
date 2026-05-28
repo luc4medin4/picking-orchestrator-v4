@@ -3251,8 +3251,13 @@ def _render_top10_section(pdata: dict, car_bytes: bytes, fr_bytes: bytes):
         return colors_abc.get(str(val).strip().upper(), "")
 
     styler = df_display.style.hide(axis="index")
-    if "ABC" in df_display.columns:
-        styler = styler.applymap(_style_abc, subset=["ABC"])
+    # map() reemplaza applymap() en pandas >= 2.1; usar con guard de columna
+    if "ABC" in df_display.columns and not df_display["ABC"].isna().all():
+        try:
+            styler = styler.map(_style_abc, subset=["ABC"])
+        except AttributeError:
+            # Fallback para pandas < 2.1
+            styler = styler.applymap(_style_abc, subset=["ABC"])  # noqa: PD011
 
     st.dataframe(styler, use_container_width=True, height=420)
 
