@@ -1755,14 +1755,24 @@ def render_tab_t2():
                 st.error(f"Error leyendo T2_Status: {e}")
 
 
-# ── TAB 4 — Proyección Picking ×4 ──────────────────────────────────────────
+
+# ── TAB 4 — Proyección Picking ×4 — v2 (fuente ANR.xlsx) ───────────────────
 #
-#  LÓGICA COMPLETA — Sprint 1 (integrada desde tab4_proyeccion.py)
-#  - Parsea hoja 'Proyección Picking' del MASTER
-#  - Editor interactivo st.data_editor para reasignar bultos por cancha
-#  - Recalcula TOTAL PICK y TOTAL BULT al vuelo
-#  - Calcula horario estimado de fin por cancha (bultos / prod_hora)
-#  - Genera PDF A4 landscape ×4 (1 página por cancha CI/CII/CIII/CIV)
+#  REDISEÑO COMPLETO — Sprint 2 (reemplaza implementación MASTER-based)
+#  - Fuente primaria: ANR.xlsx (export Chess, 89 cols)
+#  - Fallback: hoja 'A' del MASTER
+#  - Editor interactivo con columna ASIGN. por cancha
+#  - Lógica DESIGNADOS (reasignación entre canchas)
+#  - Hora estimada de fin por cancha
+#  - PDF A4 portrait ×4 (CI / CII / CIII / CIV)
+#
+#  Decisiones cerradas (handoff v2):
+#    - Tab 3 PAUSADA — no tocar
+#    - ANR > MASTER hoja A
+#    - ASIGN vacío → pre-rellena con calculado
+#    - Sacar ceros ON por default
+#    - STATUS capacity default = 9 pallets
+#    - Hora inicio default 17:30
 # ─────────────────────────────────────────────────────────────────────────────
 
 from reportlab.platypus import (
@@ -1770,22 +1780,24 @@ from reportlab.platypus import (
     Spacer, HRFlowable, PageBreak,
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 
-# Canchas de picking
-_CANCHAS_PROY = ["CANCHA I", "CANCHA II", "CANCHA III", "CANCHA IV", "MKPL"]
+# ── Constantes Tab 4 ─────────────────────────────────────────────────────────
 
-# Productividad base por cancha (bultos/hora) — ajustable desde UI
-_PROD_DEFAULT = {
-    "CANCHA I":   420,
-    "CANCHA II":  420,
-    "CANCHA III": 380,
-    "CANCHA IV":  380,
-    "MKPL":       300,
+_T4_CANCHAS = ["CANCHA I", "CANCHA II", "CANCHA III", "CANCHA IV", "MKPL"]
+_T4_CANCHAS_PDF = ["CANCHA I", "CANCHA II", "CANCHA III", "CANCHA IV"]
+
+_T4_VEL_DEFAULT = {
+    "CANCHA I":   370,
+    "CANCHA II":  360,
+    "CANCHA III": 390,
+    "CANCHA IV":  400,
+    "MKPL":       390,
 }
 
-# Colores por cancha para el PDF
-_CANCHA_COLORS_PDF = {
+_T4_CAP_MAX = 9  # pallets máx por camión (default sin maestro T2)
+
+_T4_CANCHA_COLORS = {
     "CANCHA I":   colors.HexColor("#1565C0"),
     "CANCHA II":  colors.HexColor("#2E7D32"),
     "CANCHA III": colors.HexColor("#E65100"),
@@ -1793,213 +1805,601 @@ _CANCHA_COLORS_PDF = {
     "MKPL":       colors.HexColor("#00838F"),
 }
 
-# Índices columna para sección # BULTOS (0-based dentro de la fila)
-_COL_PICK = {"CANCHA I": 2, "CANCHA II": 4, "CANCHA III": 6, "CANCHA IV": 8, "MKPL": 10}
-_COL_TOT_PICK = 14
-_COL_TOT_AE   = 15
+# Índices de columna en ANR.xlsx (0-based)
+_ANR_COL_SKU      = 7   # ARTÍCULO (int)
+_ANR_COL_DESC     = 8   # DESCRIPCIÓN ARTÍCULO
+_ANR_COL_BULTOS   = 10  # BULTOS
+_ANR_COL_CHOFER   = 38  # CHOFER (número camión)
+_ANR_COL_CANCHA   = 51  # CANCHA (string)
+_ANR_COL_BXP      = 52  # BULTOS X PALLET
+_ANR_COL_HL_SKU   = 53  # HL X SKU
+_ANR_COL_HL_TOT   = 54  # TOTAL HL
+_ANR_COL_KG       = 55  # KG
+_ANR_COL_ALM      = 56  # ALMACÉN
+_ANR_COL_BULT_AE  = 84  # Bultos AE
+_ANR_COL_BULT_PICK= 85  # Bultos Pick
+_ANR_COL_UP_PAL   = 86  # Bultos UP paleta completa
+_ANR_COL_UP_PURA  = 87  # Bultos UP PURA
+_ANR_COL_UP_PICK  = 88  # Bultos UP PICK (pallets picking)
 
 
-def _safe_num_proy(v):
-    if v is None: return 0.0
-    try:    return float(v)
-    except: return 0.0
+def _t4_safe(v, default=0.0):
+    """Convierte a float de forma segura."""
+    if v is None:
+        return default
+    try:
+        f = float(v)
+        return default if (f != f) else f  # NaN check
+    except (ValueError, TypeError):
+        return default
 
 
-def _parse_proyeccion_picking(raw_rows: list) -> dict:
-    """Parsea la hoja 'Proyección Picking' del MASTER."""
-    import datetime as _dt
-
-    result = {}
-
-    # Fila 0: inicio, fin, mix picking
-    r0 = raw_rows[0]
-    result["inicio"]       = r0[3] if isinstance(r0[3], _dt.time) else _dt.time(17, 0)
-    result["fin_original"] = r0[5] if isinstance(r0[5], _dt.time) else _dt.time(23, 59)
-    result["mix_picking"]  = r0[7] if isinstance(r0[7], (int, float)) else 0.0
-
-    # Fila 5: fecha
-    r5 = raw_rows[5]
-    result["fecha"] = r5[2].date() if isinstance(r5[2], _dt.datetime) else _dt.date.today()
-
-    # Buscar fila '# BULTOS'
-    bultos_start = None
-    for i, row in enumerate(raw_rows):
-        if row[1] == '# BULTOS':
-            bultos_start = i
-            break
-
-    if bultos_start is None:
-        result["df_camiones"] = pd.DataFrame()
-        return result
-
-    data_start = bultos_start + 2  # saltar 2 filas de header
-
-    camiones = []
-    for i in range(data_start, len(raw_rows)):
-        row = raw_rows[i]
-        camion_id = row[1]
-        if camion_id is None:
-            continue
-        if isinstance(camion_id, str):
-            break
-        if not isinstance(camion_id, (int, float)):
-            continue
-
-        vals = {c: _safe_num_proy(row[_COL_PICK[c]]) for c in _CANCHAS_PROY}
-        tot_pick = _safe_num_proy(row[_COL_TOT_PICK])
-        tot_ae   = _safe_num_proy(row[_COL_TOT_AE])
-
-        if tot_pick == 0 and tot_ae == 0:
-            continue
-
-        camiones.append({
-            "Camión":     int(camion_id),
-            **vals,
-            "TOTAL PICK": tot_pick,
-            "AE":         tot_ae,
-            "TOTAL BULT": tot_pick + tot_ae,
-        })
-
-    result["df_camiones"] = pd.DataFrame(camiones) if camiones else pd.DataFrame(
-        columns=["Camión"] + _CANCHAS_PROY + ["TOTAL PICK", "AE", "TOTAL BULT"]
+def _t4_norm_cancha(val) -> str:
+    """Normaliza string de cancha al formato estándar."""
+    if val is None:
+        return "SIN CANCHA"
+    s = str(val).strip().upper()
+    s = ''.join(
+        c for c in unicodedata.normalize('NFD', s)
+        if unicodedata.category(c) != 'Mn'
     )
-    return result
-
-
-def _calcular_fin_estimado_proy(totales: dict, productividad: dict, inicio) -> dict:
-    """Calcula hora estimada de fin por cancha."""
-    import datetime as _dt
-    inicio_dt = _dt.datetime.combine(_dt.date.today(), inicio)
-    por_cancha = {}
-
-    for c in _CANCHAS_PROY:
-        bultos = totales.get(c, 0.0)
-        prod   = productividad.get(c, _PROD_DEFAULT[c])
-        if prod > 0 and bultos > 0:
-            horas  = bultos / prod
-            fin_dt = inicio_dt + _dt.timedelta(hours=horas)
-        else:
-            horas  = 0.0
-            fin_dt = inicio_dt
-        por_cancha[c] = {"bultos": bultos, "prod": prod, "horas": horas, "fin_dt": fin_dt}
-
-    fin_global_dt = max(v["fin_dt"] for v in por_cancha.values())
-    return {"por_cancha": por_cancha, "fin_global_dt": fin_global_dt}
-
-
-def _generate_proyeccion_pdf_x4(df, totales, productividad, inicio, fecha, mix_picking, fin_calc) -> bytes:
-    """Genera PDF A4 landscape, 4 páginas (CI, CII, CIII, CIV)."""
-    import datetime as _dt
-    buf = io.BytesIO()
-    from reportlab.lib.pagesizes import landscape as _landscape
-    from reportlab.lib.units import cm as _cm
-
-    doc = SimpleDocTemplate(
-        buf, pagesize=_landscape(A4),
-        rightMargin=1.5*_cm, leftMargin=1.5*_cm,
-        topMargin=1.5*_cm, bottomMargin=1.5*_cm,
-    )
-    styles = getSampleStyleSheet()
-    story  = []
-
-    canchas_pdf = ["CANCHA I", "CANCHA II", "CANCHA III", "CANCHA IV"]
-
-    for idx, cancha in enumerate(canchas_pdf):
-        datos    = fin_calc["por_cancha"][cancha]
-        fin_str  = datos["fin_dt"].strftime("%H:%M")
-        bultos   = datos["bultos"]
-        horas    = datos["horas"]
-        prod     = datos["prod"]
-        col_pdf  = _CANCHA_COLORS_PDF.get(cancha, colors.HexColor("#333333"))
-
-        # ── Título
-        story.append(Paragraph(
-            f"<font color='#{col_pdf.hexval()[2:]}'>📦 PROYECCIÓN PICKING — {cancha}</font>",
-            ParagraphStyle("T4Title", fontSize=24, fontName="Helvetica-Bold",
-                           alignment=TA_CENTER, spaceAfter=4),
-        ))
-        story.append(Paragraph(
-            f"Fecha: {fecha.strftime('%d/%m/%Y')}  |  "
-            f"Inicio: {inicio.strftime('%H:%M')}  |  "
-            f"Fin estimado: {fin_str}  |  "
-            f"Mix picking: {mix_picking*100:.1f}%",
-            ParagraphStyle("T4Sub", fontSize=12, fontName="Helvetica",
-                           alignment=TA_CENTER, spaceAfter=8,
-                           textColor=colors.HexColor("#555555")),
-        ))
-        story.append(HRFlowable(width="100%", thickness=3, color=col_pdf, spaceAfter=10))
-
-        # ── Tabla camiones
-        df_c = df[df[cancha] > 0].copy() if cancha in df.columns else pd.DataFrame()
-        if df_c.empty:
-            story.append(Spacer(1, 1*_cm))
-            story.append(Paragraph(
-                "Sin carga asignada en esta cancha.",
-                ParagraphStyle("T4NoData", fontSize=14, alignment=TA_CENTER,
-                               textColor=colors.grey),
-            ))
-        else:
-            total_c = float(df_c[cancha].sum())
-            tdata = [["Camión", f"Bultos {cancha}", "% Carga cancha", "Bultos pick totales"]]
-            for _, row in df_c.iterrows():
-                b   = row[cancha]
-                pct = (b / total_c * 100) if total_c > 0 else 0
-                tdata.append([str(int(row["Camión"])), f"{b:.1f}", f"{pct:.1f}%",
-                               f"{row['TOTAL PICK']:.1f}"])
-            tdata.append(["TOTAL", f"{total_c:.1f}", "100%",
-                           f"{df['TOTAL PICK'].sum():.1f}"])
-
-            t = Table(tdata, colWidths=[3.5*_cm, 5*_cm, 5*_cm, 5.5*_cm], repeatRows=1)
-            t.setStyle(TableStyle([
-                ("BACKGROUND",    (0,0), (-1,0), col_pdf),
-                ("TEXTCOLOR",     (0,0), (-1,0), colors.white),
-                ("FONTNAME",      (0,0), (-1,0), "Helvetica-Bold"),
-                ("FONTSIZE",      (0,0), (-1,0), 11),
-                ("ALIGN",         (0,0), (-1,-1), "CENTER"),
-                ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
-                ("ROWBACKGROUNDS",(0,1), (-1,-2), [colors.white, colors.HexColor("#F5F5F5")]),
-                ("BACKGROUND",    (0,-1),(-1,-1), colors.HexColor("#ECEFF1")),
-                ("FONTNAME",      (0,-1),(-1,-1), "Helvetica-Bold"),
-                ("FONTSIZE",      (0,1), (-1,-1), 11),
-                ("TOPPADDING",    (0,0), (-1,-1), 7),
-                ("BOTTOMPADDING", (0,0), (-1,-1), 7),
-                ("GRID",          (0,0), (-1,-1), 0.5, colors.HexColor("#BBBBBB")),
-            ]))
-            story.append(t)
-
-        # ── Métricas pie de página
-        story.append(Spacer(1, 0.8*_cm))
-        story.append(HRFlowable(width="100%", thickness=1,
-                                color=colors.HexColor("#CCCCCC"), spaceAfter=8))
-        dur_min = int(horas * 60)
-        fin_global_str = fin_calc["fin_global_dt"].strftime("%H:%M")
-        story.append(Paragraph(
-            f"<b>Bultos:</b> {bultos:.0f}  |  "
-            f"<b>Prod. ref.:</b> {prod:.0f} bult/h  |  "
-            f"<b>Duración estimada:</b> {dur_min // 60}h {dur_min % 60}min  |  "
-            f"<b>Fin estimado cancha:</b> {fin_str}  |  "
-            f"<b>Fin global:</b> {fin_global_str}",
-            ParagraphStyle("T4Metric", fontSize=11, fontName="Helvetica",
-                           alignment=TA_CENTER, textColor=colors.HexColor("#333333")),
-        ))
-
-        if idx < len(canchas_pdf) - 1:
-            story.append(PageBreak())
-
-    doc.build(story)
-    return buf.getvalue()
+    # MKPL / Marketplace → "MKPL"
+    if any(k in s for k in ("MKPL", "MARKETPLACE", "MERCH")):
+        return "MKPL"
+    for c in ["CANCHA I", "CANCHA II", "CANCHA III", "CANCHA IV", "CANCHA V"]:
+        if s == c or s.startswith(c):
+            return c
+    return "SIN CANCHA"
 
 
 @st.cache_data(show_spinner=False)
-def _load_proyeccion_raw(file_bytes: bytes) -> list:
-    """Lee y cachea la hoja 'Proyección Picking' del MASTER."""
-    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
-    if "Proyección Picking" not in wb.sheetnames:
-        raise ValueError("Hoja 'Proyección Picking' no encontrada en MASTER.")
-    ws = wb["Proyección Picking"]
-    rows = list(ws.iter_rows(values_only=True))
+def _t4_load_anr(file_bytes: bytes) -> dict:
+    """
+    Lee ANR.xlsx (export Chess, fila 0 = headers, 89 cols).
+    Agrupa por CHOFER + CANCHA y retorna dict con:
+      - 'df': DataFrame con columnas por camión
+      - 'fecha': date
+      - 'fuente': 'ANR'
+    """
+    import datetime as _dt
+
+    try:
+        df_raw = pd.read_excel(
+            io.BytesIO(file_bytes),
+            sheet_name=0,
+            header=0,
+            dtype=str,
+        )
+    except Exception as e:
+        raise ValueError(f"Error leyendo ANR.xlsx: {e}")
+
+    n_cols = df_raw.shape[1]
+    required = max(
+        _ANR_COL_UP_PICK, _ANR_COL_BULT_AE, _ANR_COL_BULT_PICK,
+        _ANR_COL_CANCHA, _ANR_COL_CHOFER, _ANR_COL_KG, _ANR_COL_HL_TOT,
+    ) + 1
+    if n_cols < required:
+        raise ValueError(
+            f"ANR.xlsx tiene {n_cols} columnas, se esperaban al menos {required}."
+        )
+
+    # Renombrar cols por índice para acceso robusto
+    col_names = list(df_raw.columns)
+
+    def _col(idx):
+        return col_names[idx]
+
+    def _to_f(series):
+        return pd.to_numeric(series, errors="coerce").fillna(0.0)
+
+    df = df_raw.copy()
+    df["_chofer"]    = _to_f(df.iloc[:, _ANR_COL_CHOFER])
+    df["_cancha_raw"]= df.iloc[:, _ANR_COL_CANCHA].astype(str)
+    df["_bult_pick"] = _to_f(df.iloc[:, _ANR_COL_BULT_PICK])
+    df["_bult_ae"]   = _to_f(df.iloc[:, _ANR_COL_BULT_AE])
+    df["_up_pick"]   = _to_f(df.iloc[:, _ANR_COL_UP_PICK])
+    df["_up_pura"]   = _to_f(df.iloc[:, _ANR_COL_UP_PURA])
+    df["_hl_tot"]    = _to_f(df.iloc[:, _ANR_COL_HL_TOT])
+    df["_kg"]        = _to_f(df.iloc[:, _ANR_COL_KG])
+
+    # Filtrar filas sin camión válido
+    df = df[df["_chofer"] > 0].copy()
+    df["_chofer"] = df["_chofer"].astype(int)
+    df["_cancha"] = df["_cancha_raw"].apply(_t4_norm_cancha)
+
+    # ── Agrupar por camión × cancha ──────────────────────────────────────────
+    grp = df.groupby(["_chofer", "_cancha"], as_index=False).agg(
+        bult_pick=("_bult_pick", "sum"),
+        up_pick  =("_up_pick",   "sum"),
+        hl_pick  =("_hl_tot",    "sum"),  # suma total HL de filas pick
+    )
+
+    # AE por camión (independiente de cancha)
+    ae_grp = df.groupby("_chofer", as_index=False).agg(
+        bult_ae =("_bult_ae",  "sum"),
+        up_ae   =("_up_pura",  "sum"),
+        kg      =("_kg",       "sum"),
+    )
+
+    # Pivotar: una fila por camión, columnas por cancha (bultos pick)
+    pivot_bult = grp.pivot_table(
+        index="_chofer", columns="_cancha",
+        values="bult_pick", aggfunc="sum", fill_value=0.0,
+    ).reset_index()
+    pivot_bult.columns.name = None
+
+    pivot_up = grp.pivot_table(
+        index="_chofer", columns="_cancha",
+        values="up_pick", aggfunc="sum", fill_value=0.0,
+    ).reset_index()
+    pivot_up.columns.name = None
+    # Renombrar cols UP
+    up_rename = {c: f"_up_{c}" for c in _T4_CANCHAS + ["SIN CANCHA"] if c in pivot_up.columns}
+    pivot_up = pivot_up.rename(columns=up_rename)
+
+    # Merge todos
+    cam_df = pivot_bult.merge(ae_grp, on="_chofer", how="left")
+    cam_df = cam_df.merge(pivot_up, on="_chofer", how="left")
+
+    # Asegurar que todas las canchas estén presentes
+    for c in _T4_CANCHAS:
+        if c not in cam_df.columns:
+            cam_df[c] = 0.0
+        up_col = f"_up_{c}"
+        if up_col not in cam_df.columns:
+            cam_df[up_col] = 0.0
+
+    # Calcular pallets picking total por camión
+    cam_df["_up_pick_total"] = cam_df[[f"_up_{c}" for c in _T4_CANCHAS]].sum(axis=1)
+
+    cam_df["bult_ae"]       = cam_df["bult_ae"].fillna(0.0)
+    cam_df["up_ae"]         = cam_df["up_ae"].fillna(0.0)
+    cam_df["kg"]            = cam_df["kg"].fillna(0.0)
+
+    # TOTAL PICK (bultos picking) y TOTAL global
+    cam_df["TOTAL_PICK"]    = cam_df[[c for c in _T4_CANCHAS if c in cam_df.columns]].sum(axis=1)
+    cam_df["TOTAL_AE"]      = cam_df["bult_ae"]
+    cam_df["TOTAL_BULT"]    = cam_df["TOTAL_PICK"] + cam_df["TOTAL_AE"]
+
+    # Pallets picking (por cancha y total)
+    cam_df["TOTAL_PALL"]    = cam_df["_up_pick_total"] + cam_df["up_ae"]
+    cam_df["AE_PALL"]       = cam_df["up_ae"]
+
+    # Mix picking (a nivel dataset, no por camión)
+    tot_pick_global = float(cam_df["TOTAL_PICK"].sum())
+    tot_ae_global   = float(cam_df["TOTAL_AE"].sum())
+    mix = (tot_pick_global / (tot_pick_global + tot_ae_global)
+           if (tot_pick_global + tot_ae_global) > 0 else 0.0)
+
+    # Fecha: intentar leer de la primera fila del Excel
+    try:
+        df_fecha = pd.read_excel(io.BytesIO(file_bytes), sheet_name=0, header=0, nrows=2)
+        fecha_val = df_fecha.iloc[0, 0]
+        if isinstance(fecha_val, _dt.datetime):
+            fecha = fecha_val.date()
+        else:
+            fecha = _dt.date.today()
+    except Exception:
+        fecha = _dt.date.today()
+
+    # Renombrar columna camión
+    cam_df = cam_df.rename(columns={"_chofer": "Camión"})
+    # Ordenar
+    cam_df = cam_df.sort_values("Camión").reset_index(drop=True)
+
+    return {
+        "df": cam_df,
+        "fecha": fecha,
+        "fuente": "ANR",
+        "mix_picking": mix,
+        "tot_pick": tot_pick_global,
+        "tot_ae": tot_ae_global,
+    }
+
+
+@st.cache_data(show_spinner=False)
+def _t4_load_master_a(file_bytes: bytes) -> dict:
+    """
+    Lee hoja 'A' del MASTER como fallback.
+    Headers reales en fila 1 (0-based). Col de camión ≈ idx 9.
+    VERIFICADO: confirmar col número camión antes de usar en producción.
+    """
+    import datetime as _dt
+
+    wb = openpyxl.load_workbook(
+        io.BytesIO(file_bytes), data_only=True, read_only=True,
+    )
+    if "A" not in wb.sheetnames:
+        raise ValueError("Hoja 'A' no encontrada en MASTER.")
+    ws = wb["A"]
+    rows = list(ws.iter_rows(min_row=1, values_only=True))
     wb.close()
-    return rows
+
+    if len(rows) < 3:
+        raise ValueError("Hoja 'A' del MASTER sin datos suficientes.")
+
+    # Headers en fila 1 (idx 0)
+    # Col idx 9 = número de camión (VERIFICAR)
+    # Col idx 17 = Cancha
+    # Col idx 46 = Bultos AE
+    # Col idx 47 = Bultos PICK
+    # Col idx 53 = Bultos UP PICK (pallets picking)
+    # Col idx 54 = Bultos UP PURA (pallets AE)
+    # Col idx 56 = KG
+    IDX_CAM   = 9
+    IDX_CANCHA= 17
+    IDX_BXP   = 18
+    IDX_AE    = 46
+    IDX_PICK  = 47
+    IDX_UP_PICK = 53
+    IDX_UP_PURA = 54
+    IDX_KG    = 56
+
+    max_col = max(IDX_CAM, IDX_CANCHA, IDX_BXP, IDX_AE, IDX_PICK,
+                  IDX_UP_PICK, IDX_UP_PURA, IDX_KG) + 1
+
+    def _sv(row, idx):
+        try:
+            v = row[idx] if len(row) > idx else None
+            return 0.0 if v is None else float(v)
+        except (ValueError, TypeError):
+            return 0.0
+
+    records = []
+    for row in rows[2:]:  # datos desde fila 3
+        if len(row) <= IDX_CAM or row[IDX_CAM] is None:
+            continue
+        try:
+            cam = int(float(row[IDX_CAM]))
+        except (ValueError, TypeError):
+            continue
+        if cam <= 0:
+            continue
+
+        cancha_raw = row[IDX_CANCHA] if len(row) > IDX_CANCHA else None
+        cancha = _t4_norm_cancha(cancha_raw)
+
+        records.append({
+            "Camión":    cam,
+            "_cancha":   cancha,
+            "_bult_ae":  _sv(row, IDX_AE),
+            "_bult_pick":_sv(row, IDX_PICK),
+            "_up_pick":  _sv(row, IDX_UP_PICK),
+            "_up_pura":  _sv(row, IDX_UP_PURA),
+            "_kg":       _sv(row, IDX_KG),
+        })
+
+    if not records:
+        raise ValueError("Hoja 'A' del MASTER no tiene filas de datos válidas.")
+
+    df = pd.DataFrame(records)
+
+    # Agrupar: bultos pick por cancha → pivot
+    grp_pick = df.groupby(["Camión", "_cancha"], as_index=False)["_bult_pick"].sum()
+    pivot = grp_pick.pivot_table(
+        index="Camión", columns="_cancha",
+        values="_bult_pick", aggfunc="sum", fill_value=0.0,
+    ).reset_index()
+    pivot.columns.name = None
+
+    # AE, UP, KG por camión
+    ae_grp = df.groupby("Camión", as_index=False).agg(
+        bult_ae  =("_bult_ae",  "sum"),
+        up_pick  =("_up_pick",  "sum"),
+        up_ae    =("_up_pura",  "sum"),
+        kg       =("_kg",       "sum"),
+    )
+
+    cam_df = pivot.merge(ae_grp, on="Camión", how="left")
+
+    for c in _T4_CANCHAS:
+        if c not in cam_df.columns:
+            cam_df[c] = 0.0
+
+    cam_df["TOTAL_PICK"] = cam_df[[c for c in _T4_CANCHAS if c in cam_df.columns]].sum(axis=1)
+    cam_df["TOTAL_AE"]   = cam_df["bult_ae"].fillna(0.0)
+    cam_df["TOTAL_BULT"] = cam_df["TOTAL_PICK"] + cam_df["TOTAL_AE"]
+    cam_df["TOTAL_PALL"] = cam_df["up_pick"].fillna(0.0) + cam_df["up_ae"].fillna(0.0)
+    cam_df["AE_PALL"]    = cam_df["up_ae"].fillna(0.0)
+
+    for c in _T4_CANCHAS:
+        cam_df[f"_up_{c}"] = 0.0  # UP por cancha no disponible en fallback
+
+    tot_pick = float(cam_df["TOTAL_PICK"].sum())
+    tot_ae   = float(cam_df["TOTAL_AE"].sum())
+    mix = (tot_pick / (tot_pick + tot_ae)) if (tot_pick + tot_ae) > 0 else 0.0
+
+    cam_df = cam_df.sort_values("Camión").reset_index(drop=True)
+
+    return {
+        "df": cam_df,
+        "fecha": _dt.date.today(),
+        "fuente": "MASTER-A",
+        "mix_picking": mix,
+        "tot_pick": tot_pick,
+        "tot_ae": tot_ae,
+    }
+
+
+def _t4_calcular_pall_por_cancha(df: pd.DataFrame, asign_state: dict) -> dict:
+    """
+    Aplica ASIGN, calcula SUB_PALL, DESIGNADOS, TOTAL_PALL_X_CANCHA y STATUS.
+
+    asign_state = {(camion_id, cancha): valor}
+      - valor es float → usar ese número
+      - valor es str "CANCHA X" → DESIGNADO
+      - None / no presente → usar calculado (_up_{cancha})
+
+    Retorna dict:
+      'sub'       : {cancha: float}
+      'designados': {cancha: float}
+      'total'     : {cancha: float}
+      'status_rows': {camion_id: {'status': str, 'total_pall': float}}
+    """
+    sub        = {c: 0.0 for c in _T4_CANCHAS}
+    designados = {c: 0.0 for c in _T4_CANCHAS}
+    status_rows = {}
+
+    for _, row in df.iterrows():
+        cam = int(row["Camión"])
+        total_pall_cam = 0.0
+
+        for c in _T4_CANCHAS:
+            up_col = f"_up_{c}"
+            up_val = float(row.get(up_col, 0.0))
+
+            asign_key = (cam, c)
+            asign_val = asign_state.get(asign_key)
+
+            if asign_val is None:
+                # Pre-rellena con calculado
+                pall_used = up_val
+            elif isinstance(asign_val, str):
+                # Designado: "CANCHA X"
+                dest = _t4_norm_cancha(asign_val)
+                if dest in _T4_CANCHAS and dest != c:
+                    designados[dest] += up_val
+                    designados[c]    -= up_val
+                pall_used = up_val
+            else:
+                pall_used = float(asign_val)
+
+            sub[c] += pall_used
+            total_pall_cam += pall_used
+
+        # STATUS
+        if total_pall_cam == 0:
+            status = "CERO"
+        elif total_pall_cam > _T4_CAP_MAX:
+            status = f">{_T4_CAP_MAX} Pall"
+        else:
+            status = "OK"
+
+        status_rows[cam] = {"status": status, "total_pall": total_pall_cam}
+
+    total_x_cancha = {c: sub[c] + designados[c] for c in _T4_CANCHAS}
+
+    return {
+        "sub":        sub,
+        "designados": designados,
+        "total":      total_x_cancha,
+        "status_rows": status_rows,
+    }
+
+
+def _t4_hora_fin(bultos: float, vel: int, personas: int, inicio) -> object:
+    """hora_inicio + bultos / (vel * personas). Defensivo."""
+    import datetime as _dt
+    inicio_dt = _dt.datetime.combine(_dt.date.today(), inicio)
+    if vel <= 0 or personas <= 0 or bultos <= 0:
+        return inicio_dt
+    horas = bultos / (vel * personas)
+    return inicio_dt + _dt.timedelta(hours=horas)
+
+
+def _t4_generar_pdf_x4(
+    df: pd.DataFrame,
+    totales_bult: dict,
+    totales_pall: dict,
+    totales_hl: dict,
+    totales_kg: dict,
+    productividad: dict,
+    personas: dict,
+    inicio,
+    fecha,
+    mix_picking: float,
+    fin_calc: dict,
+) -> bytes:
+    """
+    Genera PDF A4 portrait ×4 (una página por cancha: CI, CII, CIII, CIV).
+    Estructura según handoff v2 sección 5.
+    """
+    import datetime as _dt
+    from reportlab.lib.units import cm as _cm
+
+    buf = io.BytesIO()
+    c = rl_canvas.Canvas(buf, pagesize=A4)
+    pw, ph = A4
+    mg  = 12 * mm
+    cw  = pw - 2 * mg
+
+    def _rfill(yy, hh, fill, stroke=None):
+        if stroke:
+            c.setFillColor(fill); c.setStrokeColor(stroke)
+            c.setLineWidth(0.4)
+            c.rect(mg, ph - yy - hh, cw, hh, fill=1, stroke=1)
+        else:
+            c.setFillColor(fill)
+            c.rect(mg, ph - yy - hh, cw, hh, fill=1, stroke=0)
+
+    def _txt(x, yy, s, font="Helvetica", sz=9, col=colors.black, align="left"):
+        c.setFont(font, sz); c.setFillColor(col)
+        y_rl = ph - yy
+        if align == "center":
+            c.drawCentredString(x, y_rl, str(s))
+        elif align == "right":
+            c.drawRightString(x, y_rl, str(s))
+        else:
+            c.drawString(x, y_rl, str(s))
+
+    for page_idx, cancha in enumerate(_T4_CANCHAS_PDF):
+        if page_idx > 0:
+            c.showPage()
+
+        col_pdf = _CANCHA_COLORS_PDF.get(cancha, colors.HexColor("#333333"))
+        fin_dt  = fin_calc["por_cancha"].get(cancha, {}).get("fin_dt", _dt.datetime.now())
+        fin_s   = fin_dt.strftime("%H:%M") if hasattr(fin_dt, "strftime") else "--:--"
+        fin_g   = fin_calc["fin_global_dt"].strftime("%H:%M")
+
+        y = mg
+
+        # ── Barra título ──────────────────────────────────────────────────────
+        _rfill(y, 22, col_pdf)
+        _txt(mg + cw / 2, y + 15,
+             f"PICKING  —  {fecha.strftime('%d/%m/%Y')}   INICIO: {inicio.strftime('%H:%M')}   "
+             f"FIN: {fin_g}   MIX: {mix_picking*100:.0f}%",
+             "Helvetica-Bold", 10, colors.white, "center")
+        y += 22 + 3
+
+        # ── Copia para cancha ─────────────────────────────────────────────────
+        _rfill(y, 16, colors.HexColor("#E3F2FD"))
+        _txt(mg + 8, y + 11,
+             f"📋  COPIA PARA: {cancha}",
+             "Helvetica-Bold", 10, col_pdf)
+        y += 16 + 4
+
+        # ── Tabla de camiones ─────────────────────────────────────────────────
+        # Anchos cols: Camión | CI | CII | CIII | CIV | MKPL | AE | TOTAL | STATUS
+        WS = [20 * mm, 20 * mm, 20 * mm, 20 * mm, 20 * mm, 18 * mm,
+              16 * mm, 20 * mm, cw - (20+20+20+20+20+18+16+20) * mm]
+        HDRS = ["Camión", "C.I", "C.II", "C.III", "C.IV", "MKPL", "AE", "TOTAL", "STATUS"]
+        CANCHAS_PDF_COLS = ["CANCHA I", "CANCHA II", "CANCHA III", "CANCHA IV", "MKPL"]
+
+        # Header tabla
+        _rfill(y, 13, colors.HexColor("#37474F"))
+        x_cur = mg
+        for h, w in zip(HDRS, WS):
+            _txt(x_cur + w / 2, y + 9, h, "Helvetica-Bold", 8, colors.white, "center")
+            x_cur += w
+        y += 13
+
+        # Filtrar ceros
+        df_show = df[df["TOTAL_PICK"] > 0].copy()
+
+        row_h = 11
+        for _, row in df_show.iterrows():
+            cam = int(row["Camión"])
+            vals_pick = [_t4_safe(row.get(cn, 0)) for cn in CANCHAS_PDF_COLS]
+            ae_v   = _t4_safe(row.get("TOTAL_AE", 0))
+            tot_v  = _t4_safe(row.get("TOTAL_PALL", 0))
+
+            stat_info = {"status": "OK", "total_pall": tot_v}
+
+            status_s = stat_info["status"]
+            if status_s == "CERO":
+                continue
+
+            # Color de fondo fila
+            if status_s.startswith(">"):
+                bg = colors.HexColor("#FFCDD2")
+            else:
+                bg = colors.white if (df_show.index.get_loc(_) % 2 == 0) else colors.HexColor("#F5F5F5")
+
+            _rfill(y, row_h, bg, colors.HexColor("#BBBBBB"))
+
+            x_cur = mg
+            for i, (s_val, w) in enumerate(zip(
+                [str(cam)] + [f"{v:.2f}" for v in vals_pick] +
+                [f"{ae_v:.0f}", f"{tot_v:.2f}", status_s],
+                WS
+            )):
+                text_col = (colors.HexColor("#C62828") if status_s.startswith(">") and i == len(WS)-1
+                            else colors.HexColor("#2E7D32") if status_s == "OK" and i == len(WS)-1
+                            else colors.black)
+                font_use = "Helvetica-Bold" if i in (0, len(WS)-1) else "Helvetica"
+                _txt(x_cur + w / 2, y + 7.5, s_val, font_use, 8, text_col, "center")
+                x_cur += w
+            y += row_h
+
+        # ── Fila TOTAL PALL x cancha ──────────────────────────────────────────
+        y += 3
+        _rfill(y, 13, colors.HexColor("#FF8A65"))
+        x_cur = mg
+        vals_totpall = [totales_pall.get(cn, 0) for cn in CANCHAS_PDF_COLS]
+        tot_ae_pall  = df["AE_PALL"].sum() if "AE_PALL" in df.columns else 0
+        for s_val, w in zip(
+            ["TOTAL PALL"] + [f"{v:.1f}" for v in vals_totpall] + [f"{tot_ae_pall:.0f}", "", ""],
+            WS
+        ):
+            _txt(x_cur + w / 2, y + 9, s_val, "Helvetica-Bold", 8, colors.white, "center")
+            x_cur += w
+        y += 13 + 5
+
+        # ── Resumen métricas ──────────────────────────────────────────────────
+        _rfill(y, 13, colors.HexColor("#ECEFF1"))
+        x_cur = mg
+        bult_por_cancha = [totales_bult.get(cn, 0) for cn in CANCHAS_PDF_COLS + ["MKPL"]]
+        tot_bult_pick = sum(bult_por_cancha)
+        tot_bult_ae   = df["TOTAL_AE"].sum() if "TOTAL_AE" in df.columns else 0
+        _txt(mg + 6, y + 9,
+             f"TOTAL BULTOS  — " +
+             " | ".join(f"{c.replace('CANCHA ','')}:{v:.0f}" for c, v in zip(_T4_CANCHAS, bult_por_cancha)) +
+             f"  TOT PICK: {tot_bult_pick:.0f}  AE: {tot_bult_ae:.0f}",
+             "Helvetica", 7.5, colors.HexColor("#333333"))
+        y += 13 + 2
+
+        _rfill(y, 13, colors.HexColor("#ECEFF1"))
+        hl_vals = [totales_hl.get(cn, 0) for cn in _T4_CANCHAS]
+        _txt(mg + 6, y + 9,
+             "TOTAL HL      — " +
+             " | ".join(f"{cn.replace('CANCHA ','')}:{v:.1f}" for cn, v in zip(_T4_CANCHAS, hl_vals)) +
+             f"  TOT: {sum(hl_vals):.1f}",
+             "Helvetica", 7.5, colors.HexColor("#333333"))
+        y += 13 + 2
+
+        _rfill(y, 13, colors.HexColor("#ECEFF1"))
+        kg_vals = [totales_kg.get(cn, 0) for cn in _T4_CANCHAS]
+        _txt(mg + 6, y + 9,
+             "TOTAL KG      — " +
+             " | ".join(f"{cn.replace('CANCHA ','')}:{v:.0f}" for cn, v in zip(_T4_CANCHAS, kg_vals)) +
+             f"  TOT: {sum(kg_vals):.0f}",
+             "Helvetica", 7.5, colors.HexColor("#333333"))
+        y += 13 + 6
+
+        # ── Productividad / Hora fin ──────────────────────────────────────────
+        _rfill(y, 13, colors.HexColor("#263238"))
+        x_cur = mg
+        sec_ws = [cw * 0.18] * 5
+        for cn, w in zip(_T4_CANCHAS, sec_ws):
+            pers = personas.get(cn, 1)
+            _txt(x_cur + w / 2, y + 9, f"# PERS: {pers}", "Helvetica-Bold", 7.5,
+                 colors.white, "center")
+            x_cur += w
+        y += 13
+
+        _rfill(y, 14, colors.HexColor("#37474F"))
+        x_cur = mg
+        for cn, w in zip(_T4_CANCHAS, sec_ws):
+            fin_c = fin_calc["por_cancha"].get(cn, {}).get("fin_dt")
+            fin_c_s = fin_c.strftime("%H:%M") if fin_c and hasattr(fin_c, "strftime") else "--:--"
+            is_this = (cn == cancha)
+            bg_c = col_pdf if is_this else colors.HexColor("#37474F")
+            _rfill(x_cur - mg + mg, y, 14, bg_c)  # noqa — se repinta debajo
+            c.setFillColor(bg_c if not is_this else col_pdf)
+            c.rect(x_cur, ph - y - 14, w - 1, 14, fill=1, stroke=0)
+            _txt(x_cur + w / 2, y + 10, f"FIN: {fin_c_s}",
+                 "Helvetica-Bold", 8.5, colors.white, "center")
+            x_cur += w
+
+        # Pie de página
+        c.setFont("Helvetica", 7.5)
+        c.setFillColor(colors.HexColor("#777777"))
+        c.drawCentredString(pw / 2, 8 * mm,
+                            f"Picking Orchestrator v{APP_VERSION}  ·  Beccacece Hnos SA  ·  Pág {page_idx+1}/4")
+
+    c.save()
+    buf.seek(0)
+    return buf.read()
 
 
 def render_tab_proyeccion():
@@ -2007,119 +2407,252 @@ def render_tab_proyeccion():
 
     st.subheader("📊 Proyección Picking ×4")
     st.caption(
-        "Reasigná bultos por cancha y calculá el horario estimado de fin. "
-        "Generá el PDF para entregar a cada operario."
+        "Fuente: **ANR.xlsx** (export Chess). "
+        "Asigná pallets por cancha y calculá el horario estimado de fin. "
+        "Genera 4 copias PDF A4 (una por cancha) para entregar a operarios."
     )
 
-    master = _file_uploader("MASTER del día.xlsx", ["xlsx"], key="t4_master")
+    # ── Upload de archivos ───────────────────────────────────────────────────
+    col_up1, col_up2 = st.columns(2)
+    with col_up1:
+        anr_file = _file_uploader(
+            "ANR.xlsx (export Chess — fuente primaria)", ["xlsx"], key="t4_anr", required=True
+        )
+    with col_up2:
+        master_fb = _file_uploader(
+            "MASTER del día.xlsx (fallback si no hay ANR)", ["xlsx"], key="t4_master_fb", required=False
+        )
 
-    if not master:
-        st.info("Subí el MASTER para activar la proyección.")
+    # ── Cargar datos ─────────────────────────────────────────────────────────
+    pdata = None
+    if anr_file:
+        try:
+            with st.spinner("Leyendo ANR.xlsx..."):
+                pdata = _t4_load_anr(anr_file.getvalue())
+            st.success(
+                f"✓ ANR cargado — {len(pdata['df'])} camiones | "
+                f"Fecha: {pdata['fecha']} | Fuente: {pdata['fuente']}"
+            )
+            log_event("info", f"Tab4 ANR cargado: {len(pdata['df'])} camiones, fecha {pdata['fecha']}")
+        except Exception as e:
+            st.error(f"❌ Error leyendo ANR.xlsx: {e}")
+            with st.expander("Stack trace"):
+                import traceback
+                st.code(traceback.format_exc())
+    elif master_fb:
+        try:
+            with st.spinner("ANR no disponible — leyendo hoja A del MASTER (fallback)..."):
+                pdata = _t4_load_master_a(master_fb.getvalue())
+            st.warning(
+                f"⚠ Usando fallback MASTER hoja A — {len(pdata['df'])} camiones. "
+                f"Subí ANR.xlsx para mayor precisión."
+            )
+            log_event("warning", f"Tab4 fallback MASTER-A: {len(pdata['df'])} camiones")
+        except Exception as e:
+            st.error(f"❌ Error leyendo MASTER hoja A: {e}")
+            return
+    else:
+        st.info("📂 Subí el **ANR.xlsx** para activar la proyección.\n\n"
+                "Si no tenés ANR disponible, podés subir el MASTER y se usará la hoja 'A' como fallback.")
         return
 
-    # ── Cargar y parsear
-    try:
-        with st.spinner("Leyendo hoja Proyección Picking..."):
-            raw = _load_proyeccion_raw(master.getvalue())
-        pdata = _parse_proyeccion_picking(raw)
-    except Exception as e:
-        st.error(f"❌ Error leyendo MASTER: {e}")
+    if pdata is None or pdata["df"].empty:
+        st.warning("No hay datos de camiones disponibles.")
         return
 
-    df_orig = pdata["df_camiones"]
-    if df_orig.empty:
-        st.warning("No hay datos de camiones en la hoja Proyección Picking.")
-        return
+    df_cam = pdata["df"].copy()
 
-    log_event("info", f"Proyección Picking cargada: {len(df_orig)} camiones | "
-                      f"Fecha: {pdata['fecha']} | Inicio: {pdata['inicio']}")
+    # ── Config: horario, productividad, personas ─────────────────────────────
+    with st.expander("⚙️ Horario, productividad y personas por cancha", expanded=False):
+        hc1, hc2 = st.columns(2)
+        with hc1:
+            h_ini = st.number_input("Hora inicio", 0, 23, value=17, step=1, key="t4_h")
+        with hc2:
+            m_ini = st.number_input("Min inicio",  0, 59, value=30, step=5, key="t4_m")
+        inicio_custom = _dt.time(int(h_ini), int(m_ini))
 
-    # ── Config productividad y horario
-    with st.expander("⚙️ Productividad y horario de inicio", expanded=False):
-        cc1, cc2 = st.columns(2)
-        with cc1:
-            h_ini = st.number_input("Hora inicio", 0, 23,
-                                    value=pdata["inicio"].hour, step=1, key="t4_h")
-        with cc2:
-            m_ini = st.number_input("Minutos inicio", 0, 59,
-                                    value=pdata["inicio"].minute, step=5, key="t4_m")
-        inicio_custom = _dt.time(h_ini, m_ini)
-
-        st.markdown("**Productividad por cancha (bultos/hora)**")
-        pcols = st.columns(5)
-        prod_custom = {}
-        for i, c in enumerate(_CANCHAS_PROY):
-            with pcols[i]:
-                prod_custom[c] = st.number_input(
-                    c, 10, 2000, value=_PROD_DEFAULT[c], step=10, key=f"t4_prod_{c}"
+        st.markdown("**Productividad (bultos/hora) y personas por cancha**")
+        prod_cols = st.columns(5)
+        vel_custom   = {}
+        pers_custom  = {}
+        for i, cn in enumerate(_T4_CANCHAS):
+            with prod_cols[i]:
+                vel_custom[cn] = st.number_input(
+                    f"Vel {cn.replace('CANCHA ','')}",
+                    10, 2000, value=_T4_VEL_DEFAULT[cn], step=10, key=f"t4_vel_{cn}"
+                )
+                pers_custom[cn] = st.number_input(
+                    f"Pers {cn.replace('CANCHA ','')}",
+                    1, 10, value=1, step=1, key=f"t4_pers_{cn}"
                 )
 
-    # ── Editor interactivo
-    st.subheader("✏️ Reasignación de bultos picking por cancha")
-    st.caption("Editá las columnas de cancha. TOTAL PICK y TOTAL BULT se recalculan al instante.")
+    # ── Toggle "Sacar ceros" ─────────────────────────────────────────────────
+    col_tog1, col_tog2 = st.columns([1, 3])
+    with col_tog1:
+        sacar_ceros = st.toggle("Sacar ceros", value=True, key="t4_ceros",
+                                help="Oculta camiones con TOTAL_PICK = 0")
+    with col_tog2:
+        umbral_q8 = st.number_input(
+            "Filtrar camiones con bultos < umbral (0 = sin filtro)",
+            min_value=0, value=0, step=10, key="t4_umbral",
+        )
 
-    col_cfg = {
-        "Camión":     st.column_config.NumberColumn("Camión",     disabled=True),
-        "CANCHA I":   st.column_config.NumberColumn("CANCHA I",   format="%.1f", min_value=0),
-        "CANCHA II":  st.column_config.NumberColumn("CANCHA II",  format="%.1f", min_value=0),
-        "CANCHA III": st.column_config.NumberColumn("CANCHA III", format="%.1f", min_value=0),
-        "CANCHA IV":  st.column_config.NumberColumn("CANCHA IV",  format="%.1f", min_value=0),
-        "MKPL":       st.column_config.NumberColumn("MKPL",       format="%.1f", min_value=0),
-        "TOTAL PICK": st.column_config.NumberColumn("TOTAL PICK", disabled=True, format="%.1f"),
-        "AE":         st.column_config.NumberColumn("AE",         disabled=True, format="%.1f"),
-        "TOTAL BULT": st.column_config.NumberColumn("TOTAL BULT", disabled=True, format="%.1f"),
-    }
+    df_display = df_cam.copy()
+    if sacar_ceros:
+        df_display = df_display[df_display["TOTAL_PICK"] > 0]
+    if umbral_q8 > 0:
+        df_display = df_display[df_display["TOTAL_BULT"] >= umbral_q8]
+    df_display = df_display.reset_index(drop=True)
 
-    df_edit = st.data_editor(
-        df_orig, column_config=col_cfg,
-        use_container_width=True, num_rows="fixed", key="t4_editor",
+    # ── Inicializar ASIGN state ───────────────────────────────────────────────
+    if "t4_asign" not in st.session_state:
+        st.session_state["t4_asign"] = {}
+
+    # ── Tabla principal con columna ASIGN por cancha ──────────────────────────
+    st.subheader("✏️ Asignación de pallets por cancha")
+    st.caption(
+        "Columnas **CALC** = pallets calculados desde ANR (read-only). "
+        "Columnas **ASIGN** = editables. Dejá vacío para usar el calculado, "
+        "o escribí 'CANCHA X' para designar a otra cancha."
     )
 
-    # Recalcular totales en tiempo real
-    for idx_e in df_edit.index:
-        nuevo_pick = sum(df_edit.at[idx_e, c] for c in _CANCHAS_PROY)
-        df_edit.at[idx_e, "TOTAL PICK"] = nuevo_pick
-        df_edit.at[idx_e, "TOTAL BULT"] = nuevo_pick + df_edit.at[idx_e, "AE"]
+    # Construir DataFrame para editor
+    edit_rows = []
+    for _, row in df_display.iterrows():
+        cam = int(row["Camión"])
+        rec = {"Camión": cam}
+        for cn in _T4_CANCHAS:
+            up_col = f"_up_{cn}"
+            calc_v = float(row.get(up_col, 0.0))
+            key = (cam, cn)
+            asign_v = st.session_state["t4_asign"].get(key)
+            asign_disp = calc_v if asign_v is None else asign_v
+            rec[f"{cn}"] = calc_v          # CALC (read-only)
+            rec[f"ASIGN {cn}"] = asign_disp  # ASIGN (editable)
+        rec["AE PALL"]    = float(row.get("AE_PALL", 0.0))
+        rec["TOTAL PICK"] = float(row.get("TOTAL_PICK", 0.0))
+        rec["TOTAL AE"]   = float(row.get("TOTAL_AE", 0.0))
+        edit_rows.append(rec)
 
-    # Totales por cancha
-    totales_ed = {c: float(df_edit[c].sum()) for c in _CANCHAS_PROY if c in df_edit.columns}
+    df_editor = pd.DataFrame(edit_rows)
 
-    # ── Cálculo fin estimado
-    fin_calc = _calcular_fin_estimado_proy(totales_ed, prod_custom, inicio_custom)
+    col_cfg = {"Camión": st.column_config.NumberColumn("Camión", disabled=True)}
+    for cn in _T4_CANCHAS:
+        col_cfg[f"{cn}"]       = st.column_config.NumberColumn(f"CALC {cn.replace('CANCHA ','C')}", disabled=True, format="%.2f")
+        col_cfg[f"ASIGN {cn}"] = st.column_config.TextColumn(f"ASIGN {cn.replace('CANCHA ','C')}")
+    col_cfg["AE PALL"]    = st.column_config.NumberColumn("AE Pall", disabled=True, format="%.2f")
+    col_cfg["TOTAL PICK"] = st.column_config.NumberColumn("Bult PICK", disabled=True, format="%.0f")
+    col_cfg["TOTAL AE"]   = st.column_config.NumberColumn("Bult AE",   disabled=True, format="%.0f")
 
-    # ── Métricas
+    df_edited = st.data_editor(
+        df_editor,
+        column_config=col_cfg,
+        use_container_width=True,
+        num_rows="fixed",
+        key="t4_editor_v2",
+    )
+
+    # Persistir ASIGN al session_state
+    for _, row in df_edited.iterrows():
+        cam = int(row["Camión"])
+        for cn in _T4_CANCHAS:
+            key = (cam, cn)
+            val = row.get(f"ASIGN {cn}")
+            try:
+                st.session_state["t4_asign"][key] = float(val) if val not in (None, "", "None") else None
+            except (ValueError, TypeError):
+                # String como "CANCHA X"
+                st.session_state["t4_asign"][key] = str(val).strip() if val else None
+
+    # Calcular totales pallets (con ASIGN aplicado)
+    totales_calc = _t4_calcular_pall_por_cancha(df_display, st.session_state["t4_asign"])
+    totales_pall_c = totales_calc["total"]
+
+    # Totales bultos / HL / KG por cancha (desde df_cam)
+    totales_bult = {}
+    totales_hl   = {}
+    totales_kg   = {}
+    for cn in _T4_CANCHAS:
+        totales_bult[cn] = float(df_display[cn].sum()) if cn in df_display.columns else 0.0
+        totales_hl[cn]   = 0.0  # ANR no da HL por cancha en este agrupamiento
+        totales_kg[cn]   = 0.0  # idem KG por cancha
+
+    # Totales KG globales desde df_display
+    tot_kg_global = float(df_display["kg"].sum()) if "kg" in df_display.columns else 0.0
+    tot_hl_global = 0.0  # calculable desde ANR crudo si se expone
+
+    # ── Hora estimada de fin ──────────────────────────────────────────────────
+    fin_por_cancha = {}
+    for cn in _T4_CANCHAS:
+        bult = totales_bult[cn]
+        fin_dt = _t4_hora_fin(bult, vel_custom[cn], pers_custom[cn], inicio_custom)
+        fin_por_cancha[cn] = {
+            "bultos":  bult,
+            "prod":    vel_custom[cn],
+            "personas":pers_custom[cn],
+            "fin_dt":  fin_dt,
+        }
+    fin_global_dt = max(v["fin_dt"] for v in fin_por_cancha.values())
+    fin_calc = {"por_cancha": fin_por_cancha, "fin_global_dt": fin_global_dt}
+
+    # ── Métricas cabecera ─────────────────────────────────────────────────────
+    st.divider()
     st.subheader("🕐 Horario estimado de fin por cancha")
-    mc = st.columns(len(_CANCHAS_PROY) + 1)
-    for i, c in enumerate(_CANCHAS_PROY):
-        d = fin_calc["por_cancha"][c]
+    mc = st.columns(len(_T4_CANCHAS) + 2)
+    for i, cn in enumerate(_T4_CANCHAS):
+        d = fin_por_cancha[cn]
         fin_s = d["fin_dt"].strftime("%H:%M") if d["bultos"] > 0 else "—"
-        mc[i].metric(c, fin_s, f"{d['bultos']:.0f} bults",
-                     delta_color="normal" if d["bultos"] > 0 else "off")
-    mc[-1].metric("🏁 FIN GLOBAL",
-                  fin_calc["fin_global_dt"].strftime("%H:%M"),
-                  "Cancha más cargada", delta_color="off")
+        mc[i].metric(
+            cn.replace("CANCHA ", "C"),
+            fin_s,
+            f"{d['bultos']:.0f} bults | {totales_pall_c.get(cn, 0):.1f} pall",
+            delta_color="normal" if d["bultos"] > 0 else "off",
+        )
+    mc[-2].metric("🏁 FIN GLOBAL", fin_global_dt.strftime("%H:%M"), "Cancha más cargada", delta_color="off")
+    mc[-1].metric("📊 MIX PICKING", f"{pdata['mix_picking']*100:.1f}%", "", delta_color="off")
 
-    # ── Gráfico distribución
+    # ── Filas resumen SUB / DESIGNADOS / TOTAL ───────────────────────────────
+    with st.expander("📋 Resumen pallets por cancha (SUB / DESIGNADOS / TOTAL)", expanded=True):
+        resumen_pall = pd.DataFrame({
+            "Concepto": ["SUB Total PALL", "DESIGNADOS PALL", "TOTAL PALL x CANCHA"],
+            **{cn: [
+                round(totales_calc["sub"][cn], 2),
+                round(totales_calc["designados"][cn], 2),
+                round(totales_calc["total"][cn], 2),
+            ] for cn in _T4_CANCHAS}
+        })
+        st.dataframe(
+            resumen_pall.style.apply(
+                lambda row: ["background-color: #FFE0B2" if row.name == 2 else "" for _ in row],
+                axis=1,
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    # ── Gráfico distribución bultos ───────────────────────────────────────────
     st.subheader("📊 Distribución de bultos picking por cancha")
-    df_chart = pd.DataFrame({"Cancha": list(totales_ed.keys()),
-                             "Bultos": list(totales_ed.values())})
+    df_chart = pd.DataFrame({
+        "Cancha": list(totales_bult.keys()),
+        "Bultos": list(totales_bult.values()),
+    })
     if df_chart["Bultos"].sum() > 0:
         st.bar_chart(df_chart.set_index("Cancha")["Bultos"], use_container_width=True)
 
-    # ── Totales globales
-    tot_pick = df_edit["TOTAL PICK"].sum() if "TOTAL PICK" in df_edit.columns else 0
-    tot_ae   = df_edit["AE"].sum()         if "AE"         in df_edit.columns else 0
+    # ── Totales globales ──────────────────────────────────────────────────────
+    tot_pick = pdata["tot_pick"]
+    tot_ae   = pdata["tot_ae"]
     cg1, cg2, cg3, cg4 = st.columns(4)
     cg1.metric("Total Bultos PICK", f"{tot_pick:.0f}")
     cg2.metric("Total Bultos AE",   f"{tot_ae:.0f}")
     cg3.metric("Total Global",      f"{tot_pick + tot_ae:.0f}")
-    cg4.metric("Mix picking",       f"{pdata['mix_picking']*100:.1f}%")
+    cg4.metric("KG Total",          f"{tot_kg_global:.0f}")
 
     st.divider()
 
-    # ── Generar PDF
+    # ── Generar PDF ×4 ────────────────────────────────────────────────────────
     st.subheader("📄 Generar PDF ×4 (una copia por cancha)")
-    st.caption("4 páginas A4 landscape: CANCHA I, II, III, IV — listo para imprimir en Epson L3210.")
+    st.caption("4 páginas A4 portrait: CANCHA I, II, III, IV — para entregar a cada operario ~17:30.")
 
     cp1, cp2 = st.columns([1, 2])
     with cp1:
@@ -2127,10 +2660,17 @@ def render_tab_proyeccion():
                      use_container_width=True, key="t4_pdf_btn"):
             with st.spinner("Generando PDF..."):
                 try:
-                    pdf_bytes = _generate_proyeccion_pdf_x4(
-                        df=df_edit, totales=totales_ed,
-                        productividad=prod_custom, inicio=inicio_custom,
-                        fecha=pdata["fecha"], mix_picking=pdata["mix_picking"],
+                    pdf_bytes = _t4_generar_pdf_x4(
+                        df=df_display,
+                        totales_bult=totales_bult,
+                        totales_pall=totales_pall_c,
+                        totales_hl=totales_hl,
+                        totales_kg=totales_kg,
+                        productividad=vel_custom,
+                        personas=pers_custom,
+                        inicio=inicio_custom,
+                        fecha=pdata["fecha"],
+                        mix_picking=pdata["mix_picking"],
                         fin_calc=fin_calc,
                     )
                     fname = f"proyeccion_picking_{pdata['fecha'].strftime('%Y-%m-%d')}.pdf"
@@ -2141,7 +2681,7 @@ def render_tab_proyeccion():
                         key="t4_pdf_dl",
                     )
                     st.success(f"✓ PDF generado: {fname}")
-                    log_event("info", f"PDF Proyección generado: {fname}")
+                    log_event("info", f"PDF Proyección v2 generado: {fname}")
                 except Exception as e:
                     st.error(f"❌ Error generando PDF: {e}")
                     with st.expander("Stack trace"):
@@ -2151,12 +2691,12 @@ def render_tab_proyeccion():
         st.info(
             f"📋 **Resumen — {pdata['fecha'].strftime('%d/%m/%Y')}**\n\n"
             f"- Inicio: {inicio_custom.strftime('%H:%M')}\n"
-            f"- Fin estimado global: {fin_calc['fin_global_dt'].strftime('%H:%M')}\n"
-            f"- Camiones con picking: {len(df_edit[df_edit['TOTAL PICK'] > 0])}\n"
+            f"- Fin estimado global: {fin_global_dt.strftime('%H:%M')}\n"
+            f"- Camiones con picking: {len(df_display[df_display['TOTAL_PICK'] > 0])}\n"
             f"- Bultos picking total: {tot_pick:.0f}\n"
-            f"- Mix picking: {pdata['mix_picking']*100:.1f}%"
+            f"- Mix picking: {pdata['mix_picking']*100:.1f}%\n"
+            f"- Fuente: {pdata['fuente']}"
         )
-
 
 # ── TAB 5 — Extraíbles Sheets ──────────────────────────────────────────────
 
