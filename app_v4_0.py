@@ -36,7 +36,7 @@ from reportlab.pdfgen import canvas as rl_canvas
 from loguru import logger
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.4.0"
+APP_VERSION = "4.7.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -1758,6 +1758,13 @@ def render_tab_t2():
 
 # ── TAB 4 — Proyección Picking ×4 — v4.6 ──────────────────────────────────
 #
+#  CAMBIOS v4.7:
+#  - Fix: hora estimada de fin calculada sobre BULTOS REALES por cancha
+#    (no sobre UP). Fórmula: bultos_cancha / (vel_bult_h × personas) + inicio
+#  - Fix: asignaciones entre canchas ahora afectan correctamente los bultos
+#    de cada cancha para el cálculo de tiempo (nueva fn _t4_calcular_bultos_por_cancha)
+#  - Los metrics "Bult CX" muestran delta cuando hay asignaciones activas
+#
 #  CAMBIOS v4.6:
 #  - Tabla basada en BULTOS UP (col R Frescura DDM = UNIDAD PKT)
 #  - Paletas enteras (floor), redondeo inteligente (≥0.97 → techo)
@@ -2073,6 +2080,38 @@ def _t4_hora_fin(bultos: float, vel: int, personas: int, inicio) -> object:
     if vel <= 0 or personas <= 0 or bultos <= 0:
         return inicio_dt
     return inicio_dt + _dt.timedelta(hours=bultos / (vel * personas))
+
+
+def _t4_calcular_bultos_por_cancha(df: pd.DataFrame, asign_state: dict) -> dict:
+    """
+    Calcula los BULTOS REALES de picking por cancha aplicando reasignaciones (ASIGN).
+
+    La reasignación mueve los bultos de la cancha origen a la cancha destino.
+    La proporción de bultos a mover se calcula como:
+        bult_reasign = bult_cancha_origen * (up_origen_asignado / up_origen_total)
+    Si up_origen_total == 0, se mueven todos los bultos de esa cancha.
+
+    Retorna: {cancha: bultos_totales_con_asign}
+    """
+    sub_bult   = {c: 0.0 for c in _T4_CANCHAS}
+    delta_bult = {c: 0.0 for c in _T4_CANCHAS}
+
+    for _, row in df.iterrows():
+        cam = int(row["Camión"])
+        for c in _T4_CANCHAS:
+            bult_val = float(row.get(c, 0.0))   # bultos de picking en esta cancha
+            up_val   = float(row.get(f"_up_{c}", 0.0))  # fracción pallet de esta cancha
+            sub_bult[c] += bult_val
+
+            asign_val = asign_state.get((cam, c))
+            if asign_val and isinstance(asign_val, str) and asign_val.strip():
+                dest = _t4_norm_cancha(asign_val)
+                if dest in _T4_CANCHAS and dest != c:
+                    # Mover todos los bultos de esta cancha al destino
+                    delta_bult[dest] += bult_val
+                    delta_bult[c]    -= bult_val
+
+    return {c: max(0.0, sub_bult[c] + delta_bult[c]) for c in _T4_CANCHAS}
 
 
 def _t4_generar_pdf_x4(
@@ -2565,8 +2604,10 @@ def render_tab_proyeccion():
     totales_calc   = _t4_calcular_pall_por_cancha(df_display, st.session_state["t4_asign"])
     totales_pall_c = totales_calc["total"]
 
-    # ── Totales bultos por cancha ─────────────────────────────────────────────
-    totales_bult = {cn: float(df_display[cn].sum()) if cn in df_display.columns else 0.0 for cn in _T4_CANCHAS}
+    # ── Totales bultos por cancha (base, sin asignaciones) ───────────────────
+    totales_bult_base = {cn: float(df_display[cn].sum()) if cn in df_display.columns else 0.0 for cn in _T4_CANCHAS}
+    # Totales bultos por cancha CON asignaciones aplicadas (para tiempo de fin)
+    totales_bult = _t4_calcular_bultos_por_cancha(df_display, st.session_state["t4_asign"])
     totales_hl   = {cn: 0.0 for cn in _T4_CANCHAS}
     totales_kg   = {cn: 0.0 for cn in _T4_CANCHAS}
 
@@ -2574,7 +2615,9 @@ def render_tab_proyeccion():
         cols_met = st.columns(len(_T4_CANCHAS) + 1)
         for i, cn in enumerate(_T4_CANCHAS):
             short = cn.replace("CANCHA ", "C")
-            cols_met[i].metric(f"Bult {short}", f"{totales_bult[cn]:.1f}")
+            delta_bult = totales_bult[cn] - totales_bult_base[cn]
+            delta_str  = f"{delta_bult:+.0f} bult (asign)" if delta_bult != 0 else None
+            cols_met[i].metric(f"Bult {short}", f"{totales_bult[cn]:.1f}", delta=delta_str)
         cols_met[-1].metric("TOT PICK", f"{pdata['tot_pick']:.0f}")
 
         cols_met2 = st.columns(len(_T4_CANCHAS) + 1)
@@ -2583,10 +2626,10 @@ def render_tab_proyeccion():
             cols_met2[i].metric(f"PALL {short}", f"{totales_calc['total'].get(cn, 0):.2f}")
         cols_met2[-1].metric("TOT AE bult", f"{pdata['tot_ae']:.0f}")
 
-    # ── Hora estimada de fin por cancha ───────────────────────────────────────
+    # ── Hora estimada de fin por cancha (sobre bultos con asignaciones) ───────
     fin_por_cancha = {}
     for cn in _T4_CANCHAS:
-        bult  = totales_bult[cn]
+        bult  = totales_bult[cn]   # ya incluye reasignaciones
         fin_dt = _t4_hora_fin(bult, vel_custom[cn], pers_custom[cn], hora_inicio_global)
         fin_por_cancha[cn] = {"bultos": bult, "fin_dt": fin_dt}
     fin_global_dt = max(v["fin_dt"] for v in fin_por_cancha.values())
