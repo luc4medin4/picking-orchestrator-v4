@@ -36,7 +36,7 @@ from reportlab.pdfgen import canvas as rl_canvas
 from loguru import logger
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.10.0"
+APP_VERSION = "4.7.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -48,20 +48,15 @@ T2_COLORS = {
 }
 
 # Setup logger único (no duplicar handlers en re-runs Streamlit)
-try:
-    if "logger_configured" not in st.session_state:
-        logger.remove()
-        logger.add(
-            lambda m: None,  # Stdout silenciado en Streamlit (lo capturamos en sesión)
-            level="INFO",
-            format="{time:HH:mm:ss} | {level} | {message}",
-        )
-        st.session_state["logger_configured"] = True
-        st.session_state["log_buffer"] = []
-except Exception:
-    # session_state aún no disponible en este punto del ciclo de vida: se
-    # configurará perezosamente dentro de log_event(). No bloquear el arranque.
-    pass
+if "logger_configured" not in st.session_state:
+    logger.remove()
+    logger.add(
+        lambda m: None,  # Stdout silenciado en Streamlit (lo capturamos en sesión)
+        level="INFO",
+        format="{time:HH:mm:ss} | {level} | {message}",
+    )
+    st.session_state["logger_configured"] = True
+    st.session_state["log_buffer"] = []
 
 def log_event(level: str, msg: str):
     """Log a archivo (futuro) y a buffer de sesión (para mostrar en UI)."""
@@ -1494,7 +1489,7 @@ def _download_trio(df: pd.DataFrame, base_name: str, sheet_name: str, key_prefix
             file_name=_stamp(base_name, "tsv"),
             mime="text/tab-separated-values",
             key=f"{key_prefix}_tsv",
-            width="stretch",
+            use_container_width=True,
         )
     with c2:
         st.download_button(
@@ -1503,7 +1498,7 @@ def _download_trio(df: pd.DataFrame, base_name: str, sheet_name: str, key_prefix
             file_name=_stamp(base_name, "csv"),
             mime="text/csv",
             key=f"{key_prefix}_csv",
-            width="stretch",
+            use_container_width=True,
         )
     with c3:
         st.download_button(
@@ -1512,7 +1507,7 @@ def _download_trio(df: pd.DataFrame, base_name: str, sheet_name: str, key_prefix
             file_name=_stamp(base_name, "xlsx"),
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"{key_prefix}_xlsx",
-            width="stretch",
+            use_container_width=True,
         )
 
 
@@ -1600,7 +1595,7 @@ def render_tab_planilla():
             if st.session_state.get("dry_run"):
                 st.success(f"✓ DRY-RUN OK — {len(car_df)} filas listas. PDF no generado.")
                 with st.expander("Preview CAR (primeras 20 filas)"):
-                    st.dataframe(car_df.head(20), width="stretch")
+                    st.dataframe(car_df.head(20), use_container_width=True)
                 return
 
             with st.spinner("Generando PDF (puede tardar)..."):
@@ -1620,7 +1615,7 @@ def render_tab_planilla():
                 file_name=_stamp("Planilla_Carga", "pdf"),
                 mime="application/pdf",
                 type="primary",
-                width="stretch",
+                use_container_width=True,
             )
 
             with st.expander(f"📊 Alertas y diagnósticos"):
@@ -1671,7 +1666,7 @@ def render_tab_resumen():
                     f"✓ DRY-RUN OK — {len(df_agr)} filas SKU/camión, "
                     f"{df_agr['chofer'].nunique()} camiones."
                 )
-                st.dataframe(df_agr.head(30), width="stretch")
+                st.dataframe(df_agr.head(30), use_container_width=True)
                 return
 
             with st.spinner("Generando PDF resumen..."):
@@ -1692,7 +1687,7 @@ def render_tab_resumen():
                 file_name=_stamp("Resumen_Camiones", "pdf"),
                 mime="application/pdf",
                 type="primary",
-                width="stretch",
+                use_container_width=True,
             )
 
             st.session_state["last_resumen_pdf"] = pdf_bytes
@@ -1916,7 +1911,7 @@ def render_tab_t2():
         )
         if gid_configurados:
             gid_data = [{"Camión": c, "GID": _T2_GID_MAP[c]} for c in sorted(gid_configurados)]
-            st.dataframe(pd.DataFrame(gid_data), width="stretch", hide_index=True)
+            st.dataframe(pd.DataFrame(gid_data), use_container_width=True, hide_index=True)
         else:
             st.warning("No hay GIDs configurados. Completá `_T2_GID_MAP` en el código.")
 
@@ -1982,7 +1977,7 @@ def render_tab_t2():
 
     st.dataframe(
         pd.DataFrame(rows_preview),
-        width="stretch",
+        use_container_width=True,
         hide_index=True,
     )
 
@@ -2818,7 +2813,7 @@ def render_tab_proyeccion():
         short = cn.replace("CANCHA ", "C")
         col_cfg[f"UP {short}"] = st.column_config.NumberColumn(f"UP {short}", disabled=True, format="%.3f")
 
-    st.dataframe(df_editor, column_config=col_cfg, width="stretch", hide_index=True)
+    st.dataframe(df_editor, column_config=col_cfg, use_container_width=True, hide_index=True)
 
     # ── Filas SUB / DESIGNADOS / TOTAL ───────────────────────────────────────
     resumen_pall = pd.DataFrame({
@@ -2834,7 +2829,7 @@ def render_tab_proyeccion():
             lambda row: ["background-color: #FF8C00; color: white" if row.name == 2 else "" for _ in row],
             axis=1,
         ),
-        width="stretch", hide_index=True,
+        use_container_width=True, hide_index=True,
     )
 
     # ── Asignación de carga ───────────────────────────────────────────────────
@@ -2946,7 +2941,7 @@ def render_tab_proyeccion():
     cp1, cp2 = st.columns([1, 2])
     with cp1:
         if st.button("📄 Generar PDF ×4", type="primary",
-                     width="stretch", key="t4_pdf_btn"):
+                     use_container_width=True, key="t4_pdf_btn"):
             with st.spinner("Generando PDF…"):
                 try:
                     pdf_bytes = _t4_generar_pdf_x4(
@@ -2967,7 +2962,7 @@ def render_tab_proyeccion():
                     st.download_button(
                         "⬇ Descargar PDF (4 páginas)",
                         data=pdf_bytes, file_name=fname,
-                        mime="application/pdf", width="stretch",
+                        mime="application/pdf", use_container_width=True,
                         key="t4_pdf_dl",
                     )
                     st.success(f"✓ PDF generado: {fname}")
@@ -3255,16 +3250,11 @@ def _render_top10_section(pdata: dict, car_bytes: bytes, fr_bytes: bytes):
                       "C": "background-color:#f8d7da;color:#721c24"}
         return colors_abc.get(str(val).strip().upper(), "")
 
-    try:
-        styler = df_display.style.hide(axis="index")
-        # Styler.map (pandas >= 2.1). Si no existe el método o falla, mostrar sin estilo.
-        if "ABC" in df_display.columns and not df_display["ABC"].isna().all() \
-           and hasattr(styler, "map"):
-            styler = styler.map(_style_abc, subset=["ABC"])
-        st.dataframe(styler, width="stretch", height=420)
-    except Exception:
-        # Fallback ultra-robusto: tabla plana sin formato condicional
-        st.dataframe(df_display, width="stretch", height=420, hide_index=True)
+    styler = df_display.style.hide(axis="index")
+    if "ABC" in df_display.columns:
+        styler = styler.applymap(_style_abc, subset=["ABC"])
+
+    st.dataframe(styler, use_container_width=True, height=420)
 
     # ── Exportar como TSV (listo para pegar en Sheets) ───────────────────────
     tsv_raw = df_display.to_csv(sep="\t", index=False)
@@ -3273,7 +3263,7 @@ def _render_top10_section(pdata: dict, car_bytes: bytes, fr_bytes: bytes):
         data=tsv_raw.encode("utf-8"),
         file_name=f"top10_skus_{fecha_str}.tsv",
         mime="text/tab-separated-values",
-        width="stretch",
+        use_container_width=True,
         key="top10_tsv_dl",
     )
 
@@ -3325,7 +3315,7 @@ def render_tab_extraibles():
 
     # ── Bloque 1: Matriz Pall. ──────────────────────────────────────────
     with st.expander("1️⃣  Matriz Pall. (29 camiones × 24 cols)", expanded=True):
-        st.dataframe(df_pall, width="stretch", height=300)
+        st.dataframe(df_pall, use_container_width=True, height=300)
         _download_trio(df_pall, "Matriz_Pall", "Matriz Pall.", "t5_pall")
 
     # ── Bloque 2: Agregados AE ──────────────────────────────────────────
@@ -3334,7 +3324,7 @@ def render_tab_extraibles():
             "⚠ Provisional: deriva de Matriz Pall. cols K-Q. "
             "Cuando confirmes hoja destino exacta en Ecosistema AD 3.0, se ajusta."
         )
-        st.dataframe(df_agr, width="stretch", height=300)
+        st.dataframe(df_agr, use_container_width=True, height=300)
         _download_trio(df_agr, "Agregados_AE", "Agregados AE", "t5_agr")
 
     # ── Bloque 3: Reposición AE (filtrado J<0) ──────────────────────────
@@ -3344,7 +3334,7 @@ def render_tab_extraibles():
         if len(df_rep_neg) == 0:
             st.warning("No hay filas con Reposicion_Pall < 0. Nada para pegar hoy.")
         else:
-            st.dataframe(df_rep_neg, width="stretch", height=300)
+            st.dataframe(df_rep_neg, use_container_width=True, height=300)
             _download_trio(df_rep_neg, "Reposicion_AE_neg", "Reposición AE", "t5_rep")
 
     # ── Bloque 4: (fx) Picking ──────────────────────────────────────────
@@ -3353,7 +3343,7 @@ def render_tab_extraibles():
             "Vista plana de la hoja Matriz Picking APP. Para Sprint 1 se exporta "
             "completa; en Sprint 2 se filtra/recorta según destino exacto."
         )
-        st.dataframe(df_pick.head(50), width="stretch", height=300)
+        st.dataframe(df_pick.head(50), use_container_width=True, height=300)
         _download_trio(df_pick, "fx_Picking", "(fx) Picking", "t5_pick")
 
 
@@ -3397,185 +3387,6 @@ def render_tab_validacion():
 
 # ── MAIN ────────────────────────────────────────────────────────────────────
 
-# ── TAB — CLASIFICACIÓN (Retornables: Almacén 1 y 3) ───────────────────────
-
-def _build_clasificacion_retornables(car_bytes: bytes, fr_bytes: bytes) -> tuple:
-    """
-    Cantidad total por camión de los SKUs de Almacén 1 y 3 (únicos retornables).
-
-    Lógica:
-      - CAR (Hoja1): cada fila trae 'Depósito' (1/3 = retornable), 'Transporte'
-        (= número de camión), 'Artículo' y 'Bultos'. Excluye anulados.
-      - DDM (Frescura): 'ARTÍCULO' → 'BULTOS X PALLET' para pallets equivalentes.
-      - Pallets = Bultos / BultosXPallet (sumados por camión).
-
-    Devuelve (df_por_camion, dict_totales).
-    Columnas: Camión | Bultos Retornables | Pallets Equivalentes
-    """
-    import openpyxl as _ox
-
-    # ── 1. CAR ───────────────────────────────────────────────────────────────
-    wb_car = _ox.load_workbook(io.BytesIO(car_bytes), read_only=True, data_only=True)
-    ws_car = wb_car["Hoja1"] if "Hoja1" in wb_car.sheetnames else wb_car.active
-    rows = list(ws_car.iter_rows(values_only=True))
-    wb_car.close()
-    if not rows:
-        raise ValueError("CAR vacío.")
-    hdr = [str(v).strip() if v is not None else f"c{i}" for i, v in enumerate(rows[0])]
-    df = pd.DataFrame(rows[1:], columns=hdr).dropna(how="all")
-
-    col_dep  = find_col(df, "Depósito", "Deposito")
-    col_tra  = find_col(df, "Transporte", "Camión", "Camion")
-    col_art  = find_col(df, "Artículo", "Articulo")
-    col_bul  = find_col(df, "Bultos")
-    col_anu  = find_col(df, "Anulado")
-    if col_dep is None or col_tra is None or col_bul is None:
-        raise ValueError(f"CAR: faltan columnas clave (Depósito/Transporte/Bultos). Detectadas: {list(df.columns)}")
-
-    df[col_dep] = pd.to_numeric(df[col_dep], errors="coerce")
-    df[col_bul] = pd.to_numeric(df[col_bul], errors="coerce").fillna(0)
-    if col_art:
-        df[col_art] = pd.to_numeric(df[col_art], errors="coerce")
-    if col_anu:
-        df = df[df[col_anu].astype(str).str.lower() != "yes"]
-
-    # Solo retornables: Almacén/Depósito 1 y 3
-    df_ret = df[df[col_dep].isin([1, 3]) & (df[col_bul] > 0)].copy()
-    if df_ret.empty:
-        return pd.DataFrame(columns=["Camión", "Bultos Retornables", "Pallets Equivalentes"]), \
-               {"bultos": 0, "pallets": 0.0, "camiones": 0}
-
-    # ── 2. DDM → Bultos x Pallet ──────────────────────────────────────────────
-    bxp_lookup = {}
-    try:
-        wb_fr = _ox.load_workbook(io.BytesIO(fr_bytes), read_only=True, data_only=True)
-        if "DDM" in wb_fr.sheetnames:
-            wd = wb_fr["DDM"]
-            rd = list(wd.iter_rows(values_only=True))
-            wb_fr.close()
-            hd = [str(v).strip() if v is not None else f"c{i}" for i, v in enumerate(rd[0])]
-            ddm = pd.DataFrame(rd[1:], columns=hd).dropna(how="all")
-            c_art = find_col(ddm, "ARTÍCULO", "ARTICULO", "Artículo")
-            c_bxp = find_col(ddm, "BULTOS X PALLET", "Bultos x Pallet")
-            if c_art and c_bxp:
-                ddm[c_art] = pd.to_numeric(ddm[c_art], errors="coerce")
-                ddm[c_bxp] = pd.to_numeric(ddm[c_bxp], errors="coerce")
-                tmp = ddm.dropna(subset=[c_art]).drop_duplicates(subset=[c_art])
-                bxp_lookup = dict(zip(tmp[c_art], tmp[c_bxp]))
-        else:
-            wb_fr.close()
-    except Exception:
-        bxp_lookup = {}
-
-    # ── 3. Pallets equivalentes por fila ──────────────────────────────────────
-    def _pallets(row):
-        if not col_art:
-            return 0.0
-        bxp = bxp_lookup.get(row[col_art])
-        if bxp and bxp > 0:
-            return row[col_bul] / bxp
-        return 0.0
-
-    df_ret["__pal"] = df_ret.apply(_pallets, axis=1)
-
-    # ── 4. Consolidar por camión ──────────────────────────────────────────────
-    grp = (df_ret.groupby(col_tra)
-                 .agg(Bultos=(col_bul, "sum"), Pallets=("__pal", "sum"))
-                 .reset_index())
-    # Camión como entero ordenado
-    grp[col_tra] = pd.to_numeric(grp[col_tra], errors="coerce")
-    grp = grp.sort_values(col_tra)
-    grp["Pallets"] = grp["Pallets"].round(2)
-
-    out = pd.DataFrame({
-        "Camión":               grp[col_tra].apply(lambda x: str(int(x)) if pd.notna(x) else "—"),
-        "Bultos Retornables":   grp["Bultos"].astype(float),
-        "Pallets Equivalentes": grp["Pallets"].astype(float),
-    })
-
-    tot = {
-        "bultos":   float(out["Bultos Retornables"].sum()),
-        "pallets":  round(float(out["Pallets Equivalentes"].sum()), 2),
-        "camiones": int(len(out)),
-    }
-    return out, tot
-
-
-def render_tab_clasificacion():
-    st.subheader("🏷️ Clasificación — Retornables (Almacén 1 y 3)")
-    st.caption(
-        "Cantidad total **por camión** de los SKUs retornables (Almacén 1 y 3). "
-        "Pallets equivalentes = Bultos ÷ Bultos×Pallet (DDM Frescura). "
-        "Tabla lista para copiar en Sheets."
-    )
-
-    # Reusar uploads de otras tabs
-    car_from = st.session_state.get("t4_car") or st.session_state.get("t1_car")
-    fr_from  = st.session_state.get("t4_fr")  or st.session_state.get("t1_fr")
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        car_file = _file_uploader("CAR.xlsx (export Chess)", ["xlsx"], key="tc_car")
-    with col_b:
-        fr_file = _file_uploader("Frescura 3.0.xlsx", ["xlsx"], key="tc_fr")
-
-    car_use = car_file or car_from
-    fr_use  = fr_file  or fr_from
-
-    if not (car_use and fr_use):
-        st.info("Subí el **CAR.xlsx** y la **Frescura 3.0** para generar la clasificación.")
-        return
-
-    try:
-        df_cl, tot = _build_clasificacion_retornables(
-            car_use.getvalue(), fr_use.getvalue()
-        )
-    except Exception as e:
-        st.error(f"❌ Error construyendo Clasificación: {e}")
-        with st.expander("Stack trace"):
-            import traceback
-            st.code(traceback.format_exc())
-        return
-
-    if df_cl.empty:
-        st.warning("No se encontraron bultos retornables (Almacén 1/3) en el CAR del día.")
-        return
-
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Camiones con retornables", tot["camiones"])
-    m2.metric("Bultos retornables totales", f"{tot['bultos']:,.0f}")
-    m3.metric("Pallets equivalentes",       f"{tot['pallets']:,.2f}")
-
-    # Tabla display
-    df_disp = df_cl.copy()
-    df_disp["Bultos Retornables"]   = df_disp["Bultos Retornables"].map(lambda x: f"{x:,.0f}")
-    df_disp["Pallets Equivalentes"] = df_disp["Pallets Equivalentes"].map(lambda x: f"{x:,.2f}")
-    # Fila TOTAL
-    df_disp.loc[len(df_disp)] = ["TOTAL", f"{tot['bultos']:,.0f}", f"{tot['pallets']:,.2f}"]
-
-    st.dataframe(df_disp, width="stretch", height=440, hide_index=True)
-
-    # Exportar TSV
-    tsv = df_cl.to_csv(sep="\t", index=False)
-    st.download_button(
-        "📋 Descargar TSV (pegar en Sheets)",
-        data=tsv.encode("utf-8"),
-        file_name="clasificacion_retornables.tsv",
-        mime="text/tab-separated-values",
-        width="stretch",
-        key="clasif_tsv_dl",
-    )
-
-    with st.expander("ℹ️ Metodología"):
-        st.markdown(
-            "- **Retornables**: SKUs de **Almacén 1 y 3** (los únicos retornables).\n"
-            "- **Camión**: columna `Transporte` del CAR.\n"
-            "- **Bultos**: suma por camión, excluye remitos anulados.\n"
-            "- **Pallets equivalentes**: `Bultos ÷ Bultos×Pallet` (col `BULTOS X PALLET` de la DDM).\n"
-            "- SKUs sin Bultos×Pallet en DDM aportan 0 pallets (revisar maestro)."
-        )
-
-
 def main():
     st.set_page_config(
         page_title=f"Picking Orchestrator v{APP_VERSION}",
@@ -3612,7 +3423,6 @@ def main():
         "📋 Resumen Camiones",
         "🚛 Camiones T2",
         "📊 Proyección Picking ×4",
-        "🏷️ Clasificación",
         "📤 Extraíbles Sheets",
         "✅ Validación + Log",
     ])
@@ -3620,9 +3430,8 @@ def main():
     with tabs[1]: render_tab_resumen()
     with tabs[2]: render_tab_t2()
     with tabs[3]: render_tab_proyeccion()
-    with tabs[4]: render_tab_clasificacion()
-    with tabs[5]: render_tab_extraibles()
-    with tabs[6]: render_tab_validacion()
+    with tabs[4]: render_tab_extraibles()
+    with tabs[5]: render_tab_validacion()
 
 
 if __name__ == "__main__":
