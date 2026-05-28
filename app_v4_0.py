@@ -2983,6 +2983,302 @@ def render_tab_proyeccion():
             f"- Fuente: {pdata['fuente']}"
         )
 
+    # ── Top 10 SKUs — se renderiza automáticamente si CAR + Frescura cargados ──
+    _render_top10_section(
+        pdata=pdata,
+        car_bytes=car_use.getvalue(),
+        fr_bytes=fr_use.getvalue(),
+    )
+
+
+# ── HELPER: Top 10 SKUs ────────────────────────────────────────────────────
+
+def _build_top10_skus(car_bytes: bytes, fr_bytes: bytes) -> pd.DataFrame:
+    """
+    Calcula el Top 10 SKUs más vendidos (por Bultos) del CAR del día,
+    cruzando con la DDM de Frescura para obtener VALOR HL por bulto.
+
+    Devuelve DataFrame con columnas:
+      #  | CÓDIGO | DESCRIPCIÓN | BULTOS | HL | U_PAQUETE | RUBRO | ABC
+    """
+    import openpyxl as _ox
+
+    # ── 1. Leer CAR ──────────────────────────────────────────────────────────
+    wb_car = _ox.load_workbook(io.BytesIO(car_bytes), read_only=True, data_only=True)
+    ws_car = wb_car.active
+    rows_car = list(ws_car.iter_rows(values_only=True))
+    wb_car.close()
+
+    # Detectar fila header (buscar columna "Artículo" o "Código")
+    header_idx = 0
+    for i, row in enumerate(rows_car[:10]):
+        vals = [str(v).strip().lower() if v else "" for v in row]
+        if any("artículo" in v or "articulo" in v for v in vals):
+            header_idx = i
+            break
+    headers_car = [str(v).strip() if v else f"col_{j}" for j, v in enumerate(rows_car[header_idx])]
+
+    df_car = pd.DataFrame(rows_car[header_idx + 1:], columns=headers_car)
+    df_car = df_car.dropna(how="all")
+
+    # Mapear columnas clave
+    col_art  = next((c for c in df_car.columns if "artículo" in c.lower() or "articulo" in c.lower()), None)
+    col_desc = next((c for c in df_car.columns if "descripción artículo" in c.lower() or "descripcion articulo" in c.lower()), None)
+    col_bul  = next((c for c in df_car.columns if "bultos" in c.lower()), None)
+    col_uni  = next((c for c in df_car.columns if "unids" in c.lower() or "u paquete" in c.lower() or "unidades" in c.lower()), None)
+    col_anu  = next((c for c in df_car.columns if "anulado" in c.lower()), None)
+
+    if col_art is None or col_bul is None:
+        raise ValueError(f"No se encontraron columnas clave en CAR. Columnas: {list(df_car.columns)}")
+
+    # Filtrar anulados
+    if col_anu:
+        df_car = df_car[df_car[col_anu].astype(str).str.lower() != "yes"]
+
+    df_car[col_art] = pd.to_numeric(df_car[col_art], errors="coerce")
+    df_car[col_bul] = pd.to_numeric(df_car[col_bul], errors="coerce").fillna(0)
+    if col_uni:
+        df_car[col_uni] = pd.to_numeric(df_car[col_uni], errors="coerce").fillna(0)
+
+    # Filtrar SKUs reales (>= 1 bulto, códigos > 0)
+    df_car = df_car[(df_car[col_bul] > 0) & (df_car[col_art] > 0)]
+
+    # Agrupar por artículo
+    agg_dict = {col_bul: "sum"}
+    if col_uni:
+        agg_dict[col_uni] = "sum"
+    if col_desc:
+        agg_dict[col_desc] = "first"
+
+    df_grp = df_car.groupby(col_art).agg(agg_dict).reset_index()
+    df_grp.rename(columns={col_art: "CODIGO", col_bul: "BULTOS"}, inplace=True)
+    if col_desc:
+        df_grp.rename(columns={col_desc: "DESCRIPCION"}, inplace=True)
+    else:
+        df_grp["DESCRIPCION"] = df_grp["CODIGO"].astype(str)
+    if col_uni:
+        df_grp.rename(columns={col_uni: "U_PAQUETE"}, inplace=True)
+    else:
+        df_grp["U_PAQUETE"] = 0.0
+
+    # ── 2. Leer DDM de Frescura para VALOR HL, RUBRO, ABC ────────────────────
+    wb_fr = _ox.load_workbook(io.BytesIO(fr_bytes), read_only=True, data_only=True)
+
+    # Encontrar hoja DDM
+    ddm_sheet = None
+    for sname in wb_fr.sheetnames:
+        if sname.strip().upper() == "DDM":
+            ddm_sheet = sname
+            break
+    if ddm_sheet is None:
+        wb_fr.close()
+        df_grp["HL"]    = 0.0
+        df_grp["RUBRO"] = ""
+        df_grp["ABC"]   = ""
+    else:
+        ws_ddm = wb_fr[ddm_sheet]
+        rows_ddm = list(ws_ddm.iter_rows(values_only=True))
+        wb_fr.close()
+
+        # Extraer valores computados de IMPORTRANGE (están en el campo como COMPUTED_VALUE)
+        def _extract_val(cell_val):
+            """Extrae el COMPUTED_VALUE de las fórmulas IFERROR/IMPORTRANGE del xlsx offline."""
+            if cell_val is None:
+                return None
+            s = str(cell_val)
+            marker = "COMPUTED_VALUE\"\"\"),"
+            idx = s.find(marker)
+            if idx >= 0:
+                rest = s[idx + len(marker):]
+                # Puede ser número o string entre comillas
+                rest = rest.rstrip(")")
+                # Número
+                try:
+                    return float(rest)
+                except ValueError:
+                    pass
+                # String: quitar comillas
+                rest = rest.strip('"').strip("'")
+                return rest if rest else None
+            # Valor directo (no fórmula)
+            return cell_val
+
+        # Header de DDM
+        hdr_ddm_raw = rows_ddm[0]
+        hdr_ddm = [str(_extract_val(v)).strip() if _extract_val(v) else f"c{i}" for i, v in enumerate(hdr_ddm_raw)]
+
+        ddm_data = []
+        for row in rows_ddm[1:]:
+            extracted = [_extract_val(v) for v in row]
+            if any(v is not None for v in extracted):
+                ddm_data.append(extracted)
+
+        df_ddm = pd.DataFrame(ddm_data, columns=hdr_ddm)
+        df_ddm = df_ddm.dropna(how="all")
+
+        # Mapear columnas DDM
+        col_d_art  = next((c for c in df_ddm.columns if c.strip().upper() in ("ARTÍCULO", "ARTICULO")), None)
+        col_d_hl   = next((c for c in df_ddm.columns if "VALOR HL" in c.upper()), None)
+        col_d_rub  = next((c for c in df_ddm.columns if "RUBRO" in c.upper()), None)
+        col_d_abc  = next((c for c in df_ddm.columns if c.strip().upper() == "ABC"), None)
+        col_d_desc = next((c for c in df_ddm.columns if "DESCRIPCIÓN" in c.upper() or "DESCRIPCION" in c.upper()), None)
+
+        if col_d_art:
+            df_ddm[col_d_art] = pd.to_numeric(df_ddm[col_d_art], errors="coerce")
+            if col_d_hl:
+                df_ddm[col_d_hl] = pd.to_numeric(df_ddm[col_d_hl], errors="coerce").fillna(0)
+
+            ddm_lookup = df_ddm[df_ddm[col_d_art].notna()].copy()
+            ddm_lookup.rename(columns={col_d_art: "CODIGO"}, inplace=True)
+
+            keep_cols = ["CODIGO"]
+            rename_map = {}
+            if col_d_hl:
+                keep_cols.append(col_d_hl); rename_map[col_d_hl] = "VALOR_HL"
+            if col_d_rub:
+                keep_cols.append(col_d_rub); rename_map[col_d_rub] = "RUBRO"
+            if col_d_abc:
+                keep_cols.append(col_d_abc); rename_map[col_d_abc] = "ABC"
+            if col_d_desc and "DESCRIPCION" not in df_grp.columns:
+                keep_cols.append(col_d_desc); rename_map[col_d_desc] = "DESC_DDM"
+
+            ddm_lookup = ddm_lookup[keep_cols].rename(columns=rename_map)
+            ddm_lookup = ddm_lookup.drop_duplicates(subset=["CODIGO"])
+
+            df_grp = df_grp.merge(ddm_lookup, on="CODIGO", how="left")
+        else:
+            df_grp["VALOR_HL"] = 0.0
+            df_grp["RUBRO"]    = ""
+            df_grp["ABC"]      = ""
+
+    # ── 3. Calcular HL totales ─────────────────────────────────────────────
+    if "VALOR_HL" in df_grp.columns:
+        df_grp["VALOR_HL"] = pd.to_numeric(df_grp["VALOR_HL"], errors="coerce").fillna(0)
+        df_grp["HL"] = (df_grp["BULTOS"] * df_grp["VALOR_HL"]).round(2)
+    else:
+        df_grp["HL"] = 0.0
+
+    # ── 4. Top 10 por Bultos ───────────────────────────────────────────────
+    df_top = (
+        df_grp
+        .sort_values("BULTOS", ascending=False)
+        .head(10)
+        .reset_index(drop=True)
+    )
+    df_top.index += 1  # Rankeo 1..10
+
+    # Limpiar descripción
+    df_top["DESCRIPCION"] = df_top["DESCRIPCION"].astype(str).str.strip()
+
+    # Columnas finales
+    cols_out = ["CODIGO", "DESCRIPCION", "BULTOS", "HL"]
+    if "U_PAQUETE" in df_top.columns:
+        cols_out.append("U_PAQUETE")
+    if "RUBRO" in df_top.columns:
+        cols_out.append("RUBRO")
+    if "ABC" in df_top.columns:
+        cols_out.append("ABC")
+
+    return df_top[cols_out].copy()
+
+
+def _render_top10_section(pdata: dict, car_bytes: bytes, fr_bytes: bytes):
+    """
+    Renderiza la sección 'Top 10 SKUs más vendidos' dentro de la Tab Proyección.
+    Se llama automáticamente si CAR y Frescura están disponibles.
+    """
+    st.divider()
+    st.subheader("🏆 Top 10 SKUs — Día de Carga")
+    st.caption(
+        "Ranking por **Bultos** del CAR del día · "
+        "HL calculado con **VALOR HL × Bultos** (DDM Frescura) · "
+        "Tabla lista para copiar en Sheets."
+    )
+
+    try:
+        df_top = _build_top10_skus(car_bytes, fr_bytes)
+    except Exception as e:
+        st.error(f"❌ Error construyendo Top 10: {e}")
+        import traceback
+        with st.expander("Stack trace"):
+            st.code(traceback.format_exc())
+        return
+
+    if df_top.empty:
+        st.warning("No se encontraron SKUs con bultos > 0.")
+        return
+
+    fecha_str = pdata.get("fecha", "")
+    tot_bultos = df_top["BULTOS"].sum()
+    tot_hl     = df_top["HL"].sum() if "HL" in df_top.columns else 0
+
+    # ── Métricas resumen ─────────────────────────────────────────────────────
+    mc1, mc2, mc3 = st.columns(3)
+    mc1.metric("SKUs únicos en Top 10",  len(df_top))
+    mc2.metric("Bultos acumulados Top 10", f"{tot_bultos:,.0f}")
+    mc3.metric("HL acumulados Top 10",    f"{tot_hl:,.2f}")
+
+    # ── Tabla con formato condicional ────────────────────────────────────────
+    # Preparar display DF
+    df_display = df_top.copy()
+    df_display.insert(0, "#", range(1, len(df_display) + 1))
+    df_display["BULTOS"] = df_display["BULTOS"].map(lambda x: f"{x:,.0f}")
+    df_display["HL"]     = df_display["HL"].map(lambda x: f"{x:,.2f}" if x else "—")
+    if "U_PAQUETE" in df_display.columns:
+        df_display["U_PAQUETE"] = df_display["U_PAQUETE"].map(
+            lambda x: f"{x:,.2f}" if pd.notna(x) and x != 0 else "—"
+        )
+    df_display["CODIGO"] = df_display["CODIGO"].astype(int).astype(str)
+
+    # Renombrar para Sheets
+    rename_display = {
+        "#":           "#",
+        "CODIGO":      "Código",
+        "DESCRIPCION": "Descripción",
+        "BULTOS":      "Bultos",
+        "HL":          "HL",
+        "U_PAQUETE":   "U. Paquete",
+        "RUBRO":       "Rubro",
+        "ABC":         "ABC",
+    }
+    df_display.rename(columns={k: v for k, v in rename_display.items() if k in df_display.columns}, inplace=True)
+
+    # Estilo condicional sutil: ABC coloreado
+    def _style_abc(val):
+        colors_abc = {"A": "background-color:#d4edda;color:#155724;font-weight:bold",
+                      "B": "background-color:#fff3cd;color:#856404",
+                      "C": "background-color:#f8d7da;color:#721c24"}
+        return colors_abc.get(str(val).strip().upper(), "")
+
+    styler = df_display.style.hide(axis="index")
+    if "ABC" in df_display.columns:
+        styler = styler.applymap(_style_abc, subset=["ABC"])
+
+    st.dataframe(styler, use_container_width=True, height=420)
+
+    # ── Exportar como TSV (listo para pegar en Sheets) ───────────────────────
+    tsv_raw = df_display.to_csv(sep="\t", index=False)
+    st.download_button(
+        label="📋 Descargar TSV (pegar en Sheets)",
+        data=tsv_raw.encode("utf-8"),
+        file_name=f"top10_skus_{fecha_str}.tsv",
+        mime="text/tab-separated-values",
+        use_container_width=True,
+        key="top10_tsv_dl",
+    )
+
+    # ── Nota metodológica ───────────────────────────────────────────────────
+    with st.expander("ℹ️ Metodología"):
+        st.markdown(
+            "- **Bultos**: suma de todos los remitos del CAR del día (excluye anulados)\n"
+            "- **HL**: `Bultos × VALOR HL` — factor tomado de la hoja DDM de Frescura 3.0\n"
+            "- **U. Paquete**: unidades individuales del paquete (col `Unids` del CAR)\n"
+            "- **Rubro / ABC**: clasificación de la DDM (base maestra CMQ)\n"
+            "- SKUs sin VALOR HL en DDM aparecen con `0.00` en HL\n"
+            "- El ranking es exclusivo del **día de carga actual** — no es histórico"
+        )
+
+
 # ── TAB 5 — Extraíbles Sheets ──────────────────────────────────────────────
 
 def render_tab_extraibles():
