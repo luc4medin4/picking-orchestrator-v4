@@ -36,7 +36,7 @@ from reportlab.pdfgen import canvas as rl_canvas
 from loguru import logger
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.0.0-sprint1"
+APP_VERSION = "4.4.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -1811,24 +1811,6 @@ _T4_CANCHA_COLORS = {
     "MKPL":       colors.HexColor("#00838F"),
 }
 
-# ── Índices columnas ANR interno (hoja ANR del MASTER, 89 cols, header fila 0) ──
-_ANR_COL_SKU       = 7   # ARTÍCULO
-_ANR_COL_BULTOS    = 10  # BULTOS
-_ANR_COL_TRANSPORT = 41  # TRANSPORTE (número camión) ← correcto, CHOFER=38 está vacío
-_ANR_COL_CANCHA    = 51  # CANCHA
-_ANR_COL_BXP       = 52  # BULTOS X PALLET
-_ANR_COL_HL        = 54  # TOTAL HL
-_ANR_COL_KG        = 55  # KG
-
-# ── Índices columnas hoja A (tabla agregados, header fila 2 Excel = idx 1) ──
-_A_COL_SKU    = 4   # SKU
-_A_COL_BULTOS = 6   # Bultos totales (col 6, 0-based)
-_A_COL_CAM    = 9   # Camión
-_A_COL_CANCHA = 17  # Cancha
-_A_COL_BXP    = 18  # Bultos por pallet
-_A_COL_HL_SKU = 19  # HL SKU
-_A_COL_KG     = 56  # kg
-
 
 def _t4_safe(v, default=0.0):
     if v is None:
@@ -1854,160 +1836,116 @@ def _t4_norm_cancha(val) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def _t4_load_master(file_bytes: bytes) -> dict:
+def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
     """
-    Fuente primaria del Tab 4.
-    Lee AMBAS hojas del MASTER (ANR + A), combina bultos por camión×SKU,
-    aplica lógica AE/PICK: floor(total/BXP)=pallets AE, resto=bultos PICK.
-    Retorna dict con df, fecha, fuente, mix_picking, tot_pick, tot_ae.
+    v4.4 — Proyección de picking construida directamente desde el CAR + Frescura.
+
+    PREMISA: "Solo se contemplan los bultos de picking, omitiendo las paletas
+    puras/completas cargadas por el autoelevador."
+
+    Lógica:
+      1) Lee Hoja1 del CAR (filas ≥41 = líneas normales de reparto).
+      2) Agrupa por (Transporte, Artículo) sumando Bultos y Unids.
+      3) Excluye envases (misma lógica que generate_pdf).
+      4) Merges con DDM de Frescura → BXP por SKU.
+      5) Para cada línea: blt_pick = blt_raw - floor(blt_raw / bxp) * bxp
+         up_pick  = blt_pick / bxp  (fracción de pallet)
+         blt_ae   = floor(blt_raw / bxp) * bxp
+         up_ae    = floor(blt_raw / bxp)
+         (Si SKU sin BXP → todo va a picking, up = 0)
+      6) Merges con API de Frescura → cancha por SKU.
+      7) Pivota por camión × cancha → DataFrame igual al que esperan las demás
+         funciones de Tab 4 (columnas CANCHA I…MKPL, _up_*, _hl_*, etc.)
+      8) HL = 0 (no disponible en el CAR export estándar; se mantiene
+         estructura compatible).
+
+    Retorna dict con: df, fecha, fuente, mix_picking, tot_pick, tot_ae.
     """
     import datetime as _dt
     import math as _math
 
-    xls = pd.ExcelFile(io.BytesIO(file_bytes))
+    # ── 1. Cargar Frescura → api (cancha), ddm (bxp) ────────────────────────
+    api, ddm, fr, _diag = load_frescura(io.BytesIO(fr_bytes))
 
-    if "ANR" not in xls.sheet_names:
-        raise ValueError("Hoja 'ANR' no encontrada en el MASTER.")
-    if "A" not in xls.sheet_names:
-        raise ValueError("Hoja 'A' no encontrada en el MASTER.")
+    # ── 2. Leer Hoja1 del CAR ────────────────────────────────────────────────
+    raw = pd.read_excel(io.BytesIO(car_bytes), sheet_name=0, header=None)
+    header = raw.iloc[0].tolist()
+    normal = raw.iloc[41:].copy()
+    normal.columns = header
 
-    # ── Leer hoja ANR ───────────────────────────────────────────────────────
-    df_anr_raw = pd.read_excel(xls, sheet_name="ANR", header=0, dtype=str)
-    n_anr = df_anr_raw.shape[1]
-    if n_anr < 56:
-        raise ValueError(f"Hoja ANR tiene {n_anr} columnas, se esperaban al menos 56.")
+    normal["Artículo"]   = pd.to_numeric(normal["Artículo"],   errors="coerce")
+    normal["Transporte"] = pd.to_numeric(normal["Transporte"], errors="coerce")
+    normal["Bultos"]     = pd.to_numeric(normal["Bultos"],     errors="coerce").fillna(0)
+    normal["Unids"]      = pd.to_numeric(normal["Unids"],      errors="coerce").fillna(0)
+    normal = normal.dropna(subset=["Artículo", "Transporte"])
+    normal = normal[normal["Artículo"] > 0]
+    normal["Artículo"]   = normal["Artículo"].astype(int)
+    normal["Transporte"] = normal["Transporte"].apply(lambda x: int(float(x)) if pd.notna(x) else x)
 
-    def _to_f(series):
-        return pd.to_numeric(series, errors="coerce").fillna(0.0)
-
-    anr = pd.DataFrame()
-    anr["cam"]    = _to_f(df_anr_raw.iloc[:, _ANR_COL_TRANSPORT])
-    anr["sku"]    = _to_f(df_anr_raw.iloc[:, _ANR_COL_SKU])
-    anr["bultos"] = _to_f(df_anr_raw.iloc[:, _ANR_COL_BULTOS])
-    anr["bxp"]    = _to_f(df_anr_raw.iloc[:, _ANR_COL_BXP])
-    anr["cancha"] = df_anr_raw.iloc[:, _ANR_COL_CANCHA].astype(str)
-    anr["hl"]     = _to_f(df_anr_raw.iloc[:, _ANR_COL_HL])
-    anr["kg"]     = _to_f(df_anr_raw.iloc[:, _ANR_COL_KG])
-    anr = anr[(anr["cam"] > 0) & (anr["sku"] > 0)].copy()
-    anr["cam"] = anr["cam"].astype(int)
-    anr["sku"] = anr["sku"].astype(int)
-
-    # Fecha desde primera fila ANR
+    # Fecha desde columna Fecha Mvto
     try:
-        fecha_raw = df_anr_raw.iloc[0, 18]  # col 18 = FECHA productividades
-        fecha = pd.to_datetime(fecha_raw, errors="coerce")
-        fecha = fecha.date() if pd.notna(fecha) else _dt.date.today()
+        fecha = pd.to_datetime(normal["Fecha Mvto"].dropna().iloc[0]).date()
     except Exception:
         fecha = _dt.date.today()
 
-    # ── Leer hoja A ─────────────────────────────────────────────────────────
-    # Header en fila 2 (idx 1), datos desde fila 3 (idx 2)
-    df_a_raw = pd.read_excel(xls, sheet_name="A", header=1, dtype=str)
+    # ── 3. Excluir envases ───────────────────────────────────────────────────
+    normal = normal[~normal.apply(
+        lambda r: is_envase(int(r["Artículo"]), str(r.get("Descripción Artículo", ""))), axis=1
+    )]
 
-    a = pd.DataFrame()
-    a["cam"]    = _to_f(df_a_raw.iloc[:, _A_COL_CAM])
-    a["sku"]    = _to_f(df_a_raw.iloc[:, _A_COL_SKU])
-    a["bultos"] = _to_f(df_a_raw.iloc[:, _A_COL_BULTOS])
-    a["bxp"]    = _to_f(df_a_raw.iloc[:, _A_COL_BXP])
-    a["cancha"] = df_a_raw.iloc[:, _A_COL_CANCHA].astype(str)
-    a["hl"]     = _to_f(df_a_raw.iloc[:, _A_COL_HL_SKU])
-    a["kg"]     = _to_f(df_a_raw.iloc[:, _A_COL_KG])
-    a = a[(a["cam"] > 0) & (a["sku"] > 0)].copy()
-    a["cam"] = a["cam"].astype(int)
-    a["sku"] = a["sku"].astype(int)
+    # ── 4. Agregar por (Transporte, Artículo) ────────────────────────────────
+    grp = (normal.groupby(["Transporte", "Artículo", "Descripción Artículo"], as_index=False)
+           .agg(blt_raw=("Bultos", "sum"), unids=("Unids", "sum")))
+    grp = grp[grp["blt_raw"] > 0]
+    grp.rename(columns={"Transporte": "cam", "Artículo": "sku"}, inplace=True)
 
-    # ── Merge: sumar bultos de ambas fuentes por cam×SKU ────────────────────
-    anr_grp = anr.groupby(["cam", "sku"], as_index=False).agg(
-        bultos_anr=("bultos", "sum"),
-        bxp=("bxp", "first"),
-        cancha=("cancha", "first"),
-        hl_anr=("hl", "sum"),
-        kg_anr=("kg", "sum"),
-    )
-    a_grp = a.groupby(["cam", "sku"], as_index=False).agg(
-        bultos_a=("bultos", "sum"),
-        bxp_a=("bxp", "first"),
-        cancha_a=("cancha", "first"),
-        hl_a=("hl", "sum"),
-        kg_a=("kg", "sum"),
-    )
+    # ── 5. Merge BXP (DDM) ───────────────────────────────────────────────────
+    grp = grp.merge(ddm[["sku", "bxp"]], on="sku", how="left")
 
-    merged = pd.merge(anr_grp, a_grp, on=["cam", "sku"], how="outer")
-    merged["bultos_total"] = merged["bultos_anr"].fillna(0.0) + merged["bultos_a"].fillna(0.0)
-    merged["bxp_final"]    = merged["bxp"].fillna(merged["bxp_a"])
-    merged["cancha_raw"]   = merged["cancha"].fillna(merged["cancha_a"])
-    merged["cancha_norm"]  = merged["cancha_raw"].apply(_t4_norm_cancha)
-    merged["hl_total"]     = merged["hl_anr"].fillna(0.0) + merged["hl_a"].fillna(0.0)
-    merged["kg_total"]     = merged["kg_anr"].fillna(0.0) + merged["kg_a"].fillna(0.0)
-
-    # ── Separar AE vs PICK: floor(total/BXP) = pallets AE, resto = pick ─────
-    def _split(row):
-        tot = float(row["bultos_total"])
-        bxp = float(row["bxp_final"]) if pd.notna(row["bxp_final"]) else 0.0
-        if bxp > 0:
-            pall_ae  = _math.floor(tot / bxp)
-            bult_ae  = pall_ae * bxp
+    # ── 6. Calcular picking vs AE ─────────────────────────────────────────────
+    def _split_row(row):
+        tot  = float(row["blt_raw"])
+        bxp_ = float(row["bxp"]) if pd.notna(row["bxp"]) and row["bxp"] > 0 else 0.0
+        if bxp_ > 0:
+            pall_ae   = _math.floor(tot / bxp_)
+            bult_ae   = pall_ae * bxp_
             bult_pick = tot - bult_ae
-            # HL: proporcional al picking
-            hl_pick = float(row["hl_total"]) * (bult_pick / tot) if tot > 0 else 0.0
-            hl_ae   = float(row["hl_total"]) - hl_pick
+            up_pick   = bult_pick / bxp_ if bult_pick > 0 else 0.0
         else:
             pall_ae   = 0
             bult_ae   = 0.0
             bult_pick = tot
-            hl_pick   = float(row["hl_total"])
-            hl_ae     = 0.0
+            up_pick   = 0.0
         return pd.Series({
             "pall_ae":   float(pall_ae),
             "bult_ae":   bult_ae,
             "bult_pick": bult_pick,
-            "hl_pick":   hl_pick,
-            "hl_ae":     hl_ae,
+            "up_pick":   up_pick,
         })
 
-    split = merged.apply(_split, axis=1)
-    merged = pd.concat([merged, split], axis=1)
+    split = grp.apply(_split_row, axis=1)
+    grp = pd.concat([grp, split], axis=1)
 
-    # ── Agrupar por camión × cancha ─────────────────────────────────────────
-    pick_grp = merged.groupby(["cam", "cancha_norm"], as_index=False).agg(
+    # ── 7. Merge cancha (API) ────────────────────────────────────────────────
+    grp = grp.merge(api[["sku", "cancha"]], on="sku", how="left")
+    grp["cancha_norm"] = grp["cancha"].fillna("SIN CANCHA").apply(_t4_norm_cancha)
+
+    # ── 8. Pivotar por camión × cancha ───────────────────────────────────────
+    pick_grp = grp.groupby(["cam", "cancha_norm"], as_index=False).agg(
         bult_pick=("bult_pick", "sum"),
-        hl_pick  =("hl_pick",   "sum"),
-        up_pick  =("bult_pick", lambda x: 0.0),  # pallets pick por cancha: suma UP individuales
+        up_pick  =("up_pick",   "sum"),
     )
-    # UP pick por cancha: recalcular desde merged (necesitamos bxp por fila)
-    # up_pick por fila = bult_pick / bxp (fracción de pallet)
-    merged["up_pick_row"] = merged.apply(
-        lambda r: r["bult_pick"] / r["bxp_final"]
-        if pd.notna(r["bxp_final"]) and r["bxp_final"] > 0 else 0.0,
-        axis=1,
-    )
-    up_pick_grp = merged.groupby(["cam", "cancha_norm"], as_index=False).agg(
-        up_pick=("up_pick_row", "sum"),
-    )
-    pick_grp = pick_grp.drop(columns=["up_pick"])
-    pick_grp = pick_grp.merge(up_pick_grp, on=["cam", "cancha_norm"], how="left")
 
-    ae_grp = merged.groupby("cam", as_index=False).agg(
+    ae_grp = grp.groupby("cam", as_index=False).agg(
         bult_ae=("bult_ae", "sum"),
         up_ae  =("pall_ae", "sum"),
-        hl_ae  =("hl_ae",   "sum"),
-        kg     =("kg_total","sum"),
     )
 
-    # Pivotar cancha → columnas (bultos pick)
     pivot_bult = pick_grp.pivot_table(
         index="cam", columns="cancha_norm",
         values="bult_pick", aggfunc="sum", fill_value=0.0,
     ).reset_index()
     pivot_bult.columns.name = None
-
-    pivot_hl = pick_grp.pivot_table(
-        index="cam", columns="cancha_norm",
-        values="hl_pick", aggfunc="sum", fill_value=0.0,
-    ).reset_index()
-    pivot_hl.columns.name = None
-    hl_rename = {c: f"_hl_{c}" for c in _T4_CANCHAS + ["SIN CANCHA"] if c in pivot_hl.columns}
-    pivot_hl = pivot_hl.rename(columns=hl_rename)
 
     pivot_up = pick_grp.pivot_table(
         index="cam", columns="cancha_norm",
@@ -2018,28 +1956,26 @@ def _t4_load_master(file_bytes: bytes) -> dict:
     pivot_up = pivot_up.rename(columns=up_rename)
 
     cam_df = pivot_bult.merge(ae_grp, on="cam", how="left")
-    cam_df = cam_df.merge(pivot_hl, on="cam", how="left")
     cam_df = cam_df.merge(pivot_up, on="cam", how="left")
 
-    # Asegurar todas las canchas presentes
+    # HL = 0 (no disponible en el CAR export)
     for c in _T4_CANCHAS:
         if c not in cam_df.columns:
             cam_df[c] = 0.0
-        for pfx in ("_hl_", "_up_"):
-            col = f"{pfx}{c}"
-            if col not in cam_df.columns:
-                cam_df[col] = 0.0
+        if f"_up_{c}" not in cam_df.columns:
+            cam_df[f"_up_{c}"] = 0.0
+        cam_df[f"_hl_{c}"] = 0.0
 
-    cam_df["bult_ae"]  = cam_df["bult_ae"].fillna(0.0)
-    cam_df["up_ae"]    = cam_df["up_ae"].fillna(0.0)
-    cam_df["hl_ae"]    = cam_df["hl_ae"].fillna(0.0)
-    cam_df["kg"]       = cam_df["kg"].fillna(0.0)
+    cam_df["bult_ae"] = cam_df["bult_ae"].fillna(0.0)
+    cam_df["up_ae"]   = cam_df["up_ae"].fillna(0.0)
+    cam_df["hl_ae"]   = 0.0
+    cam_df["kg"]      = 0.0
 
-    cam_df["TOTAL_PICK"]  = cam_df[[c for c in _T4_CANCHAS if c in cam_df.columns]].sum(axis=1)
-    cam_df["TOTAL_AE"]    = cam_df["bult_ae"]
-    cam_df["TOTAL_BULT"]  = cam_df["TOTAL_PICK"] + cam_df["TOTAL_AE"]
-    cam_df["TOTAL_PALL"]  = cam_df[[f"_up_{c}" for c in _T4_CANCHAS]].sum(axis=1) + cam_df["up_ae"]
-    cam_df["AE_PALL"]     = cam_df["up_ae"]
+    cam_df["TOTAL_PICK"] = cam_df[[c for c in _T4_CANCHAS if c in cam_df.columns]].sum(axis=1)
+    cam_df["TOTAL_AE"]   = cam_df["bult_ae"]
+    cam_df["TOTAL_BULT"] = cam_df["TOTAL_PICK"] + cam_df["TOTAL_AE"]
+    cam_df["TOTAL_PALL"] = cam_df[[f"_up_{c}" for c in _T4_CANCHAS]].sum(axis=1) + cam_df["up_ae"]
+    cam_df["AE_PALL"]    = cam_df["up_ae"]
 
     cam_df = cam_df.rename(columns={"cam": "Camión"})
     cam_df = cam_df.sort_values("Camión").reset_index(drop=True)
@@ -2051,7 +1987,7 @@ def _t4_load_master(file_bytes: bytes) -> dict:
     return {
         "df":          cam_df,
         "fecha":       fecha,
-        "fuente":      "MASTER (ANR + Agregados)",
+        "fuente":      "CAR + Frescura (picking directo)",
         "mix_picking": mix,
         "tot_pick":    tot_pick,
         "tot_ae":      tot_ae,
@@ -2358,35 +2294,43 @@ def render_tab_proyeccion():
 
     st.subheader("📊 Proyección Picking ×4")
     st.caption(
-        "Fuente: **MASTER del día** (hoja ANR + hoja A — Agregados). "
-        "Combina ambas fuentes, calcula AE vs PICK por BXP, asigná pallets y "
-        "generá 4 copias PDF A4 (una por cancha)."
+        "Fuente: **CAR.xlsx + Frescura 3.0** (mismos archivos que Tab 1). "
+        "Calcula PICK vs AE por BXP y cancha, sin necesitar el MASTER (78MB)."
     )
 
-    # ── Upload único: MASTER ─────────────────────────────────────────────────
-    master_file = _file_uploader(
-        "MASTER del día.xlsx", ["xlsx"], key="t4_master"
-    )
+    # ── Reutilizar uploads de Tab 1 si están disponibles ────────────────────
+    car_from_t1 = st.session_state.get("t4_car") or st.session_state.get("t1_car")
+    fr_from_t1  = st.session_state.get("t4_fr")  or st.session_state.get("t1_fr")
 
-    if not master_file:
-        st.info(
-            "📂 Subí el **MASTER del día** para activar la proyección.\n\n"
-            "El archivo debe contener las hojas **ANR** (bajada Chess) y **A** (agregados)."
-        )
+    col_a, col_b = st.columns(2)
+    with col_a:
+        car_file = _file_uploader("CAR.xlsx (export Chess)", ["xlsx"], key="t4_car")
+    with col_b:
+        fr_file = _file_uploader("Frescura 3.0.xlsx",        ["xlsx"], key="t4_fr")
+
+    # Fallback a lo subido en Tab 1
+    car_use = car_file or car_from_t1
+    fr_use  = fr_file  or fr_from_t1
+
+    if not (car_use and fr_use):
+        st.info("Subí el **CAR.xlsx** y la **Frescura 3.0** para activar la proyección.")
         return
 
     # ── Cargar datos ─────────────────────────────────────────────────────────
     pdata = None
     try:
-        with st.spinner("Leyendo MASTER (ANR + Agregados)…"):
-            pdata = _t4_load_master(master_file.getvalue())
+        with st.spinner("Calculando proyección de picking desde CAR…"):
+            pdata = _t4_load_car_proyeccion(
+                car_bytes=car_use.getvalue(),
+                fr_bytes=fr_use.getvalue(),
+            )
         st.success(
-            f"✓ MASTER cargado — {len(pdata['df'])} camiones | "
+            f"✓ Proyección lista — {len(pdata['df'])} camiones | "
             f"Fecha: {pdata['fecha']} | Fuente: {pdata['fuente']}"
         )
-        log_event("info", f"Tab4 MASTER cargado: {len(pdata['df'])} camiones, fecha {pdata['fecha']}")
+        log_event("info", f"Tab4 proyección cargada: {len(pdata['df'])} camiones, fecha {pdata['fecha']}")
     except Exception as e:
-        st.error(f"❌ Error leyendo MASTER: {e}")
+        st.error(f"❌ Error calculando proyección: {e}")
         with st.expander("Stack trace"):
             import traceback
             st.code(traceback.format_exc())
@@ -2448,7 +2392,7 @@ def render_tab_proyeccion():
     totales_pall_c = totales_calc["total"]
     status_rows    = totales_calc["status_rows"]
 
-    # ── Tabla principal — bloque PALLETS (réplica "Proyección Picking") ──────
+    # ── Tabla principal — bloque PALLETS ─────────────────────────────────────
     st.divider()
     st.subheader("📦 Pallets por camión")
     st.caption(
@@ -2529,14 +2473,9 @@ def render_tab_proyeccion():
     # ── Totales bultos / HL / KG por cancha ──────────────────────────────────
     totales_bult = {cn: float(df_display[cn].sum()) if cn in df_display.columns else 0.0 for cn in _T4_CANCHAS}
     totales_hl   = {cn: float(df_display[f"_hl_{cn}"].sum()) if f"_hl_{cn}" in df_display.columns else 0.0 for cn in _T4_CANCHAS}
-    totales_kg   = {}
-    kg_global    = float(df_display["kg"].sum()) if "kg" in df_display.columns else 0.0
-    for cn in _T4_CANCHAS:
-        bult_c = totales_bult[cn]
-        tot_bult_all = sum(totales_bult.values())
-        totales_kg[cn] = kg_global * (bult_c / tot_bult_all) if tot_bult_all > 0 else 0.0
+    totales_kg   = {cn: 0.0 for cn in _T4_CANCHAS}
 
-    with st.expander("📊 Totales BULTOS / HL / KG por cancha", expanded=True):
+    with st.expander("📊 Totales BULTOS por cancha", expanded=True):
         cols_met = st.columns(len(_T4_CANCHAS) + 1)
         for i, cn in enumerate(_T4_CANCHAS):
             short = cn.replace("CANCHA ", "C")
@@ -2546,7 +2485,7 @@ def render_tab_proyeccion():
         cols_met2 = st.columns(len(_T4_CANCHAS) + 1)
         for i, cn in enumerate(_T4_CANCHAS):
             short = cn.replace("CANCHA ", "C")
-            cols_met2[i].metric(f"HL {short}", f"{totales_hl[cn]:.2f}")
+            cols_met2[i].metric(f"PALL {short}", f"{totales_calc['total'].get(cn, 0):.2f}")
         cols_met2[-1].metric("TOT AE bult", f"{pdata['tot_ae']:.0f}")
 
     # ── Hora estimada de fin por cancha ───────────────────────────────────────
@@ -2558,7 +2497,7 @@ def render_tab_proyeccion():
     fin_global_dt = max(v["fin_dt"] for v in fin_por_cancha.values())
     fin_calc_dict = {"por_cancha": fin_por_cancha, "fin_global_dt": fin_global_dt}
 
-    # ── Cabecera PICKING (replica Excel) ─────────────────────────────────────
+    # ── Cabecera PICKING ──────────────────────────────────────────────────────
     st.divider()
     hdr_cols = st.columns([2, 1, 1, 1, 2])
     hdr_cols[0].markdown(f"**🕐 PICKING** — {pdata['fecha']}")
@@ -2610,7 +2549,7 @@ def render_tab_proyeccion():
                         key="t4_pdf_dl",
                     )
                     st.success(f"✓ PDF generado: {fname}")
-                    log_event("info", f"PDF Proyección v3 generado: {fname}")
+                    log_event("info", f"PDF Proyección v4.4 generado: {fname}")
                 except Exception as e:
                     st.error(f"❌ Error generando PDF: {e}")
                     with st.expander("Stack trace"):
