@@ -3437,18 +3437,29 @@ def render_tab_validacion():
 
 def _build_clasificacion_retornables(car_bytes: bytes, fr_bytes: bytes) -> tuple:
     """
-    Cantidad total por camión de los SKUs de Almacén 1 y 3 (únicos retornables).
+    Cantidad total por camión de los SKUs de Almacén 1 y 3 (retornables).
 
-    Lógica:
-      - CAR (Hoja1): cada fila trae 'Depósito' (1/3 = retornable), 'Transporte'
-        (= número de camión), 'Artículo' y 'Bultos'. Excluye anulados.
-      - DDM (Frescura): 'ARTÍCULO' → 'BULTOS X PALLET' para pallets equivalentes.
-      - Pallets = Bultos / BultosXPallet (sumados por camión).
+    Lógica v4.11:
+      - CAR (Hoja1): filas con Depósito 1 o 3, no anuladas, SKU en DDM (= almacén).
+      - Bultos: suma directa de col 'Bultos' (cajones cerrados).
+      - Cajones extra desde unidades sueltas:
+          · Almacén 1 → 12 un. por cajón (todo X12 1000)
+          · Almacén 3 → 24 un. por cajón (todo X24 340)
+          · cajones_extra = floor(sum(Unids del almacén) / 12 o 24)
+      - Total camión = bultos_enteros + cajones_extra (sumando ambos almacenes).
+      - Pallets equivalentes = total_camion / 50 (BXP estándar retornable).
+
+    Excluye automáticamente envases/esqueletos (2776, 2731, 2730, 2780, etc.)
+    porque no están en DDM.
 
     Devuelve (df_por_camion, dict_totales).
     Columnas: Camión | Bultos Retornables | Pallets Equivalentes
     """
     import openpyxl as _ox
+    import math as _math
+
+    BXP_RETORNABLE = 50  # estándar Quilmes retornable
+    UN_POR_CAJON = {1: 12, 3: 24}  # Alm 1 = X12, Alm 3 = X24
 
     # ── 1. CAR ───────────────────────────────────────────────────────────────
     wb_car = _ox.load_workbook(io.BytesIO(car_bytes), read_only=True, data_only=True)
@@ -3464,26 +3475,22 @@ def _build_clasificacion_retornables(car_bytes: bytes, fr_bytes: bytes) -> tuple
     col_tra  = find_col(df, "Transporte", "Camión", "Camion")
     col_art  = find_col(df, "Artículo", "Articulo")
     col_bul  = find_col(df, "Bultos")
+    col_uni  = find_col(df, "Unids", "Unidades")
     col_anu  = find_col(df, "Anulado")
     if col_dep is None or col_tra is None or col_bul is None:
         raise ValueError(f"CAR: faltan columnas clave (Depósito/Transporte/Bultos). Detectadas: {list(df.columns)}")
 
     df[col_dep] = pd.to_numeric(df[col_dep], errors="coerce")
     df[col_bul] = pd.to_numeric(df[col_bul], errors="coerce").fillna(0)
+    if col_uni:
+        df[col_uni] = pd.to_numeric(df[col_uni], errors="coerce").fillna(0)
     if col_art:
         df[col_art] = pd.to_numeric(df[col_art], errors="coerce")
     if col_anu:
         df = df[df[col_anu].astype(str).str.lower() != "yes"]
 
-    # Solo retornables: Almacén/Depósito 1 y 3
-    df_ret = df[df[col_dep].isin([1, 3]) & (df[col_bul] > 0)].copy()
-    if df_ret.empty:
-        return pd.DataFrame(columns=["Camión", "Bultos Retornables", "Pallets Equivalentes"]), \
-               {"bultos": 0, "pallets": 0.0, "camiones": 0}
-
-    # ── 2. DDM → Bultos x Pallet + universo de SKUs almacén ───────────────
-    bxp_lookup = {}
-    ddm_skus = set()  # SKUs válidos = los que aparecen en DDM (= productos almacén)
+    # ── 2. DDM → universo SKUs almacén ───────────────────────────────────────
+    ddm_skus = set()
     try:
         wb_fr = _ox.load_workbook(io.BytesIO(fr_bytes), read_only=True, data_only=True)
         if "DDM" in wb_fr.sheetnames:
@@ -3491,70 +3498,91 @@ def _build_clasificacion_retornables(car_bytes: bytes, fr_bytes: bytes) -> tuple
             rd = list(wd.iter_rows(values_only=True))
             wb_fr.close()
             hd = [str(v).strip() if v is not None else f"c{i}" for i, v in enumerate(rd[0])]
-            ddm = pd.DataFrame(rd[1:], columns=hd).dropna(how="all")
-            c_art = find_col(ddm, "ARTÍCULO", "ARTICULO", "Artículo")
-            c_bxp = find_col(ddm, "BULTOS X PALLET", "Bultos x Pallet")
+            ddm_df = pd.DataFrame(rd[1:], columns=hd).dropna(how="all")
+            c_art = find_col(ddm_df, "ARTÍCULO", "ARTICULO", "Artículo")
             if c_art:
-                ddm[c_art] = pd.to_numeric(ddm[c_art], errors="coerce")
-                ddm_skus = set(ddm[ddm[c_art].notna()][c_art].astype(int).tolist())
-                if c_bxp:
-                    ddm[c_bxp] = pd.to_numeric(ddm[c_bxp], errors="coerce")
-                    tmp = ddm.dropna(subset=[c_art]).drop_duplicates(subset=[c_art])
-                    bxp_lookup = dict(zip(tmp[c_art].astype(int), tmp[c_bxp]))
+                ddm_df[c_art] = pd.to_numeric(ddm_df[c_art], errors="coerce")
+                ddm_skus = set(ddm_df[ddm_df[c_art].notna()][c_art].astype(int).tolist())
         else:
             wb_fr.close()
     except Exception:
-        bxp_lookup = {}
         ddm_skus = set()
 
-    # ── 2.b. FILTRO ALMACENES (DDM) ──────────────────────────────────────────
-    # Solo SKUs presentes en DDM. Excluye envases/esqueletos (2776, 2731,
-    # 2730, 2780, 5192) que no son productos almacenables.
+    # ── 3. Filtro retornables (Depósito 1 o 3) + DDM ─────────────────────────
+    df_ret = df[df[col_dep].isin([1, 3])].copy()
+    if df_ret.empty:
+        return pd.DataFrame(columns=["Camión", "Bultos Retornables", "Pallets Equivalentes"]), \
+               {"bultos": 0, "pallets": 0.0, "camiones": 0}
+
     if ddm_skus and col_art:
-        df_ret[col_art] = df_ret[col_art].astype("Int64")
-        df_ret = df_ret[df_ret[col_art].isin(ddm_skus)]
+        # Filtrar SKUs presentes en DDM (excluye envases/esqueletos)
+        df_ret[col_art] = df_ret[col_art].astype("Float64")
+        df_ret = df_ret[df_ret[col_art].notna()]
+        df_ret = df_ret[df_ret[col_art].astype(int).isin(ddm_skus)]
     else:
         # Fallback: lista negra clásica
         if col_art:
             df_ret = df_ret[~df_ret[col_art].isin(EXCLUDED_SKUS)]
 
+    # Mantener solo filas que aporten algo: bultos>0 o unids>0
+    if col_uni:
+        df_ret = df_ret[(df_ret[col_bul] > 0) | (df_ret[col_uni] > 0)].copy()
+    else:
+        df_ret = df_ret[df_ret[col_bul] > 0].copy()
+
     if df_ret.empty:
         return pd.DataFrame(columns=["Camión", "Bultos Retornables", "Pallets Equivalentes"]), \
                {"bultos": 0, "pallets": 0.0, "camiones": 0}
 
-    # ── 3. Pallets equivalentes por fila ──────────────────────────────────────
-    def _pallets(row):
-        if not col_art:
-            return 0.0
-        art = row[col_art]
-        if pd.isna(art):
-            return 0.0
-        bxp = bxp_lookup.get(int(art))
-        if bxp and bxp > 0:
-            return row[col_bul] / bxp
-        return 0.0
+    # ── 4. Consolidar por camión y almacén ───────────────────────────────────
+    # Agregamos por (camión, depósito) para aplicar la regla de 12/24 un.
+    agg_dict = {col_bul: "sum"}
+    if col_uni:
+        agg_dict[col_uni] = "sum"
 
-    df_ret["__pal"] = df_ret.apply(_pallets, axis=1)
+    grp = df_ret.groupby([col_tra, col_dep]).agg(agg_dict).reset_index()
+    grp.rename(columns={col_bul: "BULTOS", col_uni: "UNIDS" if col_uni else "_un"},
+               inplace=True)
+    if "UNIDS" not in grp.columns:
+        grp["UNIDS"] = 0.0
 
-    # ── 4. Consolidar por camión ──────────────────────────────────────────────
-    grp = (df_ret.groupby(col_tra)
-                 .agg(Bultos=(col_bul, "sum"), Pallets=("__pal", "sum"))
-                 .reset_index())
-    # Camión como entero ordenado
-    grp[col_tra] = pd.to_numeric(grp[col_tra], errors="coerce")
-    grp = grp.sort_values(col_tra)
-    grp["Pallets"] = grp["Pallets"].round(2)
+    # Cajones extra desde unidades sueltas
+    def _cajones_extra(row):
+        upk = UN_POR_CAJON.get(int(row[col_dep]), 12)
+        return int(_math.floor(row["UNIDS"] / upk)) if row["UNIDS"] > 0 else 0
+
+    grp["CAJ_EXTRA"] = grp.apply(_cajones_extra, axis=1)
+    grp["TOTAL_BULTOS"] = grp["BULTOS"] + grp["CAJ_EXTRA"]
+
+    # Sumar Alm 1 + Alm 3 por camión
+    cam = grp.groupby(col_tra).agg(
+        BULTOS=("TOTAL_BULTOS", "sum"),
+        BULTOS_ENT=("BULTOS", "sum"),
+        UNIDS=("UNIDS", "sum"),
+        CAJ_EXTRA=("CAJ_EXTRA", "sum"),
+    ).reset_index()
+    cam[col_tra] = pd.to_numeric(cam[col_tra], errors="coerce")
+    cam = cam.sort_values(col_tra)
+
+    # Pallets equivalentes: total_bultos / 50
+    cam["PALLETS"] = (cam["BULTOS"] / BXP_RETORNABLE).round(2)
 
     out = pd.DataFrame({
-        "Camión":               grp[col_tra].apply(lambda x: str(int(x)) if pd.notna(x) else "—"),
-        "Bultos Retornables":   grp["Bultos"].astype(float),
-        "Pallets Equivalentes": grp["Pallets"].astype(float),
+        "Camión":               cam[col_tra].apply(lambda x: str(int(x)) if pd.notna(x) else "—"),
+        "Bultos Retornables":   cam["BULTOS"].astype(float),
+        "Pallets Equivalentes": cam["PALLETS"].astype(float),
+        "_bultos_enteros":      cam["BULTOS_ENT"].astype(float),
+        "_unids":               cam["UNIDS"].astype(float),
+        "_cajones_extra":       cam["CAJ_EXTRA"].astype(float),
     })
 
     tot = {
-        "bultos":   float(out["Bultos Retornables"].sum()),
-        "pallets":  round(float(out["Pallets Equivalentes"].sum()), 2),
-        "camiones": int(len(out)),
+        "bultos":         float(out["Bultos Retornables"].sum()),
+        "pallets":        round(float(out["Pallets Equivalentes"].sum()), 2),
+        "camiones":       int(len(out)),
+        "bultos_enteros": float(out["_bultos_enteros"].sum()),
+        "unids":          float(out["_unids"].sum()),
+        "cajones_extra":  float(out["_cajones_extra"].sum()),
     }
     return out, tot
 
@@ -3568,6 +3596,7 @@ def build_clasificacion_pdf(df_cl: pd.DataFrame, tot: dict, fecha_str: str = "")
     PDF a color vertical A4 con la clasificación por camión.
     Diseño inspirado en la planilla del Sheets (header azul, filas alternadas,
     semáforo en pallets, total destacado). Omite camiones con 0 carga.
+    Muestra desglose: bultos enteros + unids sueltas + cajones extra + total + pallets.
     """
     from reportlab.lib.pagesizes import A4 as _A4
     from reportlab.lib import colors as _col
@@ -3578,7 +3607,6 @@ def build_clasificacion_pdf(df_cl: pd.DataFrame, tot: dict, fecha_str: str = "")
     # Filtrar camiones con 0 bultos (omitir camiones sin carga)
     df = df_cl[df_cl["Bultos Retornables"] > 0].copy()
     if df.empty:
-        # PDF con mensaje
         bio = _io.BytesIO()
         c = _cv.Canvas(bio, pagesize=_A4)
         c.setFont("Helvetica-Bold", 14)
@@ -3587,10 +3615,9 @@ def build_clasificacion_pdf(df_cl: pd.DataFrame, tot: dict, fecha_str: str = "")
         return bio.getvalue()
 
     PW, PH = _A4
-    M = 14 * _mm
+    M = 10 * _mm
 
     DARK = _col.HexColor("#1a3a6b")
-    MED  = _col.HexColor("#2e5fa3")
     YELLOW_HDR = _col.HexColor("#f8d772")
     BAND_LIGHT = _col.HexColor("#f4f6fa")
     BAND_WHITE = _col.white
@@ -3611,7 +3638,7 @@ def build_clasificacion_pdf(df_cl: pd.DataFrame, tot: dict, fecha_str: str = "")
     c.setFont("Helvetica-Bold", 16)
     c.drawString(M, PH - 11 * _mm, "CLASIFICACIÓN — Retornables por Camión")
     c.setFont("Helvetica", 10)
-    c.drawString(M, PH - 17 * _mm, "Beccacece Hnos SA · DPO 2.1 — Pilar Almacén")
+    c.drawString(M, PH - 17 * _mm, "Beccacece Hnos SA · DPO 2.1 — Pilar Almacén · Alm 1 (x12) + Alm 3 (x24)")
     c.setFont("Helvetica-Bold", 11)
     c.drawRightString(PW - M, PH - 11 * _mm, f"Fecha: {fecha_str}")
     c.setFont("Helvetica", 9)
@@ -3621,44 +3648,48 @@ def build_clasificacion_pdf(df_cl: pd.DataFrame, tot: dict, fecha_str: str = "")
     y = PH - HDR_H - 8 * _mm
     table_w = PW - 2 * M
 
-    # Columnas: Camión | Bultos | Pallets | Tendencia
+    # Columnas: Camión | Enteros | Un.Sueltas | Caj.Extra | TOTAL | Pallets | Estado
     col_widths = [
-        table_w * 0.18,   # Camión
-        table_w * 0.32,   # Bultos
-        table_w * 0.32,   # Pallets equivalentes
-        table_w * 0.18,   # Tendencia (semáforo)
+        table_w * 0.10,   # Camión
+        table_w * 0.14,   # Bultos enteros
+        table_w * 0.14,   # Un. sueltas
+        table_w * 0.14,   # Cajones extra
+        table_w * 0.16,   # Total bultos
+        table_w * 0.16,   # Pallets
+        table_w * 0.16,   # Estado
     ]
     col_x = [M]
     for w in col_widths[:-1]:
         col_x.append(col_x[-1] + w)
 
-    # Header de tabla (amarillo Sheets-style)
-    THDR_H = 8 * _mm
+    # Header tabla (amarillo)
+    THDR_H = 9 * _mm
     c.setFillColor(YELLOW_HDR)
     c.rect(M, y - THDR_H, table_w, THDR_H, fill=1, stroke=1)
     c.setStrokeColor(BORDER)
     c.setFillColor(DARK)
-    c.setFont("Helvetica-Bold", 10)
-    headers = ["CAMIÓN", "BULTOS", "PALLETS", "ESTADO"]
+    headers = ["CAMIÓN", "BULTOS\nENTEROS", "UN.\nSUELTAS", "CAJONES\nEXTRA", "TOTAL\nBULTOS", "PALLETS\n(÷50)", "ESTADO"]
+    c.setFont("Helvetica-Bold", 8.5)
     for i, h in enumerate(headers):
-        c.drawCentredString(col_x[i] + col_widths[i] / 2, y - THDR_H + 2.5 * _mm, h)
+        lines = h.split("\n")
+        cy = y - THDR_H + 5.5 * _mm if len(lines) == 2 else y - THDR_H + 3 * _mm
+        for j, ln in enumerate(lines):
+            c.drawCentredString(col_x[i] + col_widths[i] / 2, cy - j * 3.2 * _mm, ln)
     y -= THDR_H
 
     # Estadística para semáforo: percentiles de pallets
-    pall_vals = df["Pallets Equivalentes"].values
-    p_high = sorted(pall_vals)[int(len(pall_vals) * 0.75)] if len(pall_vals) > 0 else 0
-    p_low  = sorted(pall_vals)[int(len(pall_vals) * 0.25)] if len(pall_vals) > 0 else 0
+    pall_vals = sorted(df["Pallets Equivalentes"].values)
+    n = len(pall_vals)
+    p_high = pall_vals[int(n * 0.66)] if n > 0 else 0
+    p_low  = pall_vals[int(n * 0.33)] if n > 0 else 0
 
-    ROW_H = 7 * _mm
-    c.setFont("Helvetica", 9)
+    ROW_H = 7.5 * _mm
 
     for i, row in df.reset_index(drop=True).iterrows():
-        # Banda alternada
         bg = BAND_LIGHT if i % 2 == 0 else BAND_WHITE
         c.setFillColor(bg)
         c.rect(M, y - ROW_H, table_w, ROW_H, fill=1, stroke=0)
 
-        # Semáforo: bg de la columna Pallets según percentiles
         pal = float(row["Pallets Equivalentes"])
         if pal >= p_high and pal > 0:
             est_bg, est_txt, est_color = GREEN_BG, "ALTA", _col.HexColor("#0e6b3c")
@@ -3667,12 +3698,10 @@ def build_clasificacion_pdf(df_cl: pd.DataFrame, tot: dict, fecha_str: str = "")
         else:
             est_bg, est_txt, est_color = AMBER_BG, "MEDIA", _col.HexColor("#7d5a00")
 
-        # Pintar la celda de Pallets con el bg del semáforo (sutil)
+        # Pintar bg semáforo en Pallets y Estado
         c.setFillColor(est_bg)
-        c.rect(col_x[2], y - ROW_H, col_widths[2], ROW_H, fill=1, stroke=0)
-        # Estado celda
-        c.setFillColor(est_bg)
-        c.rect(col_x[3], y - ROW_H, col_widths[3], ROW_H, fill=1, stroke=0)
+        c.rect(col_x[5], y - ROW_H, col_widths[5], ROW_H, fill=1, stroke=0)
+        c.rect(col_x[6], y - ROW_H, col_widths[6], ROW_H, fill=1, stroke=0)
 
         # Bordes
         c.setStrokeColor(BORDER)
@@ -3681,25 +3710,35 @@ def build_clasificacion_pdf(df_cl: pd.DataFrame, tot: dict, fecha_str: str = "")
         for cx in col_x[1:]:
             c.line(cx, y - ROW_H, cx, y)
 
-        # Texto
+        # Datos
+        bul_ent  = float(row.get("_bultos_enteros", 0))
+        unids    = float(row.get("_unids", 0))
+        caj_ext  = float(row.get("_cajones_extra", 0))
+        tot_bul  = float(row["Bultos Retornables"])
+
         c.setFillColor(_col.black)
-        c.setFont("Helvetica-Bold", 10)
-        c.drawCentredString(col_x[0] + col_widths[0] / 2, y - ROW_H + 2.3 * _mm, str(row["Camión"]))
-        c.setFont("Helvetica", 9)
-        c.drawCentredString(col_x[1] + col_widths[1] / 2, y - ROW_H + 2.3 * _mm,
-                            f"{float(row['Bultos Retornables']):,.0f}".replace(",", "."))
-        c.drawCentredString(col_x[2] + col_widths[2] / 2, y - ROW_H + 2.3 * _mm,
+        c.setFont("Helvetica-Bold", 11)
+        c.drawCentredString(col_x[0] + col_widths[0] / 2, y - ROW_H + 2.5 * _mm, str(row["Camión"]))
+        c.setFont("Helvetica", 9.5)
+        c.drawCentredString(col_x[1] + col_widths[1] / 2, y - ROW_H + 2.5 * _mm,
+                            f"{bul_ent:,.0f}".replace(",", "."))
+        c.drawCentredString(col_x[2] + col_widths[2] / 2, y - ROW_H + 2.5 * _mm,
+                            f"{unids:,.0f}".replace(",", ".") if unids > 0 else "—")
+        c.drawCentredString(col_x[3] + col_widths[3] / 2, y - ROW_H + 2.5 * _mm,
+                            f"+{caj_ext:,.0f}".replace(",", ".") if caj_ext > 0 else "—")
+        c.setFont("Helvetica-Bold", 10.5)
+        c.drawCentredString(col_x[4] + col_widths[4] / 2, y - ROW_H + 2.5 * _mm,
+                            f"{tot_bul:,.0f}".replace(",", "."))
+        c.drawCentredString(col_x[5] + col_widths[5] / 2, y - ROW_H + 2.5 * _mm,
                             f"{pal:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
         c.setFillColor(est_color)
         c.setFont("Helvetica-Bold", 9)
-        c.drawCentredString(col_x[3] + col_widths[3] / 2, y - ROW_H + 2.3 * _mm, est_txt)
+        c.drawCentredString(col_x[6] + col_widths[6] / 2, y - ROW_H + 2.5 * _mm, est_txt)
 
         y -= ROW_H
 
-        # Salto de página
         if y < 35 * _mm:
             c.showPage()
-            # Re-pintar header al tope de página nueva
             c.setFillColor(DARK)
             c.rect(0, PH - HDR_H, PW, HDR_H, fill=1, stroke=0)
             c.setFillColor(_col.white)
@@ -3709,35 +3748,49 @@ def build_clasificacion_pdf(df_cl: pd.DataFrame, tot: dict, fecha_str: str = "")
             c.drawString(M, PH - 17 * _mm, "Beccacece Hnos SA · DPO 2.1")
             c.drawRightString(PW - M, PH - 11 * _mm, f"Fecha: {fecha_str}")
             y = PH - HDR_H - 8 * _mm
-            # Re-pintar header de tabla
             c.setFillColor(YELLOW_HDR)
             c.rect(M, y - THDR_H, table_w, THDR_H, fill=1, stroke=1)
             c.setFillColor(DARK)
-            c.setFont("Helvetica-Bold", 10)
+            c.setFont("Helvetica-Bold", 8.5)
             for i2, h in enumerate(headers):
-                c.drawCentredString(col_x[i2] + col_widths[i2] / 2, y - THDR_H + 2.5 * _mm, h)
+                lines = h.split("\n")
+                cy = y - THDR_H + 5.5 * _mm if len(lines) == 2 else y - THDR_H + 3 * _mm
+                for j, ln in enumerate(lines):
+                    c.drawCentredString(col_x[i2] + col_widths[i2] / 2, cy - j * 3.2 * _mm, ln)
             y -= THDR_H
-            c.setFont("Helvetica", 9)
 
     # ─ Fila TOTAL ─
-    TOT_H = 9 * _mm
+    TOT_H = 10 * _mm
     c.setFillColor(TOTAL_BG)
     c.rect(M, y - TOT_H, table_w, TOT_H, fill=1, stroke=1)
     c.setFillColor(_col.white)
     c.setFont("Helvetica-Bold", 11)
-    c.drawCentredString(col_x[0] + col_widths[0] / 2, y - TOT_H + 3 * _mm, "TOTAL")
-    c.drawCentredString(col_x[1] + col_widths[1] / 2, y - TOT_H + 3 * _mm,
+    c.drawCentredString(col_x[0] + col_widths[0] / 2, y - TOT_H + 3.5 * _mm, "TOTAL")
+    c.drawCentredString(col_x[1] + col_widths[1] / 2, y - TOT_H + 3.5 * _mm,
+                        f"{float(tot.get('bultos_enteros', 0)):,.0f}".replace(",", "."))
+    un_t = float(tot.get('unids', 0))
+    cj_t = float(tot.get('cajones_extra', 0))
+    c.drawCentredString(col_x[2] + col_widths[2] / 2, y - TOT_H + 3.5 * _mm,
+                        f"{un_t:,.0f}".replace(",", ".") if un_t > 0 else "—")
+    c.drawCentredString(col_x[3] + col_widths[3] / 2, y - TOT_H + 3.5 * _mm,
+                        f"+{cj_t:,.0f}".replace(",", ".") if cj_t > 0 else "—")
+    c.setFont("Helvetica-Bold", 12)
+    c.drawCentredString(col_x[4] + col_widths[4] / 2, y - TOT_H + 3.5 * _mm,
                         f"{float(tot['bultos']):,.0f}".replace(",", "."))
-    c.drawCentredString(col_x[2] + col_widths[2] / 2, y - TOT_H + 3 * _mm,
+    c.drawCentredString(col_x[5] + col_widths[5] / 2, y - TOT_H + 3.5 * _mm,
                         f"{tot['pallets']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    c.drawCentredString(col_x[3] + col_widths[3] / 2, y - TOT_H + 3 * _mm, f"{tot['camiones']} cam.")
+    c.setFont("Helvetica-Bold", 10)
+    c.drawCentredString(col_x[6] + col_widths[6] / 2, y - TOT_H + 3.5 * _mm, f"{tot['camiones']} cam.")
     y -= TOT_H
 
     # ─ Footer ─
     c.setFillColor(_col.HexColor("#555555"))
     c.setFont("Helvetica-Oblique", 7)
-    c.drawString(M, 10 * _mm, "Sólo SKUs DDM (almacén). Excluye envases/esqueletos. Filtrado: anulados off, Depósito 1/3.")
-    c.drawRightString(PW - M, 10 * _mm, f"Picking Orchestrator v{APP_VERSION} · {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    c.drawString(M, 10 * _mm,
+                 "Total bultos = Enteros + Cajones extra (un. sueltas ÷12 Alm1 / ÷24 Alm3). "
+                 "Pallets = Total ÷ 50. Filtros: anulados off, SKUs DDM.")
+    c.drawRightString(PW - M, 10 * _mm,
+                      f"Picking Orchestrator v{APP_VERSION} · {datetime.now().strftime('%d/%m/%Y %H:%M')}")
 
     c.save()
     return bio.getvalue()
@@ -3792,15 +3845,14 @@ def build_top_skus_pdf(df_top: pd.DataFrame, fecha_str: str = "") -> bytes:
     # ─ Tabla ─
     y = PH - HDR_H - 8 * _mm
     table_w = PW - 2 * M
-    # Columnas: # | Código | Descripción | Bultos | HL | Rubro | ABC
+    # Columnas: # | Código | Descripción | Bultos | HL | Rubro  (sin ABC, sin "#" duplicada)
     col_widths = [
-        table_w * 0.05,   # #
-        table_w * 0.10,   # Código
-        table_w * 0.36,   # Descripción
-        table_w * 0.11,   # Bultos
-        table_w * 0.10,   # HL
-        table_w * 0.18,   # Rubro
-        table_w * 0.10,   # ABC
+        table_w * 0.06,   # #
+        table_w * 0.12,   # Código
+        table_w * 0.44,   # Descripción
+        table_w * 0.13,   # Bultos
+        table_w * 0.12,   # HL
+        table_w * 0.13,   # Rubro
     ]
     col_x = [M]
     for w in col_widths[:-1]:
@@ -3813,7 +3865,7 @@ def build_top_skus_pdf(df_top: pd.DataFrame, fecha_str: str = "") -> bytes:
     c.setStrokeColor(BORDER)
     c.setFillColor(DARK)
     c.setFont("Helvetica-Bold", 9.5)
-    headers = ["#", "CÓDIGO", "DESCRIPCIÓN", "BULTOS", "HL", "RUBRO", "ABC"]
+    headers = ["#", "CÓDIGO", "DESCRIPCIÓN", "BULTOS", "HL", "RUBRO"]
     for i, h in enumerate(headers):
         c.drawCentredString(col_x[i] + col_widths[i] / 2, y - THDR_H + 2.5 * _mm, h)
     y -= THDR_H
@@ -3824,13 +3876,6 @@ def build_top_skus_pdf(df_top: pd.DataFrame, fecha_str: str = "") -> bytes:
         bg = BAND_LIGHT if i % 2 == 0 else BAND_WHITE
         c.setFillColor(bg)
         c.rect(M, y - ROW_H, table_w, ROW_H, fill=1, stroke=0)
-
-        # ABC color cell
-        abc = str(row.get("ABC", "")).strip().upper() if "ABC" in df_top.columns else ""
-        abc_bg = {"A": ABC_A, "B": ABC_B, "C": ABC_C}.get(abc)
-        if abc_bg:
-            c.setFillColor(abc_bg)
-            c.rect(col_x[6], y - ROW_H, col_widths[6], ROW_H, fill=1, stroke=0)
 
         # Bordes
         c.setStrokeColor(BORDER)
@@ -3847,7 +3892,7 @@ def build_top_skus_pdf(df_top: pd.DataFrame, fecha_str: str = "") -> bytes:
         c.drawCentredString(col_x[1] + col_widths[1] / 2, y - ROW_H + 2.7 * _mm,
                             str(int(row["CODIGO"])) if pd.notna(row["CODIGO"]) else "—")
         # Descripción truncada
-        desc = str(row.get("DESCRIPCION", "")).strip()[:48]
+        desc = str(row.get("DESCRIPCION", "")).strip()[:55]
         c.drawString(col_x[2] + 1.5 * _mm, y - ROW_H + 2.7 * _mm, desc)
         c.setFont("Helvetica-Bold", 9)
         c.drawRightString(col_x[3] + col_widths[3] - 1.5 * _mm, y - ROW_H + 2.7 * _mm,
@@ -3857,9 +3902,10 @@ def build_top_skus_pdf(df_top: pd.DataFrame, fecha_str: str = "") -> bytes:
         c.drawRightString(col_x[4] + col_widths[4] - 1.5 * _mm, y - ROW_H + 2.7 * _mm,
                           f"{hl_val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if hl_val else "—")
         rubro = str(row.get("RUBRO", "")).strip() if "RUBRO" in df_top.columns else ""
-        c.drawCentredString(col_x[5] + col_widths[5] / 2, y - ROW_H + 2.7 * _mm, rubro[:18])
-        c.setFont("Helvetica-Bold", 10)
-        c.drawCentredString(col_x[6] + col_widths[6] / 2, y - ROW_H + 2.7 * _mm, abc)
+        # Truncar a 11 chars para que entre cómodamente en la columna
+        if len(rubro) > 11:
+            rubro = rubro[:11]
+        c.drawCentredString(col_x[5] + col_widths[5] / 2, y - ROW_H + 2.7 * _mm, rubro)
 
         y -= ROW_H
 
@@ -3938,17 +3984,36 @@ def render_tab_clasificacion():
     tot["camiones"] = int(len(df_cl))
     tot["bultos"]   = float(df_cl["Bultos Retornables"].sum())
     tot["pallets"]  = round(float(df_cl["Pallets Equivalentes"].sum()), 2)
+    tot["bultos_enteros"] = float(df_cl["_bultos_enteros"].sum())
+    tot["unids"]          = float(df_cl["_unids"].sum())
+    tot["cajones_extra"]  = float(df_cl["_cajones_extra"].sum())
 
-    m1, m2, m3 = st.columns(3)
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("Camiones con retornables", tot["camiones"])
-    m2.metric("Bultos retornables totales", f"{tot['bultos']:,.0f}")
-    m3.metric("Pallets equivalentes",       f"{tot['pallets']:,.2f}")
+    m2.metric("Bultos totales",            f"{tot['bultos']:,.0f}",
+              help=f"Enteros: {tot['bultos_enteros']:,.0f} + Cajones extra (un. sueltas): {tot['cajones_extra']:,.0f}")
+    m3.metric("Unidades sueltas",          f"{tot['unids']:,.0f}",
+              help="Suma de col 'Unids' del CAR. Se convierten en cajones extra: x12 (Alm 1), x24 (Alm 3).")
+    m4.metric("Pallets equivalentes",      f"{tot['pallets']:,.2f}",
+              help="Total bultos / 50 (BXP estándar retornable)")
 
-    # Tabla display
-    df_disp = df_cl.copy()
-    df_disp["Bultos Retornables"]   = df_disp["Bultos Retornables"].map(lambda x: f"{x:,.0f}")
-    df_disp["Pallets Equivalentes"] = df_disp["Pallets Equivalentes"].map(lambda x: f"{x:,.2f}")
-    df_disp.loc[len(df_disp)] = ["TOTAL", f"{tot['bultos']:,.0f}", f"{tot['pallets']:,.2f}"]
+    # Tabla display con desglose
+    df_disp = pd.DataFrame({
+        "Camión":              df_cl["Camión"],
+        "Bultos Enteros":      df_cl["_bultos_enteros"].map(lambda x: f"{x:,.0f}"),
+        "Un. Sueltas":         df_cl["_unids"].map(lambda x: f"{x:,.0f}" if x > 0 else "—"),
+        "Cajones Extra":       df_cl["_cajones_extra"].map(lambda x: f"{x:,.0f}" if x > 0 else "—"),
+        "Total Bultos":        df_cl["Bultos Retornables"].map(lambda x: f"{x:,.0f}"),
+        "Pallets Equiv.":      df_cl["Pallets Equivalentes"].map(lambda x: f"{x:,.2f}"),
+    })
+    df_disp.loc[len(df_disp)] = [
+        "TOTAL",
+        f"{tot['bultos_enteros']:,.0f}",
+        f"{tot['unids']:,.0f}" if tot['unids'] > 0 else "—",
+        f"{tot['cajones_extra']:,.0f}" if tot['cajones_extra'] > 0 else "—",
+        f"{tot['bultos']:,.0f}",
+        f"{tot['pallets']:,.2f}",
+    ]
 
     st.dataframe(df_disp, width="stretch", height=440, hide_index=True)
 
@@ -4051,7 +4116,6 @@ def render_tab_top_skus():
 
     # Tabla display
     df_display = df_top.copy()
-    df_display.insert(0, "#", range(1, len(df_display) + 1))
     df_display["BULTOS"] = df_display["BULTOS"].map(lambda x: f"{x:,.0f}")
     df_display["HL"]     = df_display["HL"].map(lambda x: f"{x:,.2f}" if x else "—")
     if "U_PAQUETE" in df_display.columns:
@@ -4059,6 +4123,11 @@ def render_tab_top_skus():
             lambda x: f"{x:,.2f}" if pd.notna(x) and x != 0 else "—"
         )
     df_display["CODIGO"] = df_display["CODIGO"].astype(int).astype(str)
+
+    # Quitar ABC del display (a pedido del usuario)
+    if "ABC" in df_display.columns:
+        df_display = df_display.drop(columns=["ABC"])
+
     rename_display = {
         "CODIGO":      "Código",
         "DESCRIPCION": "Descripción",
@@ -4066,23 +4135,11 @@ def render_tab_top_skus():
         "HL":          "HL",
         "U_PAQUETE":   "U. Paquete",
         "RUBRO":       "Rubro",
-        "ABC":         "ABC",
     }
     df_display.rename(columns={k: v for k, v in rename_display.items() if k in df_display.columns}, inplace=True)
 
-    def _style_abc(val):
-        colors_abc = {"A": "background-color:#d4edda;color:#155724;font-weight:bold",
-                      "B": "background-color:#fff3cd;color:#856404",
-                      "C": "background-color:#f8d7da;color:#721c24"}
-        return colors_abc.get(str(val).strip().upper(), "")
-
-    try:
-        styler = df_display.style.hide(axis="index")
-        if "ABC" in df_display.columns and not df_display["ABC"].isna().all() and hasattr(styler, "map"):
-            styler = styler.map(_style_abc, subset=["ABC"])
-        st.dataframe(styler, width="stretch", height=440)
-    except Exception:
-        st.dataframe(df_display, width="stretch", height=440, hide_index=True)
+    # El índice 1..N (rankeo) ya viene en df_top.index; mostrarlo como única "#"
+    st.dataframe(df_display, width="stretch", height=440)
 
     # PDF + TSV
     try:
