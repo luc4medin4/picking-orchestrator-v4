@@ -1,5 +1,5 @@
 """
-Picking Orchestrator v4.0 — Beccacece Hnos SA
+Picking Orchestrator v4.13 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
 
 Sucesor de app_v3_9_1.py (Planilla de Carga). No reemplaza la v3.9: se ejecuta
@@ -1757,26 +1757,39 @@ def render_tab_resumen():
 _T2_SHEETS_ID = "1QCoMtpHcUaTITp9p9-1mo914HsaH0siq_bHL7nmJ_DA"
 
 # Mapa camión → gid de la hoja en el Sheets.
-# Se completa con los gid reales del Sheets (se pueden ver en la URL al hacer
-# click en cada pestaña: ...#gid=XXXXXXX).
-# Si un camión no está en este mapa se usa la URL de la hoja por nombre.
-# IMPORTANTE: completar este dict con los gid reales del Sheets.
-# Los valores actuales son PLACEHOLDERS — reemplazar con los gid correctos.
+# ─────────────────────────────────────────────────────────────────────────────
+# CÓMO OBTENER EL GID DE UNA HOJA:
+#   1. Abrí el Sheets T2 Status Carga en el browser.
+#   2. Hacé click en la pestaña del camión (ej: "106").
+#   3. Copiá el número después de `#gid=` en la URL (ej: 1234567890).
+#   4. Agregalo acá: 106: 1234567890,
+#
+# FALLBACK AUTOMÁTICO: Si un camión NO está en este mapa, la app usa la URL
+# de la hoja por su nombre (número del camión como nombre de pestaña).
+# Esto funciona mientras el nombre de la hoja coincida exactamente con el
+# número del camión (ej: la pestaña se llama "101", "106", etc.).
+# La URL by-name es menos confiable que la by-GID (Google la puede rechazar
+# si hay ambigüedad), pero funciona en la práctica para hojas con nombre simple.
+# ─────────────────────────────────────────────────────────────────────────────
 _T2_GID_MAP: dict[int, int] = {
-    # camion: gid  ← obtener de la URL del Sheets al clickear cada pestaña
-    101: 157072406,   # ejemplo real del screenshot
-    # 102: XXXXXXX,
-    # 103: XXXXXXX,
-    # ... completar según el Sheets real
+    # camion: gid  ← completar con los GIDs reales del Sheets
+    101: 157072406,
+    # 106: XXXXXXX,
+    # 108: XXXXXXX,
+    # 111: XXXXXXX,
+    # 112: XXXXXXX,
+    # 113: XXXXXXX,
+    # 115: XXXXXXX,
+    # 120: XXXXXXX,
+    # 121: XXXXXXX,
+    # 122: XXXXXXX,
+    # 124: XXXXXXX,
+    # 128: XXXXXXX,
 }
 
 
 def _t2_build_print_url(sheet_id: str, gid: int) -> str:
-    """
-    Construye la URL de exportación PDF de una hoja específica del Sheets.
-    Orientación horizontal, sin grillas, márgenes mínimos, ajustado a página.
-    Requiere que el usuario esté autenticado en Google en el browser.
-    """
+    """URL de exportación PDF por GID (más confiable)."""
     base = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export"
     params = (
         f"?format=pdf"
@@ -1796,49 +1809,82 @@ def _t2_build_print_url(sheet_id: str, gid: int) -> str:
     return base + params
 
 
+def _t2_build_print_url_by_name(sheet_id: str, sheet_name: str) -> str:
+    """
+    URL de exportación PDF por nombre de hoja (fallback sin GID).
+    Usa el parámetro `sheet` con el nombre URL-encoded.
+    Funciona cuando la pestaña del Sheets tiene exactamente ese nombre.
+    """
+    import urllib.parse
+    base = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export"
+    params = (
+        f"?format=pdf"
+        f"&sheet={urllib.parse.quote(str(sheet_name))}"
+        f"&portrait=false"
+        f"&fitw=true"
+        f"&gridlines=false"
+        f"&printtitle=false"
+        f"&sheetnames=false"
+        f"&pagenum=UNDEFINED"
+        f"&attachment=false"
+        f"&top_margin=0.25"
+        f"&bottom_margin=0.25"
+        f"&left_margin=0.25"
+        f"&right_margin=0.25"
+    )
+    return base + params
+
+
 def _t2_build_view_url(sheet_id: str, gid: int) -> str:
-    """URL de visualización directa de la hoja (fallback si export falla)."""
+    """URL de visualización directa de la hoja por GID."""
     return f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit#gid={gid}"
+
+
+def _t2_build_view_url_by_name(sheet_id: str, sheet_name: str) -> str:
+    """URL de visualización directa de la hoja por nombre (fallback)."""
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
 
 
 @st.cache_data(show_spinner=False)
 def _t2_load_camiones_car(car_bytes: bytes) -> list[int]:
     """
-    Lee el CAR.xlsx y devuelve la lista de números de camión que tienen
-    datos (Bultos > 0), ordenados ascendentemente.
-    Usa la misma lógica de load_car pero simplificada: solo extrae transportes.
+    Lee el CAR.xlsx desde la hoja 'Planilla de carga' (o Hoja1 si no existe)
+    y devuelve los números de camión con Bultos > 0, ordenados ascendentemente.
+
+    El CAR tiene header en fila 1 (índice 0) y datos desde fila 2 en adelante
+    — SIN el bloque azul de 40 filas de la Frescura. Se lee directo con header=0.
     """
-    raw = pd.read_excel(io.BytesIO(car_bytes), sheet_name=0, header=None)
-    header = raw.iloc[0].tolist()
+    xls = pd.ExcelFile(io.BytesIO(car_bytes))
 
-    # Filas normales (fila 42 en adelante → índice 41+)
-    normal = raw.iloc[41:].copy()
-    normal.columns = header
+    # Elegir hoja: preferir 'Planilla de carga', sino la primera disponible
+    sheet_candidates = ["Planilla de carga", "Planilla de Carga", "PLANILLA DE CARGA", "Hoja1"]
+    sheet_name = 0
+    for sc in sheet_candidates:
+        if sc in xls.sheet_names:
+            sheet_name = sc
+            break
 
-    col_trans = None
-    col_bult  = None
-    for c in header:
-        nc = _norm(str(c))
-        if nc in ("transporte",):
-            col_trans = c
-        if nc in ("bultos",):
-            col_bult = c
+    raw = pd.read_excel(xls, sheet_name=sheet_name, header=0)
+
+    col_trans = find_col(raw, "Transporte")
+    col_bult  = find_col(raw, "Bultos")
 
     if col_trans is None:
-        raise ValueError("No se encontró columna 'Transporte' en el CAR.")
+        raise ValueError(
+            f"No se encontró columna 'Transporte' en el CAR "
+            f"(hoja: '{sheet_name}'). Columnas disponibles: {list(raw.columns)}"
+        )
 
-    normal[col_trans] = pd.to_numeric(normal[col_trans], errors="coerce")
+    raw[col_trans] = pd.to_numeric(raw[col_trans], errors="coerce")
+    raw = raw.dropna(subset=[col_trans])
+    raw = raw[raw[col_trans] > 0]
+    raw[col_trans] = raw[col_trans].apply(lambda x: int(float(x)))
+
     if col_bult:
-        normal[col_bult] = pd.to_numeric(normal[col_bult], errors="coerce").fillna(0)
+        raw[col_bult] = pd.to_numeric(raw[col_bult], errors="coerce").fillna(0)
+        raw = raw[raw[col_bult] > 0]
 
-    normal = normal.dropna(subset=[col_trans])
-    normal = normal[normal[col_trans] > 0]
-    normal[col_trans] = normal[col_trans].apply(lambda x: int(float(x)))
-
-    if col_bult:
-        normal = normal[normal[col_bult] > 0]
-
-    camiones = sorted(normal[col_trans].unique().tolist())
+    camiones = sorted(raw[col_trans].unique().tolist())
     return camiones
 
 
@@ -1929,20 +1975,21 @@ def render_tab_t2():
     gid_configurados = [c for c in _T2_GID_MAP]
     with st.expander(f"⚙️ GIDs configurados ({len(gid_configurados)} camiones)", expanded=False):
         st.caption(
-            "El mapa camión→GID se completa en el código (`_T2_GID_MAP`). "
-            "Si un camión del CAR no está en el mapa, se muestra como 'sin GID' y se omite. "
-            "Para obtener el GID: abrí el Sheets → hacé click en la pestaña del camión → "
-            "copiá el número después de `#gid=` en la URL."
+            "**GID por nombre (automático):** los camiones sin GID usan la URL por nombre de pestaña. "
+            "Funciona mientras la pestaña se llame exactamente igual al número del camión (101, 106, etc.). "
+            "Para mayor confiabilidad, completá el GID: abrí el Sheets → clic en la pestaña del camión → "
+            "copiá el número después de `#gid=` en la URL → agregalo en `_T2_GID_MAP` del código."
         )
         if gid_configurados:
-            gid_data = [{"Camión": c, "GID": _T2_GID_MAP[c]} for c in sorted(gid_configurados)]
-            st.dataframe(pd.DataFrame(gid_data), width="stretch", hide_index=True)
+            gid_data = [{"Camión": c, "GID": _T2_GID_MAP[c], "Método": "GID (exacto)"} for c in sorted(gid_configurados)]
+            st.dataframe(pd.DataFrame(gid_data), use_container_width=True, hide_index=True)
         else:
-            st.warning("No hay GIDs configurados. Completá `_T2_GID_MAP` en el código.")
+            st.info("No hay GIDs hardcodeados. Se usará URL por nombre para todos los camiones.")
 
     st.divider()
 
-    # ── Upload CAR ────────────────────────────────────────────────────────────
+    # ── Upload CAR — toma de "Planilla de carga" ──────────────────────────────
+    st.caption("📂 **Input:** hoja 'Planilla de carga' del CAR (o Hoja1 si no existe con ese nombre).")
     car_file = _file_uploader("CAR.xlsx del día", ["xlsx"], key="t3_car")
 
     if not car_file:
@@ -1963,48 +2010,42 @@ def render_tab_t2():
         st.warning("No se encontraron camiones con bultos en el CAR.")
         return
 
-    # ── Cruzar con GID map ────────────────────────────────────────────────────
-    con_gid    = [c for c in camiones_car if c in _T2_GID_MAP]
-    sin_gid    = [c for c in camiones_car if c not in _T2_GID_MAP]
+    # ── Clasificar camiones: con GID (exacto) vs by-name (fallback) ──────────
+    con_gid   = [c for c in camiones_car if c in _T2_GID_MAP]
+    sin_gid   = [c for c in camiones_car if c not in _T2_GID_MAP]
 
     # Métricas
     col1, col2, col3 = st.columns(3)
     col1.metric("🚛 Camiones en CAR", len(camiones_car))
-    col2.metric("✅ Con hoja configurada", len(con_gid))
-    col3.metric("⚠️ Sin GID (se omiten)", len(sin_gid))
+    col2.metric("✅ GID exacto", len(con_gid))
+    col3.metric("🔤 URL por nombre", len(sin_gid))
 
     if sin_gid:
-        st.warning(
-            f"Los siguientes camiones del CAR no tienen GID configurado y **no se imprimirán**: "
+        st.info(
+            f"Camiones **sin GID** → se imprimirán por nombre de hoja: "
             f"{', '.join(str(c) for c in sin_gid)}. "
-            f"Agregá su GID en `_T2_GID_MAP` del código."
+            f"Si alguno falla, completá su GID en `_T2_GID_MAP`."
         )
 
-    if not con_gid:
-        st.error(
-            "Ningún camión del CAR tiene GID configurado. "
-            "Completá `_T2_GID_MAP` con los GIDs del Sheets antes de continuar."
-        )
-        return
+    # Todos los camiones del CAR se pueden imprimir (GID o by-name)
+    todos_camiones = sorted(camiones_car)
 
     # ── Tabla de camiones a imprimir ──────────────────────────────────────────
-    st.markdown(f"#### 🖨️ Camiones a imprimir: **{len(con_gid)}**")
+    st.markdown(f"#### 🖨️ Camiones a imprimir: **{len(todos_camiones)}**")
 
     rows_preview = []
-    for c in sorted(con_gid):
-        gid = _T2_GID_MAP[c]
-        url = _t2_build_print_url(_T2_SHEETS_ID, gid)
-        rows_preview.append({
-            "Camión": c,
-            "GID": gid,
-            "URL (preview)": f"...gid={gid}&format=pdf",
-        })
+    for c in todos_camiones:
+        if c in _T2_GID_MAP:
+            gid = _T2_GID_MAP[c]
+            metodo = "GID exacto"
+            url_ref = f"...gid={gid}&format=pdf"
+        else:
+            gid = None
+            metodo = "Por nombre"
+            url_ref = f"...sheet={c}&format=pdf"
+        rows_preview.append({"Camión": c, "Método": metodo, "URL (preview)": url_ref})
 
-    st.dataframe(
-        pd.DataFrame(rows_preview),
-        width="stretch",
-        hide_index=True,
-    )
+    st.dataframe(pd.DataFrame(rows_preview), use_container_width=True, hide_index=True)
 
     # ── Opciones adicionales ──────────────────────────────────────────────────
     st.markdown("---")
@@ -2015,30 +2056,37 @@ def render_tab_t2():
             ["📄 Export PDF directo (recomendado)", "🔗 Abrir hoja en el Sheets (manual)"],
             key="t3_modo",
             help=(
-                "Export PDF: el browser abre el PDF del Sheets directamente para imprimir. "
-                "Hoja Sheets: abre la pestaña de edición del camión en el Sheets."
+                "Export PDF: el browser descarga el PDF del Sheets directamente. "
+                "Hoja Sheets: abre la pestaña de edición del camión para impresión manual."
             ),
         )
     with col_opt2:
         camiones_sel = st.multiselect(
             "Filtrar camiones (dejar vacío = todos)",
-            options=sorted(con_gid),
+            options=todos_camiones,
             default=[],
             key="t3_sel",
             help="Seleccioná solo los camiones que querés imprimir ahora.",
         )
 
-    camiones_a_imprimir = camiones_sel if camiones_sel else sorted(con_gid)
+    camiones_a_imprimir = camiones_sel if camiones_sel else todos_camiones
 
     # ── Construir URLs ────────────────────────────────────────────────────────
     use_export = "Export PDF" in modo
     urls = []
     for c in camiones_a_imprimir:
-        gid = _T2_GID_MAP[c]
-        if use_export:
-            urls.append(_t2_build_print_url(_T2_SHEETS_ID, gid))
+        if c in _T2_GID_MAP:
+            gid = _T2_GID_MAP[c]
+            if use_export:
+                urls.append(_t2_build_print_url(_T2_SHEETS_ID, gid))
+            else:
+                urls.append(_t2_build_view_url(_T2_SHEETS_ID, gid))
         else:
-            urls.append(_t2_build_view_url(_T2_SHEETS_ID, gid))
+            # Fallback: URL por nombre de hoja
+            if use_export:
+                urls.append(_t2_build_print_url_by_name(_T2_SHEETS_ID, str(c)))
+            else:
+                urls.append(_t2_build_view_url_by_name(_T2_SHEETS_ID, str(c)))
 
     st.markdown(f"**{len(urls)} hoja(s) seleccionadas:** {', '.join(str(c) for c in camiones_a_imprimir)}")
 
@@ -2049,12 +2097,13 @@ def render_tab_t2():
     # ── Links individuales como fallback ──────────────────────────────────────
     with st.expander("🔗 Links individuales (fallback si el botón no funciona)", expanded=False):
         for c, url in zip(camiones_a_imprimir, urls):
-            st.markdown(f"- **Camión {c}:** [Abrir hoja]({url})")
+            metodo_lbl = "GID" if c in _T2_GID_MAP else "nombre"
+            st.markdown(f"- **Camión {c}** ({metodo_lbl}): [Abrir hoja]({url})")
 
     log_event(
         "info",
         f"T2: {len(urls)} URLs generadas | modo={'export' if use_export else 'view'} | "
-        f"camiones={camiones_a_imprimir}",
+        f"camiones={camiones_a_imprimir} | con_gid={con_gid} | by_name={sin_gid}",
     )
 
 
@@ -2141,50 +2190,76 @@ def _t4_norm_cancha(val) -> str:
 
 
 @st.cache_data(show_spinner=False)
+def _t4_extract_cv(cell_val):
+    """
+    v4.8 — Extrae el valor cacheado (COMPUTED_VALUE) de fórmulas IMPORTRANGE
+    de Google Sheets exportadas como .xlsx.
+    Formato: =IFERROR(__xludf.DUMMYFUNCTION(...), "VALOR_CACHEADO")
+    Si el cell_val no es fórmula, lo devuelve tal cual.
+    """
+    import re as _re
+    if cell_val is None:
+        return None
+    if not isinstance(cell_val, str):
+        return cell_val
+    s = cell_val
+    m = _re.search(r',\s*"([^"]*)"\s*\)\s*$', s)
+    if m:
+        v = m.group(1)
+        return None if v == "" else v
+    m2 = _re.search(r',\s*([\d.]+)\s*\)\s*$', s)
+    if m2:
+        try:
+            return float(m2.group(1))
+        except Exception:
+            return m2.group(1)
+    return cell_val
+
+
 def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
     """
-    v4.6 — Proyección basada en BULTOS UP (UNIDAD PKT, col R de DDM Frescura).
+    v4.8 — Proyección corregida: parsea COMPUTED_VALUE de IMPORTRANGE en Frescura.
 
-    Lógica paletas enteras por camión × SKU:
-      bxp      = col G DDM (bultos x pallet)
-      upkt     = col R DDM (UNIDAD PKT = fracción de pallet por bulto = 1/bxp o similar)
-      pall_raw = bultos_total × upkt
-      REDONDEO: si pall_raw - floor(pall_raw) >= 0.97 → ceil (era casi entero)
-      pall_ae  = floor_inteligente(pall_raw)
-      pall_pick_frac = pall_raw - pall_ae        ← lo que queda para picking (fracción de pallet)
-      bult_ae  = pall_ae / upkt                  ← bultos del AE
-      bult_pick = bultos_total - bult_ae          ← bultos de picking
-      up_pick   = pall_pick_frac                  ← fracción de paleta a pickear
+    Lógica paletas enteras por camión × SKU (basada en BXP real):
+      bxp       = col G DDM (BULTOS X PALLET) — leído con parser COMPUTED_VALUE
+      can       = col O DDM (CAN/CANCHA) — ídem
+      upkt      = 1 / bxp  (fracción de pallet por bulto; NO usar col R cacheada = 1.0 incorrecto)
+      pall_raw  = bultos_total / bxp
+      REDONDEO: si frac >= 0.97 → ceil (pallet casi completo → AE)
+      pall_ae   = floor_inteligente(pall_raw)
+      up_pick   = pall_raw - pall_ae  (fracción restante → picking, asignada a su cancha)
+      bult_pick = up_pick * bxp
     """
     import datetime as _dt
     import math as _math
 
-    # ── 1. Cargar Frescura → api (cancha), ddm (bxp + upkt) ─────────────────
-    api, ddm, fr, _diag = load_frescura(io.BytesIO(fr_bytes))
-
-    # Agregar UNIDAD PKT (col R) si no está en ddm
-    # load_frescura ya carga DDM sheet; necesitamos releer para col R
+    # ── 1. Leer DDM desde Frescura con openpyxl (read_only, sin data_only)
+    #       para acceder al COMPUTED_VALUE de las fórmulas IMPORTRANGE ─────────
     try:
-        wb_fr = openpyxl.load_workbook(io.BytesIO(fr_bytes), read_only=True, data_only=True)
+        wb_fr = openpyxl.load_workbook(io.BytesIO(fr_bytes), read_only=True)
         ws_ddm = wb_fr["DDM"]
-        upkt_rows = []
+        # Cols 0-indexed: A=0(almacen), B=1(orden), C=2(articulo),
+        #   G=6(bxp), O=14(can), R=17(upkt_cached — NO USAR)
+        ddm_rows = []
         for row in ws_ddm.iter_rows(min_row=2, values_only=True):
-            sku_  = row[2]   # col C
-            bxp_  = row[6]   # col G
-            upkt_ = row[17]  # col R
-            if sku_ is not None:
-                try:
-                    upkt_rows.append({
-                        "sku":  int(float(str(sku_))),
-                        "bxp":  float(bxp_) if bxp_ not in (None, "") else 0.0,
-                        "upkt": float(upkt_) if upkt_ not in (None, "") else 0.0,
-                    })
-                except (ValueError, TypeError):
-                    pass
+            sku_raw = _t4_extract_cv(row[2])
+            bxp_raw = _t4_extract_cv(row[6])
+            can_raw = _t4_extract_cv(row[14])
+            if sku_raw is None:
+                continue
+            try:
+                sku_int = int(float(str(sku_raw)))
+                bxp_val = float(bxp_raw) if bxp_raw not in (None, "", "None") else 0.0
+                can_str = str(can_raw).strip() if can_raw not in (None, "", "None") else "SIN CANCHA"
+                # UPKT correcto = 1/BXP (el valor cacheado col R = 1.0 es incorrecto)
+                upkt_val = (1.0 / bxp_val) if bxp_val > 0 else 0.0
+                ddm_rows.append({"sku": sku_int, "bxp": bxp_val, "can": can_str, "upkt": upkt_val})
+            except (ValueError, TypeError):
+                pass
         wb_fr.close()
-        df_upkt = pd.DataFrame(upkt_rows).drop_duplicates("sku")
+        df_ddm = pd.DataFrame(ddm_rows).drop_duplicates("sku")
     except Exception:
-        df_upkt = pd.DataFrame(columns=["sku", "bxp", "upkt"])
+        df_ddm = pd.DataFrame(columns=["sku", "bxp", "can", "upkt"])
 
     # ── 2. Leer Hoja1 del CAR ────────────────────────────────────────────────
     raw = pd.read_excel(io.BytesIO(car_bytes), sheet_name=0, header=None)
@@ -2218,39 +2293,30 @@ def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
     grp = grp[grp["blt_raw"] > 0]
     grp.rename(columns={"Transporte": "cam", "Artículo": "sku"}, inplace=True)
 
-    # ── 5. Merge UPKT (DDM col R) ────────────────────────────────────────────
-    grp = grp.merge(df_upkt[["sku", "bxp", "upkt"]], on="sku", how="left")
+    # ── 5. Merge DDM (bxp, can, upkt) ────────────────────────────────────────
+    grp = grp.merge(df_ddm[["sku", "bxp", "can", "upkt"]], on="sku", how="left")
+    grp["bxp"]  = grp["bxp"].fillna(0.0)
+    grp["upkt"] = grp["upkt"].fillna(0.0)
+    grp["can"]  = grp["can"].fillna("SIN CANCHA")
 
-    # ── 6. Calcular picking vs AE usando UNIDAD PKT ──────────────────────────
+    # ── 6. Calcular picking vs AE usando BXP/UPKT correcto ───────────────────
     def _split_row(row):
-        tot   = float(row["blt_raw"])
-        bxp_  = float(row["bxp"])  if pd.notna(row["bxp"])  and row["bxp"]  > 0 else 0.0
-        upkt_ = float(row["upkt"]) if pd.notna(row["upkt"]) and row["upkt"] > 0 else 0.0
+        tot  = float(row["blt_raw"])
+        bxp_ = float(row["bxp"])
 
-        if upkt_ > 0:
-            pall_raw = tot * upkt_          # paletas totales (con decimales)
-            # Redondeo inteligente: si fracción ≥ 0.97, consideramos paleta completa
+        if bxp_ > 0:
+            pall_raw = tot / bxp_
             frac = pall_raw - _math.floor(pall_raw)
             pall_ae = _math.ceil(pall_raw) if frac >= 0.97 else _math.floor(pall_raw)
-            pall_pick_frac = max(0.0, pall_raw - pall_ae)  # fracción a pickear
-            # Bultos correspondientes
-            bult_ae   = (pall_ae / upkt_) if upkt_ > 0 else 0.0
-            bult_ae   = min(bult_ae, tot)  # no puede superar el total
+            up_pick = max(0.0, pall_raw - pall_ae)   # fracción de pallet → picking
+            bult_ae   = float(pall_ae) * bxp_
+            bult_ae   = min(bult_ae, tot)
             bult_pick = max(0.0, tot - bult_ae)
-            up_pick   = pall_pick_frac
-        elif bxp_ > 0:
-            # Fallback si upkt no disponible: usar bxp clásico
-            pall_ae   = _math.floor(tot / bxp_)
-            bult_ae   = pall_ae * bxp_
-            bult_pick = tot - bult_ae
-            up_pick   = bult_pick / bxp_ if bult_pick > 0 else 0.0
-            pall_raw  = tot / bxp_
         else:
             pall_ae   = 0
             bult_ae   = 0.0
             bult_pick = tot
             up_pick   = 0.0
-            pall_raw  = 0.0
 
         return pd.Series({
             "pall_ae":   float(pall_ae),
@@ -2262,9 +2328,8 @@ def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
     split = grp.apply(_split_row, axis=1)
     grp = pd.concat([grp, split], axis=1)
 
-    # ── 7. Merge cancha (API) ────────────────────────────────────────────────
-    grp = grp.merge(api[["sku", "cancha"]], on="sku", how="left")
-    grp["cancha_norm"] = grp["cancha"].fillna("SIN CANCHA").apply(_t4_norm_cancha)
+    # ── 7. Normalizar cancha ─────────────────────────────────────────────────
+    grp["cancha_norm"] = grp["can"].apply(_t4_norm_cancha)
 
     # ── 8. Pivotar por camión × cancha ───────────────────────────────────────
     pick_grp = grp.groupby(["cam", "cancha_norm"], as_index=False).agg(
@@ -2322,7 +2387,7 @@ def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
     return {
         "df":          cam_df,
         "fecha":       fecha,
-        "fuente":      "CAR + Frescura (UP = UNIDAD PKT col R)",
+        "fuente":      "CAR + Frescura (UP = 1/BXP col G DDM)",
         "mix_picking": mix,
         "tot_pick":    tot_pick,
         "tot_ae":      tot_ae,
@@ -2797,48 +2862,95 @@ def render_tab_proyeccion():
     totales_pall_c = totales_calc["total"]
     status_rows    = totales_calc["status_rows"]
 
-    # ── Tabla principal ───────────────────────────────────────────────────────
+    # ── Tabla principal con ASIGN integrado ──────────────────────────────────
     st.divider()
     st.subheader("📦 Pallets UP por camión")
     st.caption(
-        "**UP** = fracción de paleta por bulto (UNIDAD PKT, col R Frescura DDM). "
-        "Paletas enteras → AE. Fracción restante → picking."
+        "**UP** = fracción de paleta (bultos / BXP col G DDM). "
+        "Paletas enteras → AE. Fracción restante → picking. "
+        "Columnas **ASIGN.** editables: escribí la cancha destino (CI/CII/CIII/CIV/MKPL) para reasignar."
     )
 
-    # Número de camión = posición ordinal en la lista ordenada
     cam_list = sorted(df_display["Camión"].tolist())
     cam_to_num = {cam: i+1 for i, cam in enumerate(cam_list)}
+
+    # Opciones de reasignación
+    _ASIGN_OPTS = ["", "CANCHA I", "CANCHA II", "CANCHA III", "CANCHA IV", "MKPL"]
 
     edit_rows = []
     for _, row in df_display.iterrows():
         cam = int(row["Camión"])
         sr  = status_rows.get(cam, {})
-        num_cam = cam_to_num.get(cam, "—")
-        rec = {"#": num_cam, "Camión": cam}
+        rec = {"#": cam_to_num.get(cam, "—"), "Camión": cam}
         for cn in _T4_CANCHAS:
-            up_val = float(row.get(f"_up_{cn}", 0.0))
-            rec[f"UP {cn.replace('CANCHA ', 'C')}"] = round(up_val, 3)
+            short = cn.replace("CANCHA ", "C")
+            up_val = round(float(row.get(f"_up_{cn}", 0.0)), 3)
+            rec[f"UP {short}"]    = up_val
+            # ASIGN: valor actual guardado en t4_asign
+            cur_asign = st.session_state["t4_asign"].get((cam, cn), "")
+            rec[f"ASIGN {short}"] = cur_asign if cur_asign else ""
         rec["Bult Pick"] = round(float(row.get("TOTAL_PICK", 0.0)), 1)
         rec["AE Pall"]   = round(float(row.get("AE_PALL", 0.0)), 2)
         rec["TOT PALL"]  = round(float(sr.get("total_pall", 0.0)), 2)
         rec["STATUS"]    = sr.get("status", "—")
         edit_rows.append(rec)
 
-    df_editor = pd.DataFrame(edit_rows)
+    df_editor_in = pd.DataFrame(edit_rows)
 
+    # Construir column_config con columnas ASIGN como SelectboxColumn editables
     col_cfg = {
-        "#":       st.column_config.NumberColumn("#", disabled=True, width="small"),
-        "Camión":  st.column_config.NumberColumn("Camión", disabled=True),
+        "#":         st.column_config.NumberColumn("#", disabled=True, width="small"),
+        "Camión":    st.column_config.NumberColumn("Camión", disabled=True),
         "Bult Pick": st.column_config.NumberColumn("Bult Pick", disabled=True, format="%.1f"),
-        "AE Pall":   st.column_config.NumberColumn("AE Pall", disabled=True, format="%.2f"),
+        "AE Pall":   st.column_config.NumberColumn("AE Pall",  disabled=True, format="%.2f"),
         "TOT PALL":  st.column_config.NumberColumn("TOT PALL", disabled=True, format="%.2f"),
         "STATUS":    st.column_config.TextColumn("STATUS", disabled=True),
     }
     for cn in _T4_CANCHAS:
         short = cn.replace("CANCHA ", "C")
-        col_cfg[f"UP {short}"] = st.column_config.NumberColumn(f"UP {short}", disabled=True, format="%.3f")
+        col_cfg[f"UP {short}"]    = st.column_config.NumberColumn(f"UP {short}", disabled=True, format="%.3f")
+        col_cfg[f"ASIGN {short}"] = st.column_config.SelectboxColumn(
+            f"ASIGN {short}", options=_ASIGN_OPTS, default="", required=False,
+        )
 
-    st.dataframe(df_editor, column_config=col_cfg, width="stretch", hide_index=True)
+    # Ordenar columnas: #, Camión, (UP Cx, ASIGN Cx) × 5, Bult Pick, AE Pall, TOT PALL, STATUS
+    ordered_cols = ["#", "Camión"]
+    for cn in _T4_CANCHAS:
+        short = cn.replace("CANCHA ", "C")
+        ordered_cols += [f"UP {short}", f"ASIGN {short}"]
+    ordered_cols += ["Bult Pick", "AE Pall", "TOT PALL", "STATUS"]
+    df_editor_in = df_editor_in[ordered_cols]
+
+    edited_df = st.data_editor(
+        df_editor_in,
+        column_config=col_cfg,
+        use_container_width=True,
+        hide_index=True,
+        key="t4_main_editor",
+        num_rows="fixed",
+    )
+
+    # Aplicar cambios de ASIGN desde la tabla editada al session_state
+    _asign_changed = False
+    for _, erow in edited_df.iterrows():
+        cam_e = int(erow["Camión"])
+        for cn in _T4_CANCHAS:
+            short = cn.replace("CANCHA ", "C")
+            new_val = erow.get(f"ASIGN {short}", "") or ""
+            old_val = st.session_state["t4_asign"].get((cam_e, cn), "")
+            if new_val != old_val:
+                if new_val:
+                    st.session_state["t4_asign"][(cam_e, cn)] = new_val
+                else:
+                    st.session_state["t4_asign"].pop((cam_e, cn), None)
+                _asign_changed = True
+    if _asign_changed:
+        st.rerun()
+
+    # Recalcular totales con ASIGN actualizado
+    totales_calc   = _t4_calcular_pall_por_cancha(df_display, st.session_state["t4_asign"])
+    totales_pall_c = totales_calc["total"]
+    status_rows    = totales_calc["status_rows"]
 
     # ── Filas SUB / DESIGNADOS / TOTAL ───────────────────────────────────────
     resumen_pall = pd.DataFrame({
@@ -2854,57 +2966,10 @@ def render_tab_proyeccion():
             lambda row: ["background-color: #FF8C00; color: white" if row.name == 2 else "" for _ in row],
             axis=1,
         ),
-        width="stretch", hide_index=True,
+        use_container_width=True, hide_index=True,
     )
 
-    # ── Asignación de carga ───────────────────────────────────────────────────
-    st.divider()
-    st.subheader("🔀 Asignar carga entre canchas")
-    st.caption(
-        "Seleccioná un camión, una cancha origen y la cancha destino. "
-        "El tiempo estimado de fin se ajusta automáticamente."
-    )
-
-    asign_cols = st.columns([2, 2, 2, 1])
-    cam_opts = [str(c) for c in cam_list]
-    with asign_cols[0]:
-        cam_sel = st.selectbox("Camión", ["—"] + cam_opts, key="t4_asign_cam")
-    with asign_cols[1]:
-        origen_sel = st.selectbox("Cancha origen", ["—"] + _T4_CANCHAS, key="t4_asign_origen")
-    with asign_cols[2]:
-        destino_opts = [c for c in _T4_CANCHAS if c != origen_sel]
-        destino_sel  = st.selectbox("Cancha destino", ["—"] + destino_opts, key="t4_asign_destino")
-    with asign_cols[3]:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("✅ Asignar", key="t4_asign_btn"):
-            if cam_sel != "—" and origen_sel != "—" and destino_sel != "—":
-                key_asign = (int(cam_sel), origen_sel)
-                st.session_state["t4_asign"][key_asign] = destino_sel
-                st.success(f"✓ Cam {cam_sel}: {origen_sel} → {destino_sel}")
-                st.rerun()
-
-    # Mostrar asignaciones activas y permitir eliminarlas
-    if st.session_state["t4_asign"]:
-        st.markdown("**Asignaciones activas:**")
-        asign_items = [(k, v) for k, v in st.session_state["t4_asign"].items() if v]
-        for (cam_a, can_a), dest_a in asign_items:
-            col_x, col_txt = st.columns([1, 6])
-            with col_x:
-                if st.button("❌", key=f"del_asign_{cam_a}_{can_a}"):
-                    del st.session_state["t4_asign"][(cam_a, can_a)]
-                    st.rerun()
-            with col_txt:
-                up_val = 0.0
-                row_m = df_display[df_display["Camión"] == cam_a]
-                if not row_m.empty:
-                    up_val = float(row_m.iloc[0].get(f"_up_{can_a}", 0.0))
-                st.markdown(
-                    f"Cam **{cam_a}** | {can_a} → **{dest_a}** "
-                    f"({up_val:.3f} UP)"
-                )
-
-    # Recalcular con ASIGN actualizado
-    totales_calc   = _t4_calcular_pall_por_cancha(df_display, st.session_state["t4_asign"])
+    # Recalcular con ASIGN actualizado (para totales_pall_c abajo)
     totales_pall_c = totales_calc["total"]
 
     # ── Totales bultos por cancha (base, sin asignaciones) ───────────────────
@@ -2966,7 +3031,7 @@ def render_tab_proyeccion():
     cp1, cp2 = st.columns([1, 2])
     with cp1:
         if st.button("📄 Generar PDF ×4", type="primary",
-                     width="stretch", key="t4_pdf_btn"):
+                     use_container_width=True, key="t4_pdf_btn"):
             with st.spinner("Generando PDF…"):
                 try:
                     pdf_bytes = _t4_generar_pdf_x4(
@@ -2987,7 +3052,7 @@ def render_tab_proyeccion():
                     st.download_button(
                         "⬇ Descargar PDF (4 páginas)",
                         data=pdf_bytes, file_name=fname,
-                        mime="application/pdf", width="stretch",
+                        mime="application/pdf", use_container_width=True,
                         key="t4_pdf_dl",
                     )
                     st.success(f"✓ PDF generado: {fname}")
@@ -3007,9 +3072,6 @@ def render_tab_proyeccion():
             f"- Mix picking: {pdata['mix_picking']*100:.1f}%\n"
             f"- Fuente: {pdata['fuente']}"
         )
-
-    # NOTA v4.11: Top SKUs movido a tab propia "🏆 Top SKUs"
-
 
 # ── HELPER: Top 10 SKUs ────────────────────────────────────────────────────
 
