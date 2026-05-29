@@ -35,8 +35,16 @@ from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas as rl_canvas
 from loguru import logger
 
+# Para Tab Boletas
+try:
+    from pypdf import PdfReader, PdfWriter
+    import pdfplumber as _pdfplumber_lib
+    _PYPDF_AVAILABLE = True
+except ImportError:
+    _PYPDF_AVAILABLE = False
+
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.12.0"
+APP_VERSION = "4.15.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -4781,6 +4789,208 @@ def render_tab_top_skus():
         )
 
 
+# ── TAB BOLETAS — Impresión de Boletas ordenadas por camión ─────────────────
+
+def _extract_reparto_from_pdf(pdf_bytes: bytes) -> int | None:
+    """
+    Extrae el número de reparto del contenido de un PDF.
+    Busca el patrón 'Reparto: XXXXXXXX' y devuelve el número como int.
+    Si no lo encuentra, devuelve None.
+    """
+    import re
+    try:
+        import pdfplumber
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+                # Buscar patrón "Reparto: 00092046" o similar
+                m = re.search(r"Reparto[:\s]+0*(\d+)", text, re.IGNORECASE)
+                if m:
+                    return int(m.group(1))
+    except Exception:
+        pass
+    return None
+
+
+def _extract_camion_from_reparto(reparto: int | None) -> int | None:
+    """
+    Mapea el número de reparto al número de camión.
+    Convención observada: reparto 92046 → camión 101, 92045 → camión 102, etc.
+    En la práctica los últimos 2-3 dígitos del reparto identifican el camión.
+    Si no se puede determinar, devuelve None.
+    """
+    if reparto is None:
+        return None
+    # Los repartos observados: 92046, 92045 → los últimos dígitos
+    # Se ordena por número de reparto ascendente → camión 101 en adelante
+    return reparto  # Se usa el reparto directamente para ordenar
+
+
+def render_tab_boletas():
+    """
+    Tab de impresión de boletas.
+    El usuario sube múltiples PDFs (facturas, remitos, NC, presupuestos).
+    La app detecta el número de reparto de cada uno, los agrupa por camión
+    (reparto), los ordena de menor a mayor (101 en adelante) y genera un
+    único PDF listo para imprimir de una sola vez.
+    """
+    st.subheader("🖨️ Impresión de Boletas")
+    st.caption(
+        "Subí todos los PDFs de boletas del próximo día. "
+        "La app los ordena automáticamente por camión (de menor a mayor) "
+        "y genera un único PDF listo para mandar a imprimir."
+    )
+
+    uploaded_files = st.file_uploader(
+        "PDFs de boletas (facturas, remitos, NC, presupuestos) *",
+        type=["pdf"],
+        accept_multiple_files=True,
+        key="boletas_pdfs",
+    )
+
+    if not uploaded_files:
+        st.info("📄 Subí uno o más PDFs para continuar.")
+        return
+
+    st.divider()
+
+    # ── Procesar cada PDF ────────────────────────────────────────────────────
+    with st.spinner("Analizando PDFs..."):
+        file_data = []  # lista de dicts: {name, reparto, bytes}
+        warnings = []
+
+        for uf in uploaded_files:
+            raw = uf.read()
+            reparto = _extract_reparto_from_pdf(raw)
+            file_data.append({
+                "name": uf.name,
+                "reparto": reparto,
+                "bytes": raw,
+            })
+            if reparto is None:
+                warnings.append(f"⚠️ No se detectó reparto en: **{uf.name}**")
+
+    # ── Mostrar advertencias ─────────────────────────────────────────────────
+    if warnings:
+        with st.expander(f"⚠️ {len(warnings)} archivo(s) sin reparto detectado", expanded=True):
+            for w in warnings:
+                st.markdown(w)
+            st.caption("Estos archivos se incluirán al final del PDF combinado.")
+
+    # ── Separar con reparto y sin reparto ────────────────────────────────────
+    con_reparto = [f for f in file_data if f["reparto"] is not None]
+    sin_reparto = [f for f in file_data if f["reparto"] is None]
+
+    # Ordenar por número de reparto (ascendente → camión 101 primero)
+    con_reparto_sorted = sorted(con_reparto, key=lambda x: x["reparto"])
+
+    # ── Tabla resumen ────────────────────────────────────────────────────────
+    from pypdf import PdfReader
+
+    def _count_pages(pdf_bytes):
+        try:
+            return len(PdfReader(io.BytesIO(pdf_bytes)).pages)
+        except Exception:
+            return "?"
+
+    resumen_data = []
+    repartos_vistos = {}
+    camion_num = 101
+
+    for f in con_reparto_sorted:
+        rep = f["reparto"]
+        if rep not in repartos_vistos:
+            repartos_vistos[rep] = camion_num
+            camion_num += 1
+        resumen_data.append({
+            "Camión": f"CAM {repartos_vistos[rep]}",
+            "Reparto": str(rep),
+            "Archivo": f["name"],
+            "Páginas": _count_pages(f["bytes"]),
+        })
+
+    for f in sin_reparto:
+        resumen_data.append({
+            "Camión": "SIN CAMIÓN",
+            "Reparto": "—",
+            "Archivo": f["name"],
+            "Páginas": _count_pages(f["bytes"]),
+        })
+
+    df_resumen = pd.DataFrame(resumen_data)
+
+    col_info, col_metrics = st.columns([3, 1])
+    with col_info:
+        st.markdown("#### 📋 Orden de impresión")
+        st.dataframe(df_resumen, use_container_width=True, hide_index=True)
+    with col_metrics:
+        st.metric("Total PDFs", len(file_data))
+        st.metric("Camiones detectados", len(repartos_vistos))
+        total_pags = sum(
+            _count_pages(f["bytes"]) for f in file_data
+            if isinstance(_count_pages(f["bytes"]), int)
+        )
+        st.metric("Total páginas", total_pags)
+
+    st.divider()
+
+    # ── Botón de generación ──────────────────────────────────────────────────
+    if st.button("🖨️ Generar PDF unificado para imprimir", type="primary", use_container_width=True):
+        with st.spinner("Combinando PDFs..."):
+            try:
+                from pypdf import PdfWriter, PdfReader as _PR
+
+                writer = PdfWriter()
+
+                # Agregar en orden: primero los que tienen reparto, luego los sin reparto
+                orden_final = con_reparto_sorted + sin_reparto
+
+                for f in orden_final:
+                    reader = _PR(io.BytesIO(f["bytes"]))
+                    for page in reader.pages:
+                        writer.add_page(page)
+
+                # Generar bytes del PDF combinado
+                output_buf = io.BytesIO()
+                writer.write(output_buf)
+                output_buf.seek(0)
+                pdf_combinado = output_buf.read()
+
+                fecha_str = datetime.now().strftime("%Y%m%d_%H%M")
+                filename = f"Boletas_Impresion_{fecha_str}.pdf"
+
+                st.success(f"✅ PDF generado — {len(orden_final)} archivos · {total_pags} páginas totales")
+
+                st.download_button(
+                    label="⬇️ Descargar PDF unificado",
+                    data=pdf_combinado,
+                    file_name=filename,
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True,
+                    key="boletas_dl",
+                )
+
+            except Exception as e:
+                st.error(f"❌ Error al combinar PDFs: {e}")
+                with st.expander("Stack trace"):
+                    import traceback
+                    st.code(traceback.format_exc())
+
+    with st.expander("ℹ️ ¿Cómo funciona?"):
+        st.markdown(
+            "1. **Detección automática**: se lee el campo `Reparto` de cada PDF para identificar el camión.\n"
+            "2. **Ordenamiento**: los archivos se ordenan por número de reparto ascendente "
+            "(el reparto más bajo = Camión 101, el siguiente = Camión 102, y así sucesivamente).\n"
+            "3. **PDF único**: todos los archivos se combinan en un solo PDF en el orden determinado, "
+            "listo para enviar a la impresora una sola vez.\n"
+            "4. **Sin reparto detectado**: los PDFs donde no se encuentra el campo Reparto "
+            "se agregan al final del documento.\n\n"
+            "**Formatos soportados**: facturas A, remitos, notas de crédito, presupuestos — "
+            "cualquier PDF generado por el sistema de Beccacece Hnos SA."
+        )
+
+
 def main():
     st.set_page_config(
         page_title=f"Picking Orchestrator v{APP_VERSION}",
@@ -4819,6 +5029,7 @@ def main():
         "📊 Proyección Picking ×4",
         "🏷️ Clasificación",
         "🏆 Top SKUs",
+        "🖨️ Boletas",
         "📤 Extraíbles Sheets",
         "✅ Validación + Log",
     ])
@@ -4828,8 +5039,9 @@ def main():
     with tabs[3]: render_tab_proyeccion()
     with tabs[4]: render_tab_clasificacion()
     with tabs[5]: render_tab_top_skus()
-    with tabs[6]: render_tab_extraibles()
-    with tabs[7]: render_tab_validacion()
+    with tabs[6]: render_tab_boletas()
+    with tabs[7]: render_tab_extraibles()
+    with tabs[8]: render_tab_validacion()
 
 
 if __name__ == "__main__":
