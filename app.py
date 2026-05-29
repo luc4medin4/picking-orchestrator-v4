@@ -44,7 +44,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.15.1"
+APP_VERSION = "4.16"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -4295,36 +4295,41 @@ def _duracion_hhmm(ratio_horas: float) -> str:
 
 
 def render_tab_clasificacion():
-    st.subheader("🏷️ Clasificación — Retornables (Almacén 1 y 3)")
+    """
+    v4.16 — Clasificación de retornables por CAMIÓN (no por SKU).
+    Usa CAR + Frescura (DDM). Muestra: Camión | Bultos Enteros | Un. Sueltas |
+    Cajones Extra | Total Bultos | Pallets | Estado.
+    """
+    st.subheader("🏷️ Clasificación — Retornables por Camión")
     st.caption(
-        "v4.15.1 — Input: **ANR.xlsx** (venta del día). "
-        "Cruza los SKUs contra la Frescura (hoja **DDM**) filtrando **ALMACÉN ∈ {1, 3}** "
-        "y calcula los pallets a clasificar = `Bultos_SKU / BXP_SKU`."
+        "v4.16 — Input: **CAR.xlsx** + **Frescura 3.0.xlsx**. "
+        "Filtra Almacén 1 (×12) y Almacén 3 (×24), agrupa por camión y calcula "
+        "pallets equivalentes (÷50). Excluye envases/esqueletos (DDM)."
     )
 
-    # Reusar ANR del Tab Tops y Frescura del Tab Planilla
-    anr_use = st.session_state.get("ts_anr") or st.session_state.get("tc_anr")
+    # ── Reusar archivos de otros tabs ────────────────────────────────────────
+    car_use = st.session_state.get("t1_car") or st.session_state.get("t2_car")
     fr_use  = st.session_state.get("t1_fr")  or st.session_state.get("t4_fr") or st.session_state.get("tc_fr")
 
-    if not (anr_use and fr_use):
+    if not (car_use and fr_use):
         st.info(
-            "Subí el **ANR.xlsx** (en este tab o en 🏆 Top SKUs) y la **Frescura 3.0** "
-            "(en 📦 Planilla de Carga) para generar la clasificación."
+            "Subí el **CAR.xlsx** (en 📦 Planilla de Carga) y la **Frescura 3.0.xlsx** "
+            "(en 📦 Planilla de Carga o 📊 Proyección) para generar la clasificación."
         )
         with st.expander("…o subí los archivos acá mismo", expanded=True):
             col_a, col_b = st.columns(2)
             with col_a:
-                anr_file = _file_uploader("ANR.xlsx", ["xlsx"], key="tc_anr")
+                car_file = _file_uploader("CAR.xlsx (export Chess)", ["xlsx"], key="tclasif_car")
             with col_b:
-                fr_file = _file_uploader("Frescura 3.0.xlsx", ["xlsx"], key="tc_fr")
-            anr_use = anr_file or anr_use
+                fr_file = _file_uploader("Frescura 3.0.xlsx", ["xlsx"], key="tclasif_fr")
+            car_use = car_file or car_use
             fr_use  = fr_file  or fr_use
-            if not (anr_use and fr_use):
+            if not (car_use and fr_use):
                 return
 
     try:
-        df_cl, tot = _build_clasificacion_anr(
-            anr_use.getvalue(), fr_use.getvalue()
+        df_cl, tot = _build_clasificacion_retornables(
+            car_use.getvalue(), fr_use.getvalue()
         )
     except Exception as e:
         st.error(f"❌ Error construyendo Clasificación: {e}")
@@ -4335,48 +4340,68 @@ def render_tab_clasificacion():
 
     if df_cl.empty:
         st.warning(
-            "No se encontraron SKUs de Almacén 1 o 3 con ventas en el ANR. "
-            "Verificá que la Frescura tenga la hoja DDM con la columna ALMACÉN."
+            "No se encontraron retornables (Almacén 1 o 3) en el CAR. "
+            "Verificá que la Frescura tenga la hoja DDM y que el CAR tenga columna Depósito."
         )
         return
 
-    # ── Métricas top ──────────────────────────────────────────────────────
-    n_alm1 = int((df_cl["ALMACEN"] == 1).sum())
-    n_alm3 = int((df_cl["ALMACEN"] == 3).sum())
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("SKUs a clasificar", tot["skus"], help=f"Alm 1: {n_alm1} · Alm 3: {n_alm3}")
-    m2.metric("Bultos totales",    f"{tot['bultos']:,.0f}".replace(",", "."))
-    m3.metric("Pallets a clasificar", f"{tot['pallets']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
-              help="Σ (Bultos_SKU / BXP_SKU desde DDM)")
-    pall_alm1 = float(df_cl.loc[df_cl["ALMACEN"] == 1, "PALLETS"].sum())
-    pall_alm3 = float(df_cl.loc[df_cl["ALMACEN"] == 3, "PALLETS"].sum())
-    m4.metric("Pallets Alm 1 / Alm 3",
-              f"{pall_alm1:,.2f} / {pall_alm3:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-
-    # ── Tabla detallada por SKU ───────────────────────────────────────────
-    df_disp = pd.DataFrame({
-        "Artículo":    df_cl["ARTICULO"].astype(int).astype(str),
-        "Descripción": df_cl["DESCRIPCION"].astype(str).str[:60],
-        "Almacén":     df_cl["ALMACEN"].apply(lambda x: f"Alm {int(x)}"),
-        "Bultos":      df_cl["BULTOS"].map(lambda x: f"{x:,.0f}".replace(",", ".")),
-        "BXP":         df_cl["BXP"].map(lambda x: f"{x:.0f}"),
-        "Pallets":     df_cl["PALLETS"].map(lambda x: f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")),
-    })
-    df_disp.loc[len(df_disp)] = [
-        "TOTAL", f"{tot['skus']} SKUs", "—",
-        f"{tot['bultos']:,.0f}".replace(",", "."),
-        "—",
-        f"{tot['pallets']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
-    ]
-    st.dataframe(df_disp, width="stretch", height=440, hide_index=True)
-
-    # ── Bloque Productividad Estimada ──────────────────────────────────────
+    # ── Métricas top ─────────────────────────────────────────────────────────
     import math as _m
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Camiones con retornables", tot["camiones"])
+    m2.metric("Bultos totales",           f"{tot['bultos']:,.0f}".replace(",", "."))
+    m3.metric("Pallets a clasificar",
+              f"{tot['pallets']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+              help="Pallets = Total bultos / 50")
+    caj_t = float(tot.get("cajones_extra", 0))
+    m4.metric("Cajones extra (un. sueltas)",
+              f"{int(caj_t):,}".replace(",", "."),
+              help="Bultos extra generados por unidades sueltas ÷ factor Alm (12 o 24)")
+
+    # ── Tabla por camión ─────────────────────────────────────────────────────
+    # Semáforo: percentiles de pallets para Estado
+    pall_vals = sorted(df_cl["Pallets Equivalentes"].values)
+    n = len(pall_vals)
+    p_high = pall_vals[int(n * 0.66)] if n > 0 else 0
+    p_low  = pall_vals[int(n * 0.33)] if n > 0 else 0
+
+    def _estado(pal):
+        if pal >= p_high:
+            return "🔴 Alto"
+        elif pal >= p_low:
+            return "🟡 Medio"
+        else:
+            return "🟢 Bajo"
+
+    df_show = pd.DataFrame({
+        "N° Camión":      df_cl["Camión"],
+        "Bultos Enteros": df_cl["_bultos_enteros"].map(lambda x: f"{int(x):,}".replace(",", ".")),
+        "Un. Sueltas":    df_cl["_unids"].map(lambda x: f"{int(x):,}".replace(",", ".") if x > 0 else "—"),
+        "Caj. Extra":     df_cl["_cajones_extra"].map(lambda x: f"+{int(x):,}".replace(",", ".") if x > 0 else "—"),
+        "Total Bultos":   df_cl["Bultos Retornables"].map(lambda x: f"{int(x):,}".replace(",", ".")),
+        "Pallets (÷50)":  df_cl["Pallets Equivalentes"].map(
+                              lambda x: f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")),
+        "Estado":         df_cl["Pallets Equivalentes"].map(_estado),
+    })
+
+    # Fila de totales
+    df_show.loc[len(df_show)] = [
+        "TOTAL",
+        f"{int(tot.get('bultos_enteros', 0)):,}".replace(",", "."),
+        "—",
+        f"+{int(tot.get('cajones_extra', 0)):,}".replace(",", ".") if tot.get('cajones_extra', 0) > 0 else "—",
+        f"{int(tot['bultos']):,}".replace(",", "."),
+        f"{tot['pallets']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+        f"{tot['camiones']} cam.",
+    ]
+
+    st.dataframe(df_show, width="stretch", height=440, hide_index=True)
+
+    # ── Bloque Productividad Estimada ─────────────────────────────────────────
     st.markdown("### ⏱️ Productividad Estimada de Clasificación")
 
     pallets_total = float(tot["pallets"])
     ratio         = pallets_total / TARGET_PALL_OPERARIO if TARGET_PALL_OPERARIO else 0
-    # Fórmula del Sheets: ENTERO(ratio) + 1 (siempre redondea agregando uno)
     personal_nec  = (int(_m.floor(ratio)) + 1) if ratio > 0 else 0
     duracion      = _duracion_hhmm(ratio)
 
@@ -4385,16 +4410,16 @@ def render_tab_clasificacion():
     p2.metric("Target × operario",    f"{TARGET_PALL_OPERARIO}")
     p3.metric("Pallets / hora",       f"{PALL_X_HORA}")
     p4.metric("Personal necesario",   f"{personal_nec}",
-              help=f"ratio crudo = {ratio:.4f} → ENTERO + 1 (réplica Sheets)")
+              help=f"ratio = {ratio:.4f} → ENTERO + 1")
     p5.metric("Duración estimada",    duracion,
-              help=f"{pallets_total:.2f} pall ÷ {TARGET_PALL_OPERARIO} target = {ratio:.4f} hs → HH:MM")
+              help=f"{pallets_total:.2f} pall ÷ {TARGET_PALL_OPERARIO} target = {ratio:.4f} hs")
 
     st.caption(
         f"📌 Próximo turno: **{personal_nec} operarios** para clasificar "
         f"**{pallets_total:,.2f} pallets** en **{duracion} hs** estimadas."
     )
 
-    # Guardar para el PDF
+    # Guardar para PDF
     tot["productividad"] = {
         "pallets_total":  pallets_total,
         "target_oper":    TARGET_PALL_OPERARIO,
@@ -4404,10 +4429,10 @@ def render_tab_clasificacion():
         "duracion":       duracion,
     }
 
-    # ── PDF + TSV ─────────────────────────────────────────────────────────
+    # ── PDF + TSV ─────────────────────────────────────────────────────────────
     fecha_hoy = datetime.now().strftime("%d/%m/%Y")
     try:
-        pdf_bytes = build_clasificacion_anr_pdf(df_cl, tot, fecha_str=fecha_hoy)
+        pdf_bytes = build_clasificacion_retornables_pdf(df_cl, tot, fecha_str=fecha_hoy)
     except Exception as e:
         pdf_bytes = None
         st.error(f"❌ Error generando PDF Clasificación: {e}")
@@ -4417,17 +4442,17 @@ def render_tab_clasificacion():
         col_dl1.download_button(
             "⬇ Descargar PDF Clasificación",
             data=pdf_bytes,
-            file_name=_stamp("Clasificacion_ANR", "pdf"),
+            file_name=_stamp("Clasificacion_Camiones", "pdf"),
             mime="application/pdf",
             type="primary",
             width="stretch",
             key="clasif_pdf_dl",
         )
-    tsv = df_cl.to_csv(sep="\t", index=False)
+    tsv = df_show.to_csv(sep="\t", index=False)
     col_dl2.download_button(
         "📋 Descargar TSV (pegar en Sheets)",
         data=tsv.encode("utf-8"),
-        file_name="clasificacion_anr_almacen_1_3.tsv",
+        file_name="clasificacion_camiones_retornables.tsv",
         mime="text/tab-separated-values",
         width="stretch",
         key="clasif_tsv_dl",
@@ -4435,14 +4460,12 @@ def render_tab_clasificacion():
 
     with st.expander("ℹ️ Metodología"):
         st.markdown(
-            "- **Input principal**: ANR.xlsx (hoja BASE, header en fila 2): col H = `ARTÍCULO`, col K = `BULTOS`.\n"
-            "- **Universo de SKUs**: Frescura → hoja **DDM**, filtrando `ALMACÉN ∈ {1, 3}` (col A). "
-            "Se toma `BULTOS X PALLET` (col G) por SKU.\n"
-            "- **Cálculo por SKU**: `pallets = BULTOS / BXP` (per‑SKU, no promedio).\n"
-            "- **Personal necesario**: `ENTERO(total_pallets / target_x_operario) + 1` "
-            "(idéntico a `=+ENTERO(E43)+1` del Sheets).\n"
-            "- **Duración HH:MM**: hs = ENTERO(ratio); min = REDONDEAR((ratio−hs)×60, 0).\n"
-            f"- **Constantes**: target × operario = {TARGET_PALL_OPERARIO}, pall/hora = {PALL_X_HORA}."
+            "- **Input CAR**: Hoja1 del CAR.xlsx (export Chess). Filtra `Depósito ∈ {1, 3}`, excluye anulados.\n"
+            "- **Universo SKUs**: Frescura → hoja **DDM** (col C=ARTÍCULO). Excluye envases/esqueletos.\n"
+            "- **Unidades sueltas**: Alm 1 → cada 12 un. = 1 cajón · Alm 3 → cada 24 un. = 1 cajón.\n"
+            "- **Total por camión** = Bultos enteros + Cajones extra. **Pallets** = Total / 50.\n"
+            "- **Personal necesario**: `ENTERO(total_pallets / target) + 1` (idéntico al Sheets).\n"
+            f"- **Constantes**: target × operario = {TARGET_PALL_OPERARIO} · pall/hora = {PALL_X_HORA}."
         )
 
 
@@ -5222,58 +5245,173 @@ def main():
         layout="wide",
     )
 
-    # ─ Forzar modo CLARO (override del tema global) ───────────────────────
+    # ─ Modo CLARO refinado (v4.16) ──────────────────────────────────────────
     st.markdown(
         """
         <style>
-        /* Forzar modo claro independientemente del tema del sistema */
+        /* ── Paleta base ── */
         :root {
-            --background-color: #ffffff;
-            --secondary-background-color: #f5f7fb;
-            --text-color: #1a1a1a;
-            --font: "Source Sans Pro", sans-serif;
+            --bg-main:      #f0f2f6;   /* fondo principal: gris cálido, no blanco puro */
+            --bg-card:      #ffffff;   /* tarjetas/contenidos: blanco con sombra */
+            --bg-sidebar:   #e8ecf3;   /* sidebar: un paso más oscuro que main */
+            --bg-input:     #ffffff;
+            --border:       #c8cfe0;
+            --text-primary: #12213a;   /* texto principal: azul muy oscuro, fuerte contraste */
+            --text-secondary: #4a5568; /* texto secundario: gris azulado */
+            --text-caption: #6b7a99;   /* captions, hints */
+            --accent:       #2e5fa3;   /* azul Beccacece */
+            --accent-light: #dbe8f8;   /* fondo destacado suave */
         }
-        html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"],
-        [data-testid="stHeader"], .main, .block-container {
-            background-color: #ffffff !important;
-            color: #1a1a1a !important;
+
+        /* ── Fondo y texto global ── */
+        html, body,
+        [data-testid="stAppViewContainer"],
+        [data-testid="stMain"],
+        [data-testid="stHeader"],
+        .main, .block-container {
+            background-color: var(--bg-main) !important;
+            color: var(--text-primary) !important;
         }
+
+        /* ── Sidebar ── */
         [data-testid="stSidebar"] {
-            background-color: #f5f7fb !important;
+            background-color: var(--bg-sidebar) !important;
+            border-right: 1px solid var(--border);
         }
-        [data-testid="stSidebar"] * { color: #1a1a1a !important; }
-        /* Inputs, selects, multiselect en claro */
-        .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] > div,
-        .stMultiSelect div[data-baseweb="select"] > div, .stDateInput input, .stTimeInput input,
-        textarea {
-            background-color: #ffffff !important;
-            color: #1a1a1a !important;
+        [data-testid="stSidebar"] * { color: var(--text-primary) !important; }
+
+        /* ── Contenedores / cards internos ── */
+        [data-testid="stVerticalBlock"] > div > div,
+        section.main > div > div > div > div > div[class*="block"],
+        div[data-testid="column"] {
+            background-color: transparent !important;
         }
-        /* Tablas, dataframes, metric cards */
-        [data-testid="stMetric"] { background-color: #f5f7fb !important; padding: 8px 12px;
-            border-radius: 8px; border: 1px solid #e0e4ec; }
-        [data-testid="stMetric"] label, [data-testid="stMetric"] div { color: #1a1a1a !important; }
-        [data-testid="stDataFrame"] { background-color: #ffffff !important; }
-        .stDataFrame [role="grid"] * { color: #1a1a1a !important; }
-        /* Expanders */
-        [data-testid="stExpander"] { background-color: #f5f7fb !important; border: 1px solid #e0e4ec; }
-        /* Captions, code, markdown text */
-        .stMarkdown, .stCaption, p, span, div, li, label, h1, h2, h3, h4, h5, h6 {
-            color: #1a1a1a;
+
+        /* ── Inputs ── */
+        .stTextInput input, .stNumberInput input,
+        .stSelectbox div[data-baseweb="select"] > div,
+        .stMultiSelect div[data-baseweb="select"] > div,
+        .stDateInput input, .stTimeInput input, textarea {
+            background-color: var(--bg-input) !important;
+            color: var(--text-primary) !important;
+            border-color: var(--border) !important;
         }
-        /* Botones primary del banner mantienen su color */
-        .stButton button[kind="primary"], .stDownloadButton button[kind="primary"] {
-            background-color: #2e5fa3 !important; color: #ffffff !important;
+
+        /* ── Metric cards ── */
+        [data-testid="stMetric"] {
+            background-color: var(--bg-card) !important;
+            padding: 10px 14px !important;
+            border-radius: 8px !important;
+            border: 1px solid var(--border) !important;
+            box-shadow: 0 1px 4px rgba(18,33,58,0.08) !important;
         }
-        /* Tabs */
-        [data-baseweb="tab-list"] { background-color: #f5f7fb !important; }
-        [data-baseweb="tab"] { color: #1a1a1a !important; }
+        [data-testid="stMetric"] label {
+            color: var(--text-caption) !important;
+            font-weight: 600 !important;
+            font-size: 0.78rem !important;
+            text-transform: uppercase !important;
+            letter-spacing: 0.04em !important;
+        }
+        [data-testid="stMetric"] div[data-testid="stMetricValue"] {
+            color: var(--text-primary) !important;
+            font-weight: 700 !important;
+        }
+
+        /* ── DataFrames ── */
+        [data-testid="stDataFrame"] {
+            background-color: var(--bg-card) !important;
+            border-radius: 8px !important;
+            border: 1px solid var(--border) !important;
+            box-shadow: 0 1px 4px rgba(18,33,58,0.07) !important;
+        }
+        .stDataFrame [role="grid"] * { color: var(--text-primary) !important; }
+        .stDataFrame [role="columnheader"] {
+            background-color: var(--accent-light) !important;
+            color: var(--accent) !important;
+            font-weight: 700 !important;
+        }
+
+        /* ── Expanders ── */
+        [data-testid="stExpander"] {
+            background-color: var(--bg-card) !important;
+            border: 1px solid var(--border) !important;
+            border-radius: 8px !important;
+        }
+        [data-testid="stExpander"] summary { color: var(--text-primary) !important; }
+
+        /* ── Texto general ── */
+        .stMarkdown p, .stCaption, p, li, label,
+        h1, h2, h3, h4, h5, h6 {
+            color: var(--text-primary) !important;
+        }
+        .stMarkdown small, small, caption {
+            color: var(--text-caption) !important;
+        }
+
+        /* ── Botones primary ── */
+        .stButton button[kind="primary"],
+        .stDownloadButton button[kind="primary"] {
+            background-color: var(--accent) !important;
+            color: #ffffff !important;
+            border: none !important;
+            font-weight: 600 !important;
+        }
+        .stButton button[kind="secondary"],
+        .stDownloadButton button[kind="secondary"] {
+            background-color: var(--bg-card) !important;
+            color: var(--accent) !important;
+            border: 1.5px solid var(--accent) !important;
+            font-weight: 600 !important;
+        }
+
+        /* ── Tabs ── */
+        [data-baseweb="tab-list"] {
+            background-color: var(--bg-sidebar) !important;
+            border-bottom: 2px solid var(--border) !important;
+            gap: 2px !important;
+        }
+        [data-baseweb="tab"] {
+            color: var(--text-secondary) !important;
+            font-weight: 500 !important;
+            border-radius: 6px 6px 0 0 !important;
+            padding: 6px 14px !important;
+        }
+        [data-baseweb="tab"]:hover {
+            background-color: var(--accent-light) !important;
+            color: var(--accent) !important;
+        }
         [data-baseweb="tab"][aria-selected="true"] {
-            background-color: #ffffff !important;
-            border-bottom: 2px solid #2e5fa3 !important;
+            background-color: var(--bg-card) !important;
+            color: var(--accent) !important;
+            font-weight: 700 !important;
+            border-bottom: 3px solid var(--accent) !important;
         }
-        /* Alerts */
-        [data-testid="stAlert"] { color: #1a1a1a !important; }
+
+        /* ── Alerts / info / warning ── */
+        [data-testid="stAlert"] {
+            color: var(--text-primary) !important;
+            border-radius: 8px !important;
+        }
+        [data-testid="stAlert"] p { color: var(--text-primary) !important; }
+
+        /* ── File uploader ── */
+        [data-testid="stFileUploader"] {
+            background-color: var(--bg-card) !important;
+            border: 2px dashed var(--border) !important;
+            border-radius: 8px !important;
+        }
+        [data-testid="stFileUploader"] * { color: var(--text-primary) !important; }
+
+        /* ── Dividers ── */
+        hr { border-color: var(--border) !important; }
+
+        /* ── Scrollbars finos ── */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg-main); }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+        /* ── Top-SKUs: tabla con fondo card ── */
+        div[data-testid="stDataFrame"] iframe { background: var(--bg-card) !important; }
         </style>
         """,
         unsafe_allow_html=True,
