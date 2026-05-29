@@ -44,7 +44,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.15.0"
+APP_VERSION = "4.15.1"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -1956,58 +1956,45 @@ def render_tab_t2():
 
     st.subheader("🚛 Camiones T2 — Imprimir hojas")
     st.caption(
-        "Subí el CAR del día → detecta los camiones con reparto → "
-        "abre las hojas del T2 Status Carga listas para imprimir (una pestaña por camión)."
+        "v4.15.1 — Toma el **CAR** de la pestaña 📦 Planilla de Carga, detecta los camiones con "
+        "reparto y abre el PDF export del T2 Status Carga **filtrado a una sola hoja por camión**."
     )
 
     # ── Instrucciones colapsables ─────────────────────────────────────────────
     with st.expander("ℹ️ Cómo funciona", expanded=False):
         st.markdown(
             """
-            1. **Subís el CAR.xlsx** del día (el mismo que usás en Tab 1).
-            2. La app detecta automáticamente qué camiones tienen bultos asignados.
-            3. Presionás **"Abrir hojas para imprimir"** → se abre una pestaña
-               por camión directamente en el T2 Status Carga Sheets.
-            4. Cada pestaña abre en modo **PDF export** → el browser muestra el
-               diálogo de impresión con la hoja exacta como la ves en el Sheets.
-            5. Imprimís o guardás como PDF normalmente.
+            1. La app **reutiliza el CAR** ya subido en 📦 Planilla de Carga (o lo podés subir acá).
+            2. Detecta automáticamente qué camiones tienen bultos asignados.
+            3. Presionás **"Abrir hojas para imprimir"** → se abre una pestaña por camión
+               con la URL `…/export?format=pdf&sheet={N°}&…` que descarga **solo la hoja
+               de ese camión** (no toda la planilla).
+            4. Imprimís o guardás como PDF normalmente.
 
-            > **Requisito:** tenés que estar logueado en Google con la cuenta
-            > que tiene acceso al Sheets. El Sheets no necesita ser público.
-
-            > **Popups:** permitir popups para este sitio la primera vez.
+            > **Requisito:** logueado en Google con la cuenta que tiene acceso al Sheets.
+            > **Popups:** permitirlos para este sitio la primera vez.
             """
         )
 
-    # ── GID Map status ────────────────────────────────────────────────────────
-    gid_configurados = [c for c in _T2_GID_MAP]
-    with st.expander(f"⚙️ GIDs configurados ({len(gid_configurados)} camiones)", expanded=False):
-        st.caption(
-            "**GID por nombre (automático):** los camiones sin GID usan la URL por nombre de pestaña. "
-            "Funciona mientras la pestaña se llame exactamente igual al número del camión (101, 106, etc.). "
-            "Para mayor confiabilidad, completá el GID: abrí el Sheets → clic en la pestaña del camión → "
-            "copiá el número después de `#gid=` en la URL → agregalo en `_T2_GID_MAP` del código."
-        )
-        if gid_configurados:
-            gid_data = [{"Camión": c, "GID": _T2_GID_MAP[c], "Método": "GID (exacto)"} for c in sorted(gid_configurados)]
-            st.dataframe(pd.DataFrame(gid_data), use_container_width=True, hide_index=True)
-        else:
-            st.info("No hay GIDs hardcodeados. Se usará URL por nombre para todos los camiones.")
-
     st.divider()
 
-    # ── Upload CAR — toma de "Planilla de carga" ──────────────────────────────
-    st.caption("📂 **Input:** hoja 'Planilla de carga' del CAR (o Hoja1 si no existe con ese nombre).")
-    car_file = _file_uploader("CAR.xlsx del día", ["xlsx"], key="t3_car")
+    # ── CAR: reusar de Planilla o subir acá ──────────────────────────────────
+    car_use = st.session_state.get("t1_car") or st.session_state.get("t4_car") \
+              or st.session_state.get("tc_car") or st.session_state.get("t3_car")
 
-    if not car_file:
-        st.info("Subí el CAR para detectar los camiones con reparto.")
-        return
+    if not car_use:
+        st.info("Subí el **CAR.xlsx** en la pestaña 📦 Planilla de Carga (o acá abajo).")
+        car_file = _file_uploader("CAR.xlsx del día", ["xlsx"], key="t3_car")
+        if not car_file:
+            return
+        car_use = car_file
+    else:
+        st.success("✅ CAR detectado desde Planilla de Carga — no necesitás re-subirlo.")
 
     # ── Detectar camiones ─────────────────────────────────────────────────────
     try:
         with st.spinner("Leyendo camiones del CAR..."):
-            camiones_car = _t2_load_camiones_car(car_file.getvalue())
+            camiones_car = _t2_load_camiones_car(car_use.getvalue())
         log_event("info", f"T2: CAR leído → {len(camiones_car)} camiones: {camiones_car}")
     except Exception as e:
         st.error(f"❌ Error leyendo CAR: {e}")
@@ -2018,85 +2005,30 @@ def render_tab_t2():
         st.warning("No se encontraron camiones con bultos en el CAR.")
         return
 
-    # ── Clasificar camiones: con GID (exacto) vs by-name (fallback) ──────────
-    con_gid   = [c for c in camiones_car if c in _T2_GID_MAP]
-    sin_gid   = [c for c in camiones_car if c not in _T2_GID_MAP]
-
-    # Métricas
-    col1, col2, col3 = st.columns(3)
-    col1.metric("🚛 Camiones en CAR", len(camiones_car))
-    col2.metric("✅ GID exacto", len(con_gid))
-    col3.metric("🔤 URL por nombre", len(sin_gid))
-
-    if sin_gid:
-        st.info(
-            f"Camiones **sin GID** → se imprimirán por nombre de hoja: "
-            f"{', '.join(str(c) for c in sin_gid)}. "
-            f"Si alguno falla, completá su GID en `_T2_GID_MAP`."
-        )
-
-    # Todos los camiones del CAR se pueden imprimir (GID o by-name)
     todos_camiones = sorted(camiones_car)
+    st.metric("🚛 Camiones con reparto en CAR", len(todos_camiones))
 
-    # ── Tabla de camiones a imprimir ──────────────────────────────────────────
-    st.markdown(f"#### 🖨️ Camiones a imprimir: **{len(todos_camiones)}**")
-
-    rows_preview = []
-    for c in todos_camiones:
-        if c in _T2_GID_MAP:
-            gid = _T2_GID_MAP[c]
-            metodo = "GID exacto"
-            url_ref = f"...gid={gid}&format=pdf"
-        else:
-            gid = None
-            metodo = "Por nombre"
-            url_ref = f"...sheet={c}&format=pdf"
-        rows_preview.append({"Camión": c, "Método": metodo, "URL (preview)": url_ref})
-
-    st.dataframe(pd.DataFrame(rows_preview), use_container_width=True, hide_index=True)
-
-    # ── Opciones adicionales ──────────────────────────────────────────────────
-    st.markdown("---")
-    col_opt1, col_opt2 = st.columns(2)
-    with col_opt1:
-        modo = st.radio(
-            "Modo de apertura",
-            ["📄 Export PDF directo (recomendado)", "🔗 Abrir hoja en el Sheets (manual)"],
-            key="t3_modo",
-            help=(
-                "Export PDF: el browser descarga el PDF del Sheets directamente. "
-                "Hoja Sheets: abre la pestaña de edición del camión para impresión manual."
-            ),
-        )
-    with col_opt2:
-        camiones_sel = st.multiselect(
-            "Filtrar camiones (dejar vacío = todos)",
-            options=todos_camiones,
-            default=[],
-            key="t3_sel",
-            help="Seleccioná solo los camiones que querés imprimir ahora.",
-        )
-
+    # ── Selector de camiones ─────────────────────────────────────────────────
+    camiones_sel = st.multiselect(
+        "Filtrar camiones (dejar vacío = todos)",
+        options=todos_camiones,
+        default=[],
+        key="t3_sel",
+        help="Seleccioná solo los camiones que querés imprimir ahora.",
+    )
     camiones_a_imprimir = camiones_sel if camiones_sel else todos_camiones
 
-    # ── Construir URLs ────────────────────────────────────────────────────────
-    use_export = "Export PDF" in modo
-    urls = []
-    for c in camiones_a_imprimir:
-        if c in _T2_GID_MAP:
-            gid = _T2_GID_MAP[c]
-            if use_export:
-                urls.append(_t2_build_print_url(_T2_SHEETS_ID, gid))
-            else:
-                urls.append(_t2_build_view_url(_T2_SHEETS_ID, gid))
-        else:
-            # Fallback: URL por nombre de hoja
-            if use_export:
-                urls.append(_t2_build_print_url_by_name(_T2_SHEETS_ID, str(c)))
-            else:
-                urls.append(_t2_build_view_url_by_name(_T2_SHEETS_ID, str(c)))
+    # ── Construir URLs SIEMPRE por nombre de hoja (export PDF de UNA hoja) ──
+    # Esto es lo que confirma el usuario que funciona: sheet={NUM} restringe la
+    # exportación a una sola pestaña. NO usamos gid porque puede traer toda la
+    # planilla en algunos casos.
+    urls = [_t2_build_print_url_by_name(_T2_SHEETS_ID, str(c)) for c in camiones_a_imprimir]
 
-    st.markdown(f"**{len(urls)} hoja(s) seleccionadas:** {', '.join(str(c) for c in camiones_a_imprimir)}")
+    st.markdown(
+        f"**{len(urls)} hoja(s) a imprimir:** "
+        f"{', '.join(str(c) for c in camiones_a_imprimir)}"
+    )
+    st.caption("Cada URL exporta **solo** la pestaña del camión (no toda la planilla).")
 
     # ── Botón JS para abrir pestañas ──────────────────────────────────────────
     html_btn = _t2_js_open_tabs(urls)
@@ -2105,13 +2037,11 @@ def render_tab_t2():
     # ── Links individuales como fallback ──────────────────────────────────────
     with st.expander("🔗 Links individuales (fallback si el botón no funciona)", expanded=False):
         for c, url in zip(camiones_a_imprimir, urls):
-            metodo_lbl = "GID" if c in _T2_GID_MAP else "nombre"
-            st.markdown(f"- **Camión {c}** ({metodo_lbl}): [Abrir hoja]({url})")
+            st.markdown(f"- **Camión {c}**: [📄 Descargar PDF]({url})")
 
     log_event(
         "info",
-        f"T2: {len(urls)} URLs generadas | modo={'export' if use_export else 'view'} | "
-        f"camiones={camiones_a_imprimir} | con_gid={con_gid} | by_name={sin_gid}",
+        f"T2 v4.15.1: {len(urls)} URLs sheet={c} generadas | camiones={camiones_a_imprimir}",
     )
 
 
@@ -3657,11 +3587,307 @@ def _build_clasificacion_retornables(car_bytes: bytes, fr_bytes: bytes) -> tuple
     return out, tot
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# PDF GENERATORS — Clasificación y Top SKUs (v4.11)
-# ════════════════════════════════════════════════════════════════════════════
+def _build_clasificacion_anr(anr_bytes: bytes, fr_bytes: bytes) -> tuple:
+    """
+    v4.15.1 — Clasificación basada en ANR (no CAR).
 
-def build_clasificacion_pdf(df_cl: pd.DataFrame, tot: dict, fecha_str: str = "") -> bytes:
+    Lógica:
+      - ANR (hoja BASE, header en fila 2 / índice 1): col H=ARTÍCULO, K=BULTOS.
+      - Frescura (hoja DDM, header en fila 1 / índice 0): A=ALMACÉN, C=ARTÍCULO,
+        G=BULTOS X PALLET.
+      - Filtra DDM a ALMACÉN ∈ {1, 3} → mapa SKU → (BXP, ALMACÉN, DESCRIPCIÓN).
+      - Suma BULTOS por ARTÍCULO desde ANR (solo SKUs que estén en el filtro DDM).
+      - Pallets por SKU = bultos_SKU / BXP_SKU (BXP per-SKU desde DDM).
+      - Replica la fórmula del Sheets:
+          hours_raw   = total_pallets / TARGET_PALL_OPERARIO
+          personal    = ENTERO(hours_raw) + 1
+          duracion    = "HH:MM"   (REDONDEAR(fraccion*60,0))
+
+    Devuelve (df_por_sku, dict_totales) con columnas:
+        ARTICULO | DESCRIPCION | ALMACEN | BULTOS | BXP | PALLETS
+    """
+    import openpyxl as _ox
+    import math as _math
+
+    # ── 1. DDM → mapa SKU para almacenes 1 y 3 ───────────────────────────
+    wb_fr = _ox.load_workbook(io.BytesIO(fr_bytes), read_only=True, data_only=True)
+    if "DDM" not in wb_fr.sheetnames:
+        wb_fr.close()
+        raise ValueError("La Frescura no contiene la hoja 'DDM'.")
+    wd = wb_fr["DDM"]
+    rd = list(wd.iter_rows(values_only=True))
+    wb_fr.close()
+    if len(rd) < 2:
+        raise ValueError("DDM vacía.")
+
+    # Cols: A=0 ALMACÉN | C=2 ARTÍCULO | D=3 DESCRIPCIÓN | G=6 BULTOS X PALLET
+    sku_map: dict[int, dict] = {}
+    for row in rd[1:]:
+        if not row:
+            continue
+        try:
+            alm = row[0]
+            art = row[2]
+            desc = row[3] if len(row) > 3 else ""
+            bxp = row[6] if len(row) > 6 else None
+            if alm is None or art is None:
+                continue
+            alm_i = int(alm)
+            if alm_i not in (1, 3):
+                continue
+            art_i = int(art)
+            try:
+                bxp_f = float(bxp) if bxp is not None else 50.0
+            except (ValueError, TypeError):
+                bxp_f = 50.0
+            if bxp_f <= 0:
+                bxp_f = 50.0
+            # Si un SKU aparece duplicado (ej. en alm 1 y 3), nos quedamos con el primero
+            if art_i not in sku_map:
+                sku_map[art_i] = {
+                    "ALMACEN":     alm_i,
+                    "DESCRIPCION": str(desc) if desc else "",
+                    "BXP":         bxp_f,
+                }
+        except (ValueError, TypeError):
+            continue
+
+    if not sku_map:
+        return pd.DataFrame(columns=["ARTICULO", "DESCRIPCION", "ALMACEN", "BULTOS", "BXP", "PALLETS"]), \
+               {"bultos": 0.0, "pallets": 0.0, "skus": 0}
+
+    # ── 2. ANR BASE → suma de bultos por SKU ─────────────────────────────
+    # Header en fila 2 (índice 1) → usar header=1 con pandas.
+    df_anr = pd.read_excel(io.BytesIO(anr_bytes), sheet_name="BASE", header=1)
+    if df_anr.empty or df_anr.shape[1] < 11:
+        return pd.DataFrame(columns=["ARTICULO", "DESCRIPCION", "ALMACEN", "BULTOS", "BXP", "PALLETS"]), \
+               {"bultos": 0.0, "pallets": 0.0, "skus": 0}
+
+    # H=7 (ARTÍCULO), I=8 (DESCRIPCIÓN), K=10 (BULTOS)
+    sub = df_anr.iloc[:, [7, 8, 10]].copy()
+    sub.columns = ["ARTICULO", "DESC_ANR", "BULTOS"]
+    sub["ARTICULO"] = pd.to_numeric(sub["ARTICULO"], errors="coerce")
+    sub["BULTOS"]   = pd.to_numeric(sub["BULTOS"],   errors="coerce").fillna(0)
+    sub = sub[sub["ARTICULO"].notna() & (sub["BULTOS"] > 0)].copy()
+    sub["ARTICULO"] = sub["ARTICULO"].astype(int)
+
+    # Filtrar solo SKUs en sku_map (alm 1 o 3)
+    sub = sub[sub["ARTICULO"].isin(sku_map.keys())]
+    if sub.empty:
+        return pd.DataFrame(columns=["ARTICULO", "DESCRIPCION", "ALMACEN", "BULTOS", "BXP", "PALLETS"]), \
+               {"bultos": 0.0, "pallets": 0.0, "skus": 0}
+
+    agg = sub.groupby("ARTICULO", as_index=False).agg(
+        BULTOS=("BULTOS", "sum"),
+        DESC_ANR=("DESC_ANR", lambda x: max((str(v) for v in x if pd.notna(v)), key=len, default="")),
+    )
+
+    # Enriquecer con DDM
+    agg["ALMACEN"]     = agg["ARTICULO"].map(lambda s: sku_map[s]["ALMACEN"])
+    agg["BXP"]         = agg["ARTICULO"].map(lambda s: sku_map[s]["BXP"])
+    agg["DESCRIPCION"] = agg.apply(
+        lambda r: sku_map[r["ARTICULO"]]["DESCRIPCION"] or r["DESC_ANR"], axis=1
+    )
+    agg["PALLETS"] = agg.apply(
+        lambda r: round(r["BULTOS"] / r["BXP"], 4) if r["BXP"] > 0 else 0, axis=1
+    )
+
+    out = agg[["ARTICULO", "DESCRIPCION", "ALMACEN", "BULTOS", "BXP", "PALLETS"]].copy()
+    out = out.sort_values(["ALMACEN", "ARTICULO"]).reset_index(drop=True)
+
+    tot = {
+        "bultos":  float(out["BULTOS"].sum()),
+        "pallets": round(float(out["PALLETS"].sum()), 2),
+        "skus":    int(len(out)),
+    }
+    return out, tot
+
+
+def build_clasificacion_anr_pdf(df_cl: pd.DataFrame, tot: dict, fecha_str: str = "") -> bytes:
+    """
+    v4.15.1 — PDF de Clasificación basada en ANR.
+    Muestra: ARTÍCULO | DESCRIPCIÓN | ALMACÉN | BULTOS | BXP | PALLETS
+    + Caja de Productividad (idéntica a Streamlit, sin desglose enteros/sueltas).
+    """
+    from reportlab.lib.pagesizes import A4 as _A4
+    from reportlab.lib import colors as _col
+    from reportlab.lib.units import mm as _mm
+    from reportlab.pdfgen import canvas as _cv
+    import io as _io
+
+    df = df_cl[df_cl["BULTOS"] > 0].copy() if not df_cl.empty else df_cl
+    PW, PH = _A4
+    M = 10 * _mm
+
+    DARK       = _col.HexColor("#1a3a6b")
+    YELLOW_HDR = _col.HexColor("#f8d772")
+    BAND_LIGHT = _col.HexColor("#f4f6fa")
+    BAND_WHITE = _col.white
+    BORDER     = _col.HexColor("#8c8c8c")
+    TOTAL_BG   = _col.HexColor("#1a3a6b")
+    ALM1_TAG   = _col.HexColor("#1565C0")
+    ALM3_TAG   = _col.HexColor("#E65100")
+
+    bio = _io.BytesIO()
+    c = _cv.Canvas(bio, pagesize=_A4)
+
+    # Header
+    HDR_H = 22 * _mm
+    c.setFillColor(DARK)
+    c.rect(0, PH - HDR_H, PW, HDR_H, fill=1, stroke=0)
+    c.setFillColor(_col.white)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(M, PH - 11 * _mm, "CLASIFICACIÓN — Almacenes 1 y 3 (Retornables)")
+    c.setFont("Helvetica", 10)
+    c.drawString(M, PH - 17 * _mm, "Beccacece Hnos SA · DPO 2.1 — Pilar Almacén · Fuente: ANR + DDM")
+    c.setFont("Helvetica-Bold", 11)
+    c.drawRightString(PW - M, PH - 11 * _mm, f"Fecha: {fecha_str}")
+    c.setFont("Helvetica", 9)
+    c.drawRightString(PW - M, PH - 17 * _mm, f"SKUs con carga: {len(df)}")
+
+    # Tabla
+    y = PH - HDR_H - 8 * _mm
+    table_w = PW - 2 * M
+    col_widths = [
+        table_w * 0.10,  # Artículo
+        table_w * 0.40,  # Descripción
+        table_w * 0.10,  # Almacén
+        table_w * 0.13,  # Bultos
+        table_w * 0.11,  # BXP
+        table_w * 0.16,  # Pallets
+    ]
+    col_x = [M]
+    for w in col_widths[:-1]:
+        col_x.append(col_x[-1] + w)
+
+    THDR_H = 8 * _mm
+    c.setFillColor(YELLOW_HDR)
+    c.rect(M, y - THDR_H, table_w, THDR_H, fill=1, stroke=1)
+    c.setStrokeColor(BORDER)
+    c.setFillColor(DARK)
+    c.setFont("Helvetica-Bold", 9.5)
+    for i, h in enumerate(["ARTÍCULO", "DESCRIPCIÓN", "ALMACÉN", "BULTOS", "BXP", "PALLETS"]):
+        c.drawCentredString(col_x[i] + col_widths[i] / 2, y - THDR_H + 2.5 * _mm, h)
+    y -= THDR_H
+
+    ROW_H = 7 * _mm
+    if df.empty:
+        c.setFillColor(_col.HexColor("#777777"))
+        c.setFont("Helvetica-Oblique", 10)
+        c.drawCentredString(PW / 2, y - 10 * _mm, "Sin SKUs en Almacenes 1/3 para clasificar.")
+        y -= 20 * _mm
+    else:
+        for i, row in df.reset_index(drop=True).iterrows():
+            if y < 60 * _mm:
+                c.showPage()
+                y = PH - 20 * _mm
+                c.setFillColor(YELLOW_HDR)
+                c.rect(M, y - THDR_H, table_w, THDR_H, fill=1, stroke=1)
+                c.setFillColor(DARK)
+                c.setFont("Helvetica-Bold", 9.5)
+                for j, h in enumerate(["ARTÍCULO", "DESCRIPCIÓN", "ALMACÉN", "BULTOS", "BXP", "PALLETS"]):
+                    c.drawCentredString(col_x[j] + col_widths[j] / 2, y - THDR_H + 2.5 * _mm, h)
+                y -= THDR_H
+
+            bg = BAND_LIGHT if i % 2 == 0 else BAND_WHITE
+            c.setFillColor(bg)
+            c.rect(M, y - ROW_H, table_w, ROW_H, fill=1, stroke=0)
+            c.setStrokeColor(BORDER)
+            c.setLineWidth(0.3)
+            c.rect(M, y - ROW_H, table_w, ROW_H, fill=0, stroke=1)
+            for cx in col_x[1:]:
+                c.line(cx, y - ROW_H, cx, y)
+
+            alm = int(row["ALMACEN"])
+            alm_color = ALM1_TAG if alm == 1 else ALM3_TAG
+
+            c.setFillColor(_col.black)
+            c.setFont("Helvetica-Bold", 9)
+            c.drawCentredString(col_x[0] + col_widths[0] / 2, y - ROW_H + 2.2 * _mm, str(int(row["ARTICULO"])))
+            c.setFont("Helvetica", 8.5)
+            desc = str(row["DESCRIPCION"])[:48]
+            c.drawString(col_x[1] + 1.5 * _mm, y - ROW_H + 2.2 * _mm, desc)
+            c.setFillColor(alm_color)
+            c.setFont("Helvetica-Bold", 9)
+            c.drawCentredString(col_x[2] + col_widths[2] / 2, y - ROW_H + 2.2 * _mm, f"Alm {alm}")
+            c.setFillColor(_col.black)
+            c.setFont("Helvetica-Bold", 9.5)
+            c.drawRightString(col_x[3] + col_widths[3] - 1.5 * _mm, y - ROW_H + 2.2 * _mm,
+                              f"{float(row['BULTOS']):,.0f}".replace(",", "."))
+            c.setFont("Helvetica", 9)
+            c.drawCentredString(col_x[4] + col_widths[4] / 2, y - ROW_H + 2.2 * _mm,
+                                f"{float(row['BXP']):.0f}")
+            c.setFont("Helvetica-Bold", 9.5)
+            c.drawRightString(col_x[5] + col_widths[5] - 1.5 * _mm, y - ROW_H + 2.2 * _mm,
+                              f"{float(row['PALLETS']):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+            y -= ROW_H
+
+        # Fila TOTAL
+        TOT_H = 9 * _mm
+        c.setFillColor(TOTAL_BG)
+        c.rect(M, y - TOT_H, table_w, TOT_H, fill=1, stroke=1)
+        c.setFillColor(_col.white)
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(col_x[0] + 2 * _mm, y - TOT_H + 3 * _mm, f"TOTAL ({tot.get('skus', 0)} SKUs)")
+        c.drawRightString(col_x[3] + col_widths[3] - 1.5 * _mm, y - TOT_H + 3 * _mm,
+                          f"{float(tot.get('bultos', 0)):,.0f}".replace(",", "."))
+        c.drawRightString(col_x[5] + col_widths[5] - 1.5 * _mm, y - TOT_H + 3 * _mm,
+                          f"{float(tot.get('pallets', 0)):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        y -= TOT_H
+
+    # Caja de Productividad Estimada
+    prod = tot.get("productividad") or {}
+    if prod:
+        y -= 6 * _mm
+        BOX_H = 30 * _mm
+        c.setFillColor(_col.HexColor("#fff8e1"))
+        c.setStrokeColor(YELLOW_HDR)
+        c.setLineWidth(1.2)
+        c.rect(M, y - BOX_H, table_w, BOX_H, fill=1, stroke=1)
+        c.setFillColor(DARK)
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(M + 4 * _mm, y - 6 * _mm, "⏱  PRODUCTIVIDAD ESTIMADA DE CLASIFICACIÓN")
+
+        cell_w = table_w / 5
+        y_label = y - 12 * _mm
+        y_value = y - 19 * _mm
+        def _fmt_pal(v):
+            return f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        labels = [
+            ("Pallets a clasificar", _fmt_pal(prod.get('pallets_total', 0))),
+            ("Target × operario",    f"{prod.get('target_oper', 0)}"),
+            ("Pallets / hora",       f"{prod.get('pall_hora', 0)}"),
+            ("Personal necesario",   f"{prod.get('personal_nec', 0)}"),
+            ("Duración estimada",    f"{prod.get('duracion', '00:00')}"),
+        ]
+        for i, (lbl, val) in enumerate(labels):
+            cx = M + i * cell_w + cell_w / 2
+            c.setFillColor(_col.HexColor("#555555"))
+            c.setFont("Helvetica", 8.5)
+            c.drawCentredString(cx, y_label, lbl)
+            c.setFillColor(DARK)
+            c.setFont("Helvetica-Bold", 14 if i in (3, 4) else 12)
+            c.drawCentredString(cx, y_value, val)
+
+        c.setFillColor(_col.HexColor("#444444"))
+        c.setFont("Helvetica-Oblique", 8)
+        concl = (f"Próximo turno: {prod.get('personal_nec',0)} operarios · "
+                 f"{prod.get('pallets_total',0):.2f} pall · duración estimada {prod.get('duracion','00:00')} hs.")
+        c.drawCentredString(M + table_w/2, y - 26 * _mm, concl)
+        y -= BOX_H
+
+    # Footer
+    c.setFillColor(_col.HexColor("#555555"))
+    c.setFont("Helvetica-Oblique", 7)
+    c.drawString(M, 10 * _mm,
+                 "Fuente: ANR (BASE: H, K) + Frescura (DDM: A, C, D, G filtrado ALMACÉN ∈ {1,3}).")
+    c.drawRightString(PW - M, 10 * _mm,
+                      f"Picking Orchestrator v{APP_VERSION} · {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    c.save()
+    return bio.getvalue()
+
+
+
     """
     PDF a color vertical A4 con la clasificación por camión.
     Diseño inspirado en la planilla del Sheets (header azul, filas alternadas,
@@ -4071,34 +4297,34 @@ def _duracion_hhmm(ratio_horas: float) -> str:
 def render_tab_clasificacion():
     st.subheader("🏷️ Clasificación — Retornables (Almacén 1 y 3)")
     st.caption(
-        "Cantidad total **por camión** de los SKUs retornables (Alm 1 ÷ 12 un/bulto, Alm 3 ÷ 24 un/bulto). "
-        "Unidades sueltas del CAR se convierten en cajones extra y se suman a los bultos. "
-        "**Se actualiza automáticamente** al subir CAR + Frescura en Planilla de Carga."
+        "v4.15.1 — Input: **ANR.xlsx** (venta del día). "
+        "Cruza los SKUs contra la Frescura (hoja **DDM**) filtrando **ALMACÉN ∈ {1, 3}** "
+        "y calcula los pallets a clasificar = `Bultos_SKU / BXP_SKU`."
     )
 
-    # Reusar uploads de Tab 1 (Planilla) prioritariamente
-    car_use = st.session_state.get("t1_car") or st.session_state.get("t4_car") or st.session_state.get("tc_car")
-    fr_use  = st.session_state.get("t1_fr")  or st.session_state.get("t4_fr")  or st.session_state.get("tc_fr")
+    # Reusar ANR del Tab Tops y Frescura del Tab Planilla
+    anr_use = st.session_state.get("ts_anr") or st.session_state.get("tc_anr")
+    fr_use  = st.session_state.get("t1_fr")  or st.session_state.get("t4_fr") or st.session_state.get("tc_fr")
 
-    if not (car_use and fr_use):
+    if not (anr_use and fr_use):
         st.info(
-            "Subí el **CAR.xlsx** y la **Frescura 3.0** en la pestaña "
-            "**📦 Planilla de Carga** para que esta clasificación se genere automáticamente."
+            "Subí el **ANR.xlsx** (en este tab o en 🏆 Top SKUs) y la **Frescura 3.0** "
+            "(en 📦 Planilla de Carga) para generar la clasificación."
         )
-        with st.expander("…o subí los archivos acá mismo"):
+        with st.expander("…o subí los archivos acá mismo", expanded=True):
             col_a, col_b = st.columns(2)
             with col_a:
-                car_file = _file_uploader("CAR.xlsx (export Chess)", ["xlsx"], key="tc_car")
+                anr_file = _file_uploader("ANR.xlsx", ["xlsx"], key="tc_anr")
             with col_b:
                 fr_file = _file_uploader("Frescura 3.0.xlsx", ["xlsx"], key="tc_fr")
-            car_use = car_file or car_use
+            anr_use = anr_file or anr_use
             fr_use  = fr_file  or fr_use
-            if not (car_use and fr_use):
+            if not (anr_use and fr_use):
                 return
 
     try:
-        df_cl, tot = _build_clasificacion_retornables(
-            car_use.getvalue(), fr_use.getvalue()
+        df_cl, tot = _build_clasificacion_anr(
+            anr_use.getvalue(), fr_use.getvalue()
         )
     except Exception as e:
         st.error(f"❌ Error construyendo Clasificación: {e}")
@@ -4108,37 +4334,40 @@ def render_tab_clasificacion():
         return
 
     if df_cl.empty:
-        st.warning("No se encontraron bultos retornables (Almacén 1/3) en el CAR del día.")
+        st.warning(
+            "No se encontraron SKUs de Almacén 1 o 3 con ventas en el ANR. "
+            "Verificá que la Frescura tenga la hoja DDM con la columna ALMACÉN."
+        )
         return
 
-    # Omitir camiones con 0 carga (post-filtro DDM)
-    df_cl = df_cl[df_cl["Bultos Retornables"] > 0].reset_index(drop=True)
-    tot["camiones"] = int(len(df_cl))
-    tot["bultos"]   = float(df_cl["Bultos Retornables"].sum())
-    tot["pallets"]  = round(float(df_cl["Pallets Equivalentes"].sum()), 2)
-    tot["bultos_enteros"] = float(df_cl["_bultos_enteros"].sum())
-    tot["unids"]          = float(df_cl["_unids"].sum())
-    tot["cajones_extra"]  = float(df_cl["_cajones_extra"].sum())
+    # ── Métricas top ──────────────────────────────────────────────────────
+    n_alm1 = int((df_cl["ALMACEN"] == 1).sum())
+    n_alm3 = int((df_cl["ALMACEN"] == 3).sum())
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("SKUs a clasificar", tot["skus"], help=f"Alm 1: {n_alm1} · Alm 3: {n_alm3}")
+    m2.metric("Bultos totales",    f"{tot['bultos']:,.0f}".replace(",", "."))
+    m3.metric("Pallets a clasificar", f"{tot['pallets']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+              help="Σ (Bultos_SKU / BXP_SKU desde DDM)")
+    pall_alm1 = float(df_cl.loc[df_cl["ALMACEN"] == 1, "PALLETS"].sum())
+    pall_alm3 = float(df_cl.loc[df_cl["ALMACEN"] == 3, "PALLETS"].sum())
+    m4.metric("Pallets Alm 1 / Alm 3",
+              f"{pall_alm1:,.2f} / {pall_alm3:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Camiones con retornables", tot["camiones"])
-    m2.metric("Bultos totales",            f"{tot['bultos']:,.0f}",
-              help=f"Enteros: {tot['bultos_enteros']:,.0f} + Cajones extra (un. sueltas ÷12 / ÷24): {tot['cajones_extra']:,.0f}")
-    m3.metric("Pallets equivalentes",      f"{tot['pallets']:,.2f}",
-              help="Total bultos / 50 (BXP estándar retornable)")
-
-    # ── Tabla simplificada: Camión | Bultos | Pallets ──────────────────────
+    # ── Tabla detallada por SKU ───────────────────────────────────────────
     df_disp = pd.DataFrame({
-        "Camión":  df_cl["Camión"],
-        "Bultos":  df_cl["Bultos Retornables"].map(lambda x: f"{x:,.0f}"),
-        "Pallets": df_cl["Pallets Equivalentes"].map(lambda x: f"{x:,.2f}"),
+        "Artículo":    df_cl["ARTICULO"].astype(int).astype(str),
+        "Descripción": df_cl["DESCRIPCION"].astype(str).str[:60],
+        "Almacén":     df_cl["ALMACEN"].apply(lambda x: f"Alm {int(x)}"),
+        "Bultos":      df_cl["BULTOS"].map(lambda x: f"{x:,.0f}".replace(",", ".")),
+        "BXP":         df_cl["BXP"].map(lambda x: f"{x:.0f}"),
+        "Pallets":     df_cl["PALLETS"].map(lambda x: f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")),
     })
     df_disp.loc[len(df_disp)] = [
-        "TOTAL",
-        f"{tot['bultos']:,.0f}",
-        f"{tot['pallets']:,.2f}",
+        "TOTAL", f"{tot['skus']} SKUs", "—",
+        f"{tot['bultos']:,.0f}".replace(",", "."),
+        "—",
+        f"{tot['pallets']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
     ]
-
     st.dataframe(df_disp, width="stretch", height=440, hide_index=True)
 
     # ── Bloque Productividad Estimada ──────────────────────────────────────
@@ -4147,24 +4376,25 @@ def render_tab_clasificacion():
 
     pallets_total = float(tot["pallets"])
     ratio         = pallets_total / TARGET_PALL_OPERARIO if TARGET_PALL_OPERARIO else 0
-    personal_nec  = int(_m.ceil(ratio)) if ratio > 0 else 0
+    # Fórmula del Sheets: ENTERO(ratio) + 1 (siempre redondea agregando uno)
+    personal_nec  = (int(_m.floor(ratio)) + 1) if ratio > 0 else 0
     duracion      = _duracion_hhmm(ratio)
 
     p1, p2, p3, p4, p5 = st.columns(5)
-    p1.metric("Pallets a clasificar", f"{pallets_total:,.2f}")
+    p1.metric("Pallets a clasificar", f"{pallets_total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
     p2.metric("Target × operario",    f"{TARGET_PALL_OPERARIO}")
     p3.metric("Pallets / hora",       f"{PALL_X_HORA}")
     p4.metric("Personal necesario",   f"{personal_nec}",
-              help=f"ratio crudo = {ratio:.2f} → redondeo hacia arriba")
+              help=f"ratio crudo = {ratio:.4f} → ENTERO + 1 (réplica Sheets)")
     p5.metric("Duración estimada",    duracion,
-              help=f"Estimación basada en {pallets_total:.2f} pall ÷ {TARGET_PALL_OPERARIO} target = {ratio:.2f} hs")
+              help=f"{pallets_total:.2f} pall ÷ {TARGET_PALL_OPERARIO} target = {ratio:.4f} hs → HH:MM")
 
     st.caption(
-        f"📌 Para el próximo día se requieren **{personal_nec} operarios** clasificando "
-        f"**{pallets_total:,.2f} pallets** con duración estimada de **{duracion} hs**."
+        f"📌 Próximo turno: **{personal_nec} operarios** para clasificar "
+        f"**{pallets_total:,.2f} pallets** en **{duracion} hs** estimadas."
     )
 
-    # Guardar para uso de PDF
+    # Guardar para el PDF
     tot["productividad"] = {
         "pallets_total":  pallets_total,
         "target_oper":    TARGET_PALL_OPERARIO,
@@ -4174,10 +4404,10 @@ def render_tab_clasificacion():
         "duracion":       duracion,
     }
 
-    # PDF + TSV
+    # ── PDF + TSV ─────────────────────────────────────────────────────────
     fecha_hoy = datetime.now().strftime("%d/%m/%Y")
     try:
-        pdf_bytes = build_clasificacion_pdf(df_cl, tot, fecha_str=fecha_hoy)
+        pdf_bytes = build_clasificacion_anr_pdf(df_cl, tot, fecha_str=fecha_hoy)
     except Exception as e:
         pdf_bytes = None
         st.error(f"❌ Error generando PDF Clasificación: {e}")
@@ -4185,9 +4415,9 @@ def render_tab_clasificacion():
     col_dl1, col_dl2 = st.columns(2)
     if pdf_bytes:
         col_dl1.download_button(
-            "⬇ Descargar PDF Clasificación (color)",
+            "⬇ Descargar PDF Clasificación",
             data=pdf_bytes,
-            file_name=_stamp("Clasificacion", "pdf"),
+            file_name=_stamp("Clasificacion_ANR", "pdf"),
             mime="application/pdf",
             type="primary",
             width="stretch",
@@ -4197,7 +4427,7 @@ def render_tab_clasificacion():
     col_dl2.download_button(
         "📋 Descargar TSV (pegar en Sheets)",
         data=tsv.encode("utf-8"),
-        file_name="clasificacion_retornables.tsv",
+        file_name="clasificacion_anr_almacen_1_3.tsv",
         mime="text/tab-separated-values",
         width="stretch",
         key="clasif_tsv_dl",
@@ -4205,12 +4435,14 @@ def render_tab_clasificacion():
 
     with st.expander("ℹ️ Metodología"):
         st.markdown(
-            "- **Retornables**: SKUs de **Almacén 1** (12 un/bulto) y **Almacén 3** (24 un/bulto) — los únicos retornables.\n"
-            "- **Filtro DDM**: solo SKUs presentes en la DDM (Frescura). Excluye envases/esqueletos automáticamente.\n"
-            "- **Bultos**: bultos enteros del CAR + cajones extra calculados desde unidades sueltas "
-            "(`Unids ÷ 12` en Alm 1, `Unids ÷ 24` en Alm 3).\n"
-            "- **Pallets equivalentes**: `Total Bultos ÷ 50` (BXP estándar retornable).\n"
-            f"- **Productividad**: `pallets / {TARGET_PALL_OPERARIO}` → personal necesario (ceil) + duración HH:MM."
+            "- **Input principal**: ANR.xlsx (hoja BASE, header en fila 2): col H = `ARTÍCULO`, col K = `BULTOS`.\n"
+            "- **Universo de SKUs**: Frescura → hoja **DDM**, filtrando `ALMACÉN ∈ {1, 3}` (col A). "
+            "Se toma `BULTOS X PALLET` (col G) por SKU.\n"
+            "- **Cálculo por SKU**: `pallets = BULTOS / BXP` (per‑SKU, no promedio).\n"
+            "- **Personal necesario**: `ENTERO(total_pallets / target_x_operario) + 1` "
+            "(idéntico a `=+ENTERO(E43)+1` del Sheets).\n"
+            "- **Duración HH:MM**: hs = ENTERO(ratio); min = REDONDEAR((ratio−hs)×60, 0).\n"
+            f"- **Constantes**: target × operario = {TARGET_PALL_OPERARIO}, pall/hora = {PALL_X_HORA}."
         )
 
 
@@ -4605,16 +4837,7 @@ def build_top_clientes_anr_pdf(df_top: pd.DataFrame, fecha_str: str = "") -> byt
                           _fmt_money(row["IMPORTE"]))
         y -= ROW_H
 
-    # Total
-    TOT_H = 9 * _mm
-    c.setFillColor(TOTAL_BG)
-    c.rect(M, y - TOT_H, table_w, TOT_H, fill=1, stroke=1)
-    c.setFillColor(_col.white)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(col_x[0] + 2 * _mm, y - TOT_H + 3 * _mm, f"TOTAL TOP {len(df_top)}")
-    c.drawRightString(col_x[2] + col_widths[2] - 1.5 * _mm, y - TOT_H + 3 * _mm, _fmt_num(tot_b, 0))
-    c.drawRightString(col_x[3] + col_widths[3] - 1.5 * _mm, y - TOT_H + 3 * _mm, _fmt_num(tot_h))
-    c.drawRightString(col_x[4] + col_widths[4] - 1.5 * _mm, y - TOT_H + 3 * _mm, _fmt_money(tot_i))
+    # (v4.15.1) Sin fila TOTAL — el top no representa el universo, no tiene sentido sumarlo.
 
     # Footer
     c.setFillColor(_col.HexColor("#555555"))
@@ -4658,21 +4881,54 @@ def render_tab_top_skus():
     fecha_hoy = datetime.now().strftime("%d/%m/%Y")
 
     # ════════════════════════════════════════════════════════════════════
-    # SECCIÓN 1 — TOP 10 SKUs + RESUMEN POR DIVISIÓN
+    # SECCIÓN 1 — TOP 10 SKUs (Totales del día + División + Top)
     # ════════════════════════════════════════════════════════════════════
     st.markdown("### 🏆 Top 10 SKUs — Venta del Día")
 
+    # ── Totales globales del día (de TODA la venta, no del top 10) ──────
+    if not df_div.empty:
+        tot_b_day = float(df_div["BULTOS"].sum())
+        tot_h_day = float(df_div["HL"].sum())
+        tot_i_day = float(df_div["IMPORTE"].sum())
+    else:
+        tot_b_day = float(df_top_skus["BULTOS"].sum()) if not df_top_skus.empty else 0
+        tot_h_day = float(df_top_skus["HL"].sum())     if not df_top_skus.empty else 0
+        tot_i_day = float(df_top_skus["IMPORTE"].sum()) if not df_top_skus.empty else 0
+
+    # Layout: cards arriba a la izquierda (3 col) + división compacta a la derecha
+    col_cards, col_div = st.columns([1.0, 1.2], gap="medium")
+    with col_cards:
+        st.markdown("##### 📈 Venta total del día")
+        cc1, cc2, cc3 = st.columns(3)
+        cc1.metric("Bultos totales vendidos", _fmt_num(tot_b_day, 0))
+        cc2.metric("HL totales vendido",      _fmt_num(tot_h_day))
+        cc3.metric("Importe total vendido",   _fmt_money(tot_i_day))
+
+    with col_div:
+        st.markdown("##### 📊 Totales por División (complemento)")
+        if df_div.empty:
+            st.info("Sin divisiones en el ANR.")
+        else:
+            df_div_disp = df_div.copy()
+            # Orden columnas pedido: Bultos → HL → Importe
+            df_div_disp = df_div_disp[["DIVISION", "BULTOS", "HL", "IMPORTE"]]
+            df_div_disp["BULTOS"]  = df_div_disp["BULTOS"].map(lambda x: _fmt_num(x, 0))
+            df_div_disp["HL"]      = df_div_disp["HL"].map(lambda x: _fmt_num(x))
+            df_div_disp["IMPORTE"] = df_div_disp["IMPORTE"].map(lambda x: _fmt_money(x))
+            df_div_disp.rename(columns={
+                "DIVISION": "División",
+                "BULTOS":   "Bultos",
+                "HL":       "HL",
+                "IMPORTE":  "Importe",
+            }, inplace=True)
+            st.dataframe(df_div_disp, width="stretch", height=320, hide_index=True)
+
+    st.markdown("")  # spacer
+
+    # ── Top 10 SKUs (tabla, orden columnas: Bultos → HL → Importe) ──────
     if df_top_skus.empty:
         st.warning("No se encontraron SKUs con ventas > 0 en el ANR.")
     else:
-        tb = float(df_top_skus["BULTOS"].sum())
-        th = float(df_top_skus["HL"].sum())
-        ti = float(df_top_skus["IMPORTE"].sum())
-        mc1, mc2, mc3 = st.columns(3)
-        mc1.metric("Bultos (Top 10)",   _fmt_num(tb, 0))
-        mc2.metric("HL (Top 10)",       _fmt_num(th))
-        mc3.metric("Importe (Top 10)",  _fmt_money(ti))
-
         df_disp = df_top_skus.copy()
         df_disp["CODIGO"]  = df_disp["CODIGO"].astype(int).astype(str)
         df_disp["BULTOS"]  = df_disp["BULTOS"].map(lambda x: _fmt_num(x, 0))
@@ -4686,35 +4942,9 @@ def render_tab_top_skus():
             "HL": "HL",
             "IMPORTE": "Importe",
         }, inplace=True)
+        # Orden columnas: Código | Descripción | Bultos | HL | Importe
         df_disp = df_disp[["Código", "Descripción", "Bultos", "HL", "Importe"]]
         st.dataframe(df_disp, width="stretch", height=440)
-
-    # ── Resumen por División ────────────────────────────────────────────
-    st.markdown("### 📊 Totales por División — Venta del Día")
-    if df_div.empty:
-        st.warning("No se encontraron divisiones en el ANR.")
-    else:
-        df_div_disp = df_div.copy()
-        df_div_disp["BULTOS"]  = df_div_disp["BULTOS"].map(lambda x: _fmt_num(x, 0))
-        df_div_disp["HL"]      = df_div_disp["HL"].map(lambda x: _fmt_num(x))
-        df_div_disp["IMPORTE"] = df_div_disp["IMPORTE"].map(lambda x: _fmt_money(x))
-        df_div_disp.rename(columns={
-            "DIVISION": "División",
-            "BULTOS": "Bultos",
-            "HL": "HL",
-            "IMPORTE": "Importe",
-        }, inplace=True)
-        # Fila total
-        tot_db = float(df_div["BULTOS"].sum())
-        tot_dh = float(df_div["HL"].sum())
-        tot_di = float(df_div["IMPORTE"].sum())
-        df_div_disp.loc[len(df_div_disp)] = [
-            "TOTAL GENERAL",
-            _fmt_num(tot_db, 0),
-            _fmt_num(tot_dh),
-            _fmt_money(tot_di),
-        ]
-        st.dataframe(df_div_disp, width="stretch", height=380, hide_index=True)
 
     # PDF Top SKUs
     if not df_top_skus.empty and not df_div.empty:
@@ -4735,21 +4965,16 @@ def render_tab_top_skus():
     st.divider()
 
     # ════════════════════════════════════════════════════════════════════
-    # SECCIÓN 2 — TOP 10 CLIENTES
+    # SECCIÓN 2 — TOP 10 CLIENTES (sin cards de bultos/hl/importe)
     # ════════════════════════════════════════════════════════════════════
     st.markdown("### 👥 Top 10 Clientes — Venta del Día")
     if df_top_cli.empty:
         st.warning("No se encontraron clientes con ventas > 0 en el ANR.")
     else:
-        tcb = float(df_top_cli["BULTOS"].sum())
-        tch = float(df_top_cli["HL"].sum())
-        tci = float(df_top_cli["IMPORTE"].sum())
-        cc1, cc2, cc3 = st.columns(3)
-        cc1.metric("Bultos (Top 10)",   _fmt_num(tcb, 0))
-        cc2.metric("HL (Top 10)",       _fmt_num(tch))
-        cc3.metric("Importe (Top 10)",  _fmt_money(tci))
-
+        # (v4.15.1) Sin métricas arriba — solo la tabla.
         df_cli_disp = df_top_cli.copy()
+        # Orden columnas: Cliente | Bultos | HL | Importe
+        df_cli_disp = df_cli_disp[["CLIENTE", "BULTOS", "HL", "IMPORTE"]]
         df_cli_disp["BULTOS"]  = df_cli_disp["BULTOS"].map(lambda x: _fmt_num(x, 0))
         df_cli_disp["HL"]      = df_cli_disp["HL"].map(lambda x: _fmt_num(x))
         df_cli_disp["IMPORTE"] = df_cli_disp["IMPORTE"].map(lambda x: _fmt_money(x))
@@ -4762,7 +4987,7 @@ def render_tab_top_skus():
         }, inplace=True)
         st.dataframe(df_cli_disp, width="stretch", height=440)
 
-        # PDF Top Clientes
+        # PDF Top Clientes (sin fila TOTAL, ver build_top_clientes_anr_pdf)
         try:
             pdf_cli = build_top_clientes_anr_pdf(df_top_cli, fecha_str=fecha_hoy)
             st.download_button(
@@ -4779,13 +5004,12 @@ def render_tab_top_skus():
 
     with st.expander("ℹ️ Metodología"):
         st.markdown(
-            "- **Fuente**: archivo ANR.xlsx (Análisis de Rechazos), que también incluye la venta del próximo día.\n"
-            "- **Top SKUs**: hoja `BASE`, columnas H (artículo), I (descripción), K (bultos), "
-            "M (importe neto), O (unidad de medida → HL). Agrupado por código y ordenado por bultos desc.\n"
-            "- **Resumen por División**: columna AT (descripción división) — totales de HL, bultos e importe.\n"
-            "- **Top Clientes**: hoja `CLIENTES`, columnas A (cliente), B (bultos), E (importe), H (HL). "
-            "Ya viene preagregada; se ordena por bultos desc.\n"
-            "- Se omite la columna 'Unidad de Paquete' (no relevante para el análisis solicitado)."
+            "- **Fuente**: ANR.xlsx (Análisis de Rechazos / venta del próximo día).\n"
+            "- **Venta total del día** (cards arriba): suma de TODA la hoja BASE — no solo del top.\n"
+            "- **Top SKUs**: hoja `BASE`, cols H/I/K/M/O. Agrupado por código, ordenado por bultos desc.\n"
+            "- **Totales por División**: col AT (descripción división) — complemento compacto.\n"
+            "- **Top Clientes**: hoja `CLIENTES` (preagregada), cols A/B/E/H. Sin cards de métricas y "
+            "**sin fila de totales** en el PDF (no representan al universo de clientes)."
         )
 
 
@@ -4996,6 +5220,63 @@ def main():
         page_title=f"Picking Orchestrator v{APP_VERSION}",
         page_icon="📦",
         layout="wide",
+    )
+
+    # ─ Forzar modo CLARO (override del tema global) ───────────────────────
+    st.markdown(
+        """
+        <style>
+        /* Forzar modo claro independientemente del tema del sistema */
+        :root {
+            --background-color: #ffffff;
+            --secondary-background-color: #f5f7fb;
+            --text-color: #1a1a1a;
+            --font: "Source Sans Pro", sans-serif;
+        }
+        html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"],
+        [data-testid="stHeader"], .main, .block-container {
+            background-color: #ffffff !important;
+            color: #1a1a1a !important;
+        }
+        [data-testid="stSidebar"] {
+            background-color: #f5f7fb !important;
+        }
+        [data-testid="stSidebar"] * { color: #1a1a1a !important; }
+        /* Inputs, selects, multiselect en claro */
+        .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] > div,
+        .stMultiSelect div[data-baseweb="select"] > div, .stDateInput input, .stTimeInput input,
+        textarea {
+            background-color: #ffffff !important;
+            color: #1a1a1a !important;
+        }
+        /* Tablas, dataframes, metric cards */
+        [data-testid="stMetric"] { background-color: #f5f7fb !important; padding: 8px 12px;
+            border-radius: 8px; border: 1px solid #e0e4ec; }
+        [data-testid="stMetric"] label, [data-testid="stMetric"] div { color: #1a1a1a !important; }
+        [data-testid="stDataFrame"] { background-color: #ffffff !important; }
+        .stDataFrame [role="grid"] * { color: #1a1a1a !important; }
+        /* Expanders */
+        [data-testid="stExpander"] { background-color: #f5f7fb !important; border: 1px solid #e0e4ec; }
+        /* Captions, code, markdown text */
+        .stMarkdown, .stCaption, p, span, div, li, label, h1, h2, h3, h4, h5, h6 {
+            color: #1a1a1a;
+        }
+        /* Botones primary del banner mantienen su color */
+        .stButton button[kind="primary"], .stDownloadButton button[kind="primary"] {
+            background-color: #2e5fa3 !important; color: #ffffff !important;
+        }
+        /* Tabs */
+        [data-baseweb="tab-list"] { background-color: #f5f7fb !important; }
+        [data-baseweb="tab"] { color: #1a1a1a !important; }
+        [data-baseweb="tab"][aria-selected="true"] {
+            background-color: #ffffff !important;
+            border-bottom: 2px solid #2e5fa3 !important;
+        }
+        /* Alerts */
+        [data-testid="stAlert"] { color: #1a1a1a !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
 
     # Banner header
