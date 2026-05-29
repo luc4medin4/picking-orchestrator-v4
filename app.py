@@ -1,17 +1,22 @@
 """
-Picking Orchestrator v4.16 — Beccacece Hnos SA
+Picking Orchestrator v4.17 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
 
-CAMBIOS v4.16:
-  - Tema OSCURO restaurado (se removió el override CSS forzado a claro).
-  - 🏷️ Clasificación: reenfoque POR CAMIÓN (no por SKU). Cols: Camión|Bultos|Pallets.
-    Mismos cálculos (DDM alm 1/3 + BXP per‑SKU); cambia solo la agrupación.
-    Usa col AP (Transporte) del ANR. PDF rediseñado a 3 columnas.
-  - 🏆 Top SKUs: 3 secciones explícitas (Venta total / Top SKUs / Top Clientes).
-    Columnas más angostas con column_config. PDFs sin cambios (1 hoja c/u).
-  - 🚛 Camiones T2: PDF único combinado server-side (requests + pypdf merge),
-    sin abrir pestañas. Solo camiones con bultos > 0 mañana, 1 hoja por camión.
-    Requiere Sheets compartido como "cualquiera con el link · Lector".
+CAMBIOS v4.17:
+  - 🏷️ Clasificación: ahora es el uploader primario de **ANR.xlsx** (key `tc_anr`).
+    La Frescura se toma EXCLUSIVAMENTE desde 📦 Planilla de Carga (`t1_fr`).
+    Se removieron los uploaders locales de Frescura y los fallbacks (`t4_fr`, `tc_fr`).
+  - 🏆 Top SKUs: ya no tiene uploader propio de ANR. Reusa el ANR cargado en
+    🏷️ Clasificación (`tc_anr`).
+  - Columna **IMPORTE eliminada** de toda la UI y de todos los PDFs:
+    Top SKUs (tabla + métrica "Importe total vendido"), División, Top Clientes.
+    Quedan solo BULTOS y HL.
+
+CAMBIOS v4.16 (previos):
+  - Tema OSCURO restaurado.
+  - 🏷️ Clasificación reenfocada POR CAMIÓN (Camión|Bultos|Pallets).
+  - 🏆 Top SKUs con 3 secciones explícitas.
+  - 🚛 Camiones T2: PDF único combinado server-side.
 """
 import io, math, hashlib, unicodedata, os, shutil, json
 from datetime import datetime
@@ -35,7 +40,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.16.0"
+APP_VERSION = "4.17.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -4363,31 +4368,29 @@ def _duracion_hhmm(ratio_horas: float) -> str:
 def render_tab_clasificacion():
     st.subheader("🏷️ Clasificación — Retornables por Camión (Almacén 1 y 3)")
     st.caption(
-        "v4.16 — Input: **ANR.xlsx** (venta del día) + **Frescura 3.0** (DDM). "
+        "v4.17 — Input: **ANR.xlsx** (acá) + **Frescura 3.0** (desde 📦 Planilla de Carga). "
         "Filtra los SKUs de **ALMACÉN ∈ {1, 3}** (envases vacíos + esqueletos) y muestra "
         "**cuánto retorna cada camión** en bultos y pallets. Cálculo per‑fila: "
         "`pallets = bultos / BXP(SKU)`."
     )
 
-    # Reusar ANR del Tab Tops y Frescura del Tab Planilla
-    anr_use = st.session_state.get("ts_anr") or st.session_state.get("tc_anr")
-    fr_use  = st.session_state.get("t1_fr")  or st.session_state.get("t4_fr") or st.session_state.get("tc_fr")
+    # ANR: uploader primario acá (también lo reusa 🏆 Top SKUs)
+    anr_file = _file_uploader("ANR.xlsx (Análisis de Rechazos / venta del día)",
+                              ["xlsx"], key="tc_anr", required=False)
+    anr_use = anr_file or st.session_state.get("tc_anr")
 
-    if not (anr_use and fr_use):
-        st.info(
-            "Subí el **ANR.xlsx** (en este tab o en 🏆 Top SKUs) y la **Frescura 3.0** "
-            "(en 📦 Planilla de Carga) para generar la clasificación."
+    # Frescura: SOLO desde Planilla de Carga
+    fr_use = st.session_state.get("t1_fr")
+
+    if not anr_use:
+        st.info("Subí el **ANR.xlsx** acá arriba para generar la clasificación.")
+        return
+    if not fr_use:
+        st.warning(
+            "⚠️ Falta la **Frescura 3.0**. Subila en la pestaña **📦 Planilla de Carga** "
+            "(este tab la reusa de ahí, no tiene uploader propio)."
         )
-        with st.expander("…o subí los archivos acá mismo", expanded=True):
-            col_a, col_b = st.columns(2)
-            with col_a:
-                anr_file = _file_uploader("ANR.xlsx", ["xlsx"], key="tc_anr")
-            with col_b:
-                fr_file = _file_uploader("Frescura 3.0.xlsx", ["xlsx"], key="tc_fr")
-            anr_use = anr_file or anr_use
-            fr_use  = fr_file  or fr_use
-            if not (anr_use and fr_use):
-                return
+        return
 
     try:
         df_cl, tot = _build_clasificacion_anr(
@@ -4925,16 +4928,14 @@ def build_top_clientes_anr_pdf(df_top: pd.DataFrame, fecha_str: str = "") -> byt
 def render_tab_top_skus():
     st.subheader("🏆 Tops del Día — ANR (Análisis de Rechazos / Venta)")
     st.caption(
-        "Input: **ANR.xlsx** — informe que contiene la venta del próximo día. "
+        "Input: **ANR.xlsx** (cargado en 🏷️ Clasificación). "
         "Genera **Venta total**, **Top 10 SKUs** y **Top 10 Clientes**."
     )
 
-    # Uploader único de ANR (con cache en session_state)
-    anr_file = _file_uploader("ANR.xlsx (Análisis de Rechazos)", ["xlsx"], key="ts_anr",
-                              required=False)
-    anr_use = anr_file or st.session_state.get("ts_anr")
+    # ANR: reusa el cargado en 🏷️ Clasificación (no tiene uploader propio)
+    anr_use = st.session_state.get("tc_anr")
     if not anr_use:
-        st.info("Subí el **ANR.xlsx** para generar los tops.")
+        st.info("Subí el **ANR.xlsx** en la pestaña **🏷️ Clasificación** para generar los tops.")
         return
 
     try:
@@ -4959,27 +4960,23 @@ def render_tab_top_skus():
     if not df_div.empty:
         tot_b_day = float(df_div["BULTOS"].sum())
         tot_h_day = float(df_div["HL"].sum())
-        tot_i_day = float(df_div["IMPORTE"].sum())
     else:
         tot_b_day = float(df_top_skus["BULTOS"].sum()) if not df_top_skus.empty else 0
         tot_h_day = float(df_top_skus["HL"].sum())     if not df_top_skus.empty else 0
-        tot_i_day = float(df_top_skus["IMPORTE"].sum()) if not df_top_skus.empty else 0
 
-    cc1, cc2, cc3 = st.columns(3)
+    cc1, cc2 = st.columns(2)
     cc1.metric("Bultos totales vendidos", _fmt_num(tot_b_day, 0))
     cc2.metric("HL totales vendido",      _fmt_num(tot_h_day))
-    cc3.metric("Importe total vendido",   _fmt_money(tot_i_day))
 
     # División como complemento opcional (compacto)
     if not df_div.empty:
         with st.expander("📊 Totales por División (complemento)", expanded=False):
             df_div_disp = df_div.copy()
-            df_div_disp = df_div_disp[["DIVISION", "BULTOS", "HL", "IMPORTE"]]
+            df_div_disp = df_div_disp[["DIVISION", "BULTOS", "HL"]]
             df_div_disp["BULTOS"]  = df_div_disp["BULTOS"].map(lambda x: _fmt_num(x, 0))
             df_div_disp["HL"]      = df_div_disp["HL"].map(lambda x: _fmt_num(x))
-            df_div_disp["IMPORTE"] = df_div_disp["IMPORTE"].map(lambda x: _fmt_money(x))
             df_div_disp.rename(columns={
-                "DIVISION": "División", "BULTOS": "Bultos", "HL": "HL", "IMPORTE": "Importe",
+                "DIVISION": "División", "BULTOS": "Bultos", "HL": "HL",
             }, inplace=True)
             st.dataframe(
                 df_div_disp, width="stretch", height=280, hide_index=True,
@@ -4987,7 +4984,6 @@ def render_tab_top_skus():
                     "División": st.column_config.TextColumn(width="medium"),
                     "Bultos":   st.column_config.TextColumn(width="small"),
                     "HL":       st.column_config.TextColumn(width="small"),
-                    "Importe":  st.column_config.TextColumn(width="small"),
                 },
             )
 
@@ -5005,13 +5001,12 @@ def render_tab_top_skus():
         df_disp["CODIGO"]  = df_disp["CODIGO"].astype(int).astype(str)
         df_disp["BULTOS"]  = df_disp["BULTOS"].map(lambda x: _fmt_num(x, 0))
         df_disp["HL"]      = df_disp["HL"].map(lambda x: _fmt_num(x))
-        df_disp["IMPORTE"] = df_disp["IMPORTE"].map(lambda x: _fmt_money(x))
         df_disp.index = range(1, len(df_disp) + 1)
         df_disp.rename(columns={
             "CODIGO": "Código", "DESCRIPCION": "Descripción",
-            "BULTOS": "Bultos", "HL": "HL", "IMPORTE": "Importe",
+            "BULTOS": "Bultos", "HL": "HL",
         }, inplace=True)
-        df_disp = df_disp[["Código", "Descripción", "Bultos", "HL", "Importe"]]
+        df_disp = df_disp[["Código", "Descripción", "Bultos", "HL"]]
         st.dataframe(
             df_disp, width="stretch", height=395,
             column_config={
@@ -5019,7 +5014,6 @@ def render_tab_top_skus():
                 "Descripción": st.column_config.TextColumn(width="large"),
                 "Bultos":      st.column_config.TextColumn(width="small"),
                 "HL":          st.column_config.TextColumn(width="small"),
-                "Importe":     st.column_config.TextColumn(width="small"),
             },
         )
 
@@ -5049,13 +5043,12 @@ def render_tab_top_skus():
         st.warning("No se encontraron clientes con ventas > 0 en el ANR.")
     else:
         df_cli_disp = df_top_cli.copy()
-        df_cli_disp = df_cli_disp[["CLIENTE", "BULTOS", "HL", "IMPORTE"]]
+        df_cli_disp = df_cli_disp[["CLIENTE", "BULTOS", "HL"]]
         df_cli_disp["BULTOS"]  = df_cli_disp["BULTOS"].map(lambda x: _fmt_num(x, 0))
         df_cli_disp["HL"]      = df_cli_disp["HL"].map(lambda x: _fmt_num(x))
-        df_cli_disp["IMPORTE"] = df_cli_disp["IMPORTE"].map(lambda x: _fmt_money(x))
         df_cli_disp.index = range(1, len(df_cli_disp) + 1)
         df_cli_disp.rename(columns={
-            "CLIENTE": "Cliente", "BULTOS": "Bultos", "HL": "HL", "IMPORTE": "Importe",
+            "CLIENTE": "Cliente", "BULTOS": "Bultos", "HL": "HL",
         }, inplace=True)
         st.dataframe(
             df_cli_disp, width="stretch", height=395,
@@ -5063,7 +5056,6 @@ def render_tab_top_skus():
                 "Cliente": st.column_config.TextColumn(width="large"),
                 "Bultos":  st.column_config.TextColumn(width="small"),
                 "HL":      st.column_config.TextColumn(width="small"),
-                "Importe": st.column_config.TextColumn(width="small"),
             },
         )
 
