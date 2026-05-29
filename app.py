@@ -36,7 +36,7 @@ from reportlab.pdfgen import canvas as rl_canvas
 from loguru import logger
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.11.0"
+APP_VERSION = "4.12.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -3845,6 +3845,49 @@ def build_clasificacion_pdf(df_cl: pd.DataFrame, tot: dict, fecha_str: str = "")
     c.drawCentredString(col_x[6] + col_widths[6] / 2, y - TOT_H + 3.5 * _mm, f"{tot['camiones']} cam.")
     y -= TOT_H
 
+    # ─ Caja de Productividad Estimada ─────────────────────────────────────
+    prod = tot.get("productividad") or {}
+    if prod:
+        y -= 6 * _mm
+        BOX_H = 30 * _mm
+        c.setFillColor(_col.HexColor("#fff8e1"))  # crema suave
+        c.setStrokeColor(YELLOW_HDR)
+        c.setLineWidth(1.2)
+        c.rect(M, y - BOX_H, table_w, BOX_H, fill=1, stroke=1)
+
+        # Título caja
+        c.setFillColor(DARK)
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(M + 4 * _mm, y - 6 * _mm, "⏱  PRODUCTIVIDAD ESTIMADA DE CLASIFICACIÓN")
+
+        # Grid 5 columnas
+        cell_w = table_w / 5
+        y_label = y - 12 * _mm
+        y_value = y - 19 * _mm
+        labels = [
+            ("Pallets a clasificar", f"{prod.get('pallets_total', 0):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")),
+            ("Target × operario",    f"{prod.get('target_oper', 0)}"),
+            ("Pallets / hora",       f"{prod.get('pall_hora', 0)}"),
+            ("Personal necesario",   f"{prod.get('personal_nec', 0)}"),
+            ("Duración estimada",    f"{prod.get('duracion', '00:00')}"),
+        ]
+        for i, (lbl, val) in enumerate(labels):
+            cx = M + i * cell_w + cell_w / 2
+            c.setFillColor(_col.HexColor("#555555"))
+            c.setFont("Helvetica", 8.5)
+            c.drawCentredString(cx, y_label, lbl)
+            c.setFillColor(DARK)
+            c.setFont("Helvetica-Bold", 14 if i in (3, 4) else 12)
+            c.drawCentredString(cx, y_value, val)
+
+        # Conclusión
+        c.setFillColor(_col.HexColor("#444444"))
+        c.setFont("Helvetica-Oblique", 8)
+        concl = (f"Próximo turno: {prod.get('personal_nec',0)} operarios · "
+                 f"{prod.get('pallets_total',0):.2f} pall · duración estimada {prod.get('duracion','00:00')} hs.")
+        c.drawCentredString(M + table_w/2, y - 26 * _mm, concl)
+        y -= BOX_H
+
     # ─ Footer ─
     c.setFillColor(_col.HexColor("#555555"))
     c.setFont("Helvetica-Oblique", 7)
@@ -3997,12 +4040,31 @@ def build_top_skus_pdf(df_top: pd.DataFrame, fecha_str: str = "") -> bytes:
 # TAB CLASIFICACIÓN (v4.11) — auto-disparo + PDF a color
 # ════════════════════════════════════════════════════════════════════════════
 
+# ── Constantes productividad clasificación (Sheets DPO) ────────────────────
+TARGET_PALL_OPERARIO = 25   # pallets objetivo por operario
+PALL_X_HORA           = 7    # pallets/hora informativo
+
+
+def _duracion_hhmm(ratio_horas: float) -> str:
+    """1.26 → '01:16'. Convierte un decimal de horas a formato HH:MM.
+    Replica la fórmula del Sheets: entero(h) y redondeo de la fracción × 60.
+    """
+    import math as _m
+    if ratio_horas is None or ratio_horas <= 0 or not _m.isfinite(ratio_horas):
+        return "00:00"
+    h = int(_m.floor(ratio_horas))
+    m = int(round((ratio_horas - h) * 60))
+    if m == 60:
+        h += 1
+        m = 0
+    return f"{h:02d}:{m:02d}"
+
+
 def render_tab_clasificacion():
     st.subheader("🏷️ Clasificación — Retornables (Almacén 1 y 3)")
     st.caption(
-        "Cantidad total **por camión** de los SKUs retornables presentes en DDM. "
-        "Excluye envases/esqueletos (2776, 2731, 2730, 2780…). "
-        "Pallets equivalentes = Bultos ÷ Bultos×Pallet (DDM Frescura). "
+        "Cantidad total **por camión** de los SKUs retornables (Alm 1 ÷ 12 un/bulto, Alm 3 ÷ 24 un/bulto). "
+        "Unidades sueltas del CAR se convierten en cajones extra y se suman a los bultos. "
         "**Se actualiza automáticamente** al subir CAR + Frescura en Planilla de Carga."
     )
 
@@ -4050,34 +4112,59 @@ def render_tab_clasificacion():
     tot["unids"]          = float(df_cl["_unids"].sum())
     tot["cajones_extra"]  = float(df_cl["_cajones_extra"].sum())
 
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3 = st.columns(3)
     m1.metric("Camiones con retornables", tot["camiones"])
     m2.metric("Bultos totales",            f"{tot['bultos']:,.0f}",
-              help=f"Enteros: {tot['bultos_enteros']:,.0f} + Cajones extra (un. sueltas): {tot['cajones_extra']:,.0f}")
-    m3.metric("Unidades sueltas",          f"{tot['unids']:,.0f}",
-              help="Suma de col 'Unids' del CAR. Se convierten en cajones extra: x12 (Alm 1), x24 (Alm 3).")
-    m4.metric("Pallets equivalentes",      f"{tot['pallets']:,.2f}",
+              help=f"Enteros: {tot['bultos_enteros']:,.0f} + Cajones extra (un. sueltas ÷12 / ÷24): {tot['cajones_extra']:,.0f}")
+    m3.metric("Pallets equivalentes",      f"{tot['pallets']:,.2f}",
               help="Total bultos / 50 (BXP estándar retornable)")
 
-    # Tabla display con desglose
+    # ── Tabla simplificada: Camión | Bultos | Pallets ──────────────────────
     df_disp = pd.DataFrame({
-        "Camión":              df_cl["Camión"],
-        "Bultos Enteros":      df_cl["_bultos_enteros"].map(lambda x: f"{x:,.0f}"),
-        "Un. Sueltas":         df_cl["_unids"].map(lambda x: f"{x:,.0f}" if x > 0 else "—"),
-        "Cajones Extra":       df_cl["_cajones_extra"].map(lambda x: f"{x:,.0f}" if x > 0 else "—"),
-        "Total Bultos":        df_cl["Bultos Retornables"].map(lambda x: f"{x:,.0f}"),
-        "Pallets Equiv.":      df_cl["Pallets Equivalentes"].map(lambda x: f"{x:,.2f}"),
+        "Camión":  df_cl["Camión"],
+        "Bultos":  df_cl["Bultos Retornables"].map(lambda x: f"{x:,.0f}"),
+        "Pallets": df_cl["Pallets Equivalentes"].map(lambda x: f"{x:,.2f}"),
     })
     df_disp.loc[len(df_disp)] = [
         "TOTAL",
-        f"{tot['bultos_enteros']:,.0f}",
-        f"{tot['unids']:,.0f}" if tot['unids'] > 0 else "—",
-        f"{tot['cajones_extra']:,.0f}" if tot['cajones_extra'] > 0 else "—",
         f"{tot['bultos']:,.0f}",
         f"{tot['pallets']:,.2f}",
     ]
 
     st.dataframe(df_disp, width="stretch", height=440, hide_index=True)
+
+    # ── Bloque Productividad Estimada ──────────────────────────────────────
+    import math as _m
+    st.markdown("### ⏱️ Productividad Estimada de Clasificación")
+
+    pallets_total = float(tot["pallets"])
+    ratio         = pallets_total / TARGET_PALL_OPERARIO if TARGET_PALL_OPERARIO else 0
+    personal_nec  = int(_m.ceil(ratio)) if ratio > 0 else 0
+    duracion      = _duracion_hhmm(ratio)
+
+    p1, p2, p3, p4, p5 = st.columns(5)
+    p1.metric("Pallets a clasificar", f"{pallets_total:,.2f}")
+    p2.metric("Target × operario",    f"{TARGET_PALL_OPERARIO}")
+    p3.metric("Pallets / hora",       f"{PALL_X_HORA}")
+    p4.metric("Personal necesario",   f"{personal_nec}",
+              help=f"ratio crudo = {ratio:.2f} → redondeo hacia arriba")
+    p5.metric("Duración estimada",    duracion,
+              help=f"Estimación basada en {pallets_total:.2f} pall ÷ {TARGET_PALL_OPERARIO} target = {ratio:.2f} hs")
+
+    st.caption(
+        f"📌 Para el próximo día se requieren **{personal_nec} operarios** clasificando "
+        f"**{pallets_total:,.2f} pallets** con duración estimada de **{duracion} hs**."
+    )
+
+    # Guardar para uso de PDF
+    tot["productividad"] = {
+        "pallets_total":  pallets_total,
+        "target_oper":    TARGET_PALL_OPERARIO,
+        "pall_hora":      PALL_X_HORA,
+        "personal_nec":   personal_nec,
+        "ratio":          ratio,
+        "duracion":       duracion,
+    }
 
     # PDF + TSV
     fecha_hoy = datetime.now().strftime("%d/%m/%Y")
@@ -4110,14 +4197,12 @@ def render_tab_clasificacion():
 
     with st.expander("ℹ️ Metodología"):
         st.markdown(
-            "- **Retornables**: SKUs de **Almacén 1 y 3** (los únicos retornables).\n"
-            "- **Filtro DDM**: solo SKUs presentes en la DDM. Excluye envases/esqueletos "
-            "(2776 BOT ARACELI, 2731 Q CERVEZAS, 2730 Q PLAS, 2780 BOT AMBAR, etc.).\n"
-            "- **Camiones omitidos**: los que quedan en 0 bultos tras el filtro.\n"
-            "- **Camión**: columna `Transporte` del CAR.\n"
-            "- **Bultos**: suma por camión, excluye remitos anulados.\n"
-            "- **Pallets equivalentes**: `Bultos ÷ Bultos×Pallet` (col `BULTOS X PALLET` de la DDM).\n"
-            "- **Estado**: ALTA (top 25% pallets), BAJA (bottom 25%), MEDIA (resto)."
+            "- **Retornables**: SKUs de **Almacén 1** (12 un/bulto) y **Almacén 3** (24 un/bulto) — los únicos retornables.\n"
+            "- **Filtro DDM**: solo SKUs presentes en la DDM (Frescura). Excluye envases/esqueletos automáticamente.\n"
+            "- **Bultos**: bultos enteros del CAR + cajones extra calculados desde unidades sueltas "
+            "(`Unids ÷ 12` en Alm 1, `Unids ÷ 24` en Alm 3).\n"
+            "- **Pallets equivalentes**: `Total Bultos ÷ 50` (BXP estándar retornable).\n"
+            f"- **Productividad**: `pallets / {TARGET_PALL_OPERARIO}` → personal necesario (ceil) + duración HH:MM."
         )
 
 
@@ -4125,120 +4210,574 @@ def render_tab_clasificacion():
 # TAB TOP SKUs (v4.11) — tab propia con auto-disparo
 # ════════════════════════════════════════════════════════════════════════════
 
+# ════════════════════════════════════════════════════════════════════════════
+# TAB TOPS desde ANR (v4.12) — Top SKUs + Top Clientes
+# Lee Excel ANR (Análisis de Rechazos / ventas próximo día) y arma dos tops.
+# ════════════════════════════════════════════════════════════════════════════
+
+def _build_top10_skus_anr(anr_bytes: bytes, n: int = 10) -> pd.DataFrame:
+    """Top N SKUs por BULTOS desc, agregando desde hoja 'BASE' del ANR.
+    Cols BASE: H=ARTÍCULO, I=DESCRIPCIÓN ARTÍCULO, K=BULTOS, M=IMPORTE NETO, O=UNIDAD DE MEDIDA (HL).
+    Devuelve DataFrame con columnas: CODIGO, DESCRIPCION, BULTOS, IMPORTE, HL.
+    """
+    df = pd.read_excel(io.BytesIO(anr_bytes), sheet_name="BASE", header=1)
+    if df.empty or df.shape[1] < 15:
+        return pd.DataFrame(columns=["CODIGO", "DESCRIPCION", "BULTOS", "IMPORTE", "HL"])
+
+    # Columnas posicionales H=7, I=8, K=10, M=12, O=14
+    sub = df.iloc[:, [7, 8, 10, 12, 14]].copy()
+    sub.columns = ["CODIGO", "DESCRIPCION", "BULTOS", "IMPORTE", "HL"]
+
+    sub["CODIGO"]  = pd.to_numeric(sub["CODIGO"],  errors="coerce")
+    sub["BULTOS"]  = pd.to_numeric(sub["BULTOS"],  errors="coerce").fillna(0)
+    sub["IMPORTE"] = pd.to_numeric(sub["IMPORTE"], errors="coerce").fillna(0)
+    sub["HL"]      = pd.to_numeric(sub["HL"],      errors="coerce").fillna(0)
+    sub = sub[sub["CODIGO"].notna() & (sub["BULTOS"] > 0)]
+
+    # Tomar la descripción más larga como representativa (más informativa)
+    sub["DESCRIPCION"] = sub["DESCRIPCION"].astype(str).fillna("")
+    agg = sub.groupby("CODIGO", as_index=False).agg(
+        DESCRIPCION=("DESCRIPCION", lambda x: max(x, key=len) if len(x) else ""),
+        BULTOS=("BULTOS", "sum"),
+        IMPORTE=("IMPORTE", "sum"),
+        HL=("HL", "sum"),
+    )
+    agg["CODIGO"] = agg["CODIGO"].astype(int)
+    agg = agg.sort_values("BULTOS", ascending=False).reset_index(drop=True)
+    return agg.head(n)
+
+
+def _build_division_summary_anr(anr_bytes: bytes) -> pd.DataFrame:
+    """Resumen por DESCRIPCIÓN DIVISION (col AT) desde hoja BASE.
+    Devuelve: DIVISION, BULTOS, IMPORTE, HL — ordenado por BULTOS desc.
+    """
+    df = pd.read_excel(io.BytesIO(anr_bytes), sheet_name="BASE", header=1)
+    if df.empty or df.shape[1] < 46:
+        return pd.DataFrame(columns=["DIVISION", "BULTOS", "IMPORTE", "HL"])
+
+    # K=10, M=12, O=14, AT=45
+    sub = df.iloc[:, [45, 10, 12, 14]].copy()
+    sub.columns = ["DIVISION", "BULTOS", "IMPORTE", "HL"]
+    sub["BULTOS"]  = pd.to_numeric(sub["BULTOS"],  errors="coerce").fillna(0)
+    sub["IMPORTE"] = pd.to_numeric(sub["IMPORTE"], errors="coerce").fillna(0)
+    sub["HL"]      = pd.to_numeric(sub["HL"],      errors="coerce").fillna(0)
+    sub = sub[sub["DIVISION"].notna() & (sub["DIVISION"].astype(str).str.strip() != "")]
+
+    agg = sub.groupby("DIVISION", as_index=False).agg(
+        BULTOS=("BULTOS", "sum"),
+        IMPORTE=("IMPORTE", "sum"),
+        HL=("HL", "sum"),
+    )
+    agg = agg.sort_values("BULTOS", ascending=False).reset_index(drop=True)
+    return agg
+
+
+def _build_top10_clientes_anr(anr_bytes: bytes, n: int = 10) -> pd.DataFrame:
+    """Top N clientes por BULTOS desc desde hoja 'CLIENTES' (ya preagregada).
+    Cols: A=Cliente, B=Bultos venta, E=Importe neto, H=Unidad medida (HL).
+    Devuelve: CLIENTE, BULTOS, IMPORTE, HL.
+    """
+    df = pd.read_excel(io.BytesIO(anr_bytes), sheet_name="CLIENTES", header=1)
+    if df.empty or df.shape[1] < 8:
+        return pd.DataFrame(columns=["CLIENTE", "BULTOS", "IMPORTE", "HL"])
+
+    sub = df.iloc[:, [0, 1, 4, 7]].copy()
+    sub.columns = ["CLIENTE", "BULTOS", "IMPORTE", "HL"]
+
+    # Filtrar filas válidas: cliente no nulo, no "-", no "Total general"
+    sub = sub[sub["CLIENTE"].notna()]
+    sub["CLIENTE"] = sub["CLIENTE"].astype(str).str.strip()
+    sub = sub[~sub["CLIENTE"].isin(["-", "Total general", "(en blanco)", ""])]
+    sub = sub[~sub["CLIENTE"].str.lower().str.startswith("total")]
+
+    sub["BULTOS"]  = pd.to_numeric(sub["BULTOS"],  errors="coerce").fillna(0)
+    sub["IMPORTE"] = pd.to_numeric(sub["IMPORTE"], errors="coerce").fillna(0)
+    sub["HL"]      = pd.to_numeric(sub["HL"],      errors="coerce").fillna(0)
+    sub = sub[sub["BULTOS"] > 0]
+
+    sub = sub.sort_values("BULTOS", ascending=False).reset_index(drop=True)
+    return sub.head(n)
+
+
+def _fmt_money(v: float) -> str:
+    """Formato $ Argentina: $ 12.345.678,90"""
+    if v is None or pd.isna(v):
+        return "—"
+    s = f"{float(v):,.2f}"
+    return "$ " + s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _fmt_num(v: float, dec: int = 2) -> str:
+    if v is None or pd.isna(v):
+        return "—"
+    s = f"{float(v):,.{dec}f}"
+    return s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def build_top_skus_anr_pdf(df_top: pd.DataFrame, df_div: pd.DataFrame,
+                           fecha_str: str = "") -> bytes:
+    """PDF a color: Top SKUs (arriba) + Resumen por División (abajo)."""
+    from reportlab.lib.pagesizes import A4 as _A4
+    from reportlab.lib import colors as _col
+    from reportlab.lib.units import mm as _mm
+    from reportlab.pdfgen import canvas as _cv
+    import io as _io
+
+    PW, PH = _A4
+    M = 12 * _mm
+
+    DARK = _col.HexColor("#1a3a6b")
+    MED  = _col.HexColor("#2e5fa3")
+    GOLD = _col.HexColor("#f8d772")
+    BAND_LIGHT = _col.HexColor("#f4f6fa")
+    BAND_WHITE = _col.white
+    BORDER = _col.HexColor("#8c8c8c")
+    TOTAL_BG = _col.HexColor("#1a3a6b")
+    DIV_HDR = _col.HexColor("#2e5fa3")
+
+    bio = _io.BytesIO()
+    c = _cv.Canvas(bio, pagesize=_A4)
+
+    # ─ Header banner ─
+    HDR_H = 22 * _mm
+    c.setFillColor(DARK)
+    c.rect(0, PH - HDR_H, PW, HDR_H, fill=1, stroke=0)
+    c.setFillColor(GOLD)
+    c.setFont("Helvetica-Bold", 17)
+    c.drawString(M, PH - 11 * _mm, "TOP SKUs — Venta del Día (ANR)")
+    c.setFillColor(_col.white)
+    c.setFont("Helvetica", 10)
+    c.drawString(M, PH - 17 * _mm, "Beccacece Hnos SA · DPO 2.1 — Pilar Almacén")
+    c.setFont("Helvetica-Bold", 11)
+    c.drawRightString(PW - M, PH - 11 * _mm, f"Fecha: {fecha_str}")
+
+    tot_b = float(df_top["BULTOS"].sum()) if len(df_top) else 0
+    tot_i = float(df_top["IMPORTE"].sum()) if len(df_top) else 0
+    tot_h = float(df_top["HL"].sum()) if len(df_top) else 0
+    c.setFont("Helvetica", 9)
+    c.drawRightString(PW - M, PH - 17 * _mm,
+                      f"Bultos: {_fmt_num(tot_b, 0)} · HL: {_fmt_num(tot_h)} · Imp: {_fmt_money(tot_i)}")
+
+    # ─ Tabla Top SKUs ─
+    y = PH - HDR_H - 8 * _mm
+    table_w = PW - 2 * M
+    # # | Código | Descripción | Bultos | HL | Importe
+    col_widths = [
+        table_w * 0.05,   # #
+        table_w * 0.10,   # Código
+        table_w * 0.40,   # Descripción
+        table_w * 0.12,   # Bultos
+        table_w * 0.10,   # HL
+        table_w * 0.23,   # Importe
+    ]
+    col_x = [M]
+    for w in col_widths[:-1]:
+        col_x.append(col_x[-1] + w)
+
+    THDR_H = 8 * _mm
+    c.setFillColor(GOLD)
+    c.rect(M, y - THDR_H, table_w, THDR_H, fill=1, stroke=1)
+    c.setStrokeColor(BORDER)
+    c.setFillColor(DARK)
+    c.setFont("Helvetica-Bold", 9.5)
+    headers = ["#", "CÓDIGO", "DESCRIPCIÓN", "BULTOS", "HL", "IMPORTE"]
+    for i, h in enumerate(headers):
+        c.drawCentredString(col_x[i] + col_widths[i] / 2, y - THDR_H + 2.5 * _mm, h)
+    y -= THDR_H
+
+    ROW_H = 8 * _mm
+    for i, row in df_top.reset_index(drop=True).iterrows():
+        bg = BAND_LIGHT if i % 2 == 0 else BAND_WHITE
+        c.setFillColor(bg)
+        c.rect(M, y - ROW_H, table_w, ROW_H, fill=1, stroke=0)
+        c.setStrokeColor(BORDER)
+        c.setLineWidth(0.3)
+        c.rect(M, y - ROW_H, table_w, ROW_H, fill=0, stroke=1)
+        for cx in col_x[1:]:
+            c.line(cx, y - ROW_H, cx, y)
+
+        c.setFillColor(_col.black)
+        c.setFont("Helvetica-Bold", 10)
+        c.drawCentredString(col_x[0] + col_widths[0] / 2, y - ROW_H + 2.7 * _mm, str(i + 1))
+        c.setFont("Helvetica", 9)
+        cod = str(int(row["CODIGO"])) if pd.notna(row["CODIGO"]) else "—"
+        c.drawCentredString(col_x[1] + col_widths[1] / 2, y - ROW_H + 2.7 * _mm, cod)
+        desc = str(row.get("DESCRIPCION", "")).strip()[:55]
+        c.drawString(col_x[2] + 1.5 * _mm, y - ROW_H + 2.7 * _mm, desc)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawRightString(col_x[3] + col_widths[3] - 1.5 * _mm, y - ROW_H + 2.7 * _mm,
+                          _fmt_num(row['BULTOS'], 0))
+        c.setFont("Helvetica", 9)
+        c.drawRightString(col_x[4] + col_widths[4] - 1.5 * _mm, y - ROW_H + 2.7 * _mm,
+                          _fmt_num(row.get('HL', 0)))
+        c.drawRightString(col_x[5] + col_widths[5] - 1.5 * _mm, y - ROW_H + 2.7 * _mm,
+                          _fmt_money(row.get('IMPORTE', 0)))
+        y -= ROW_H
+
+    # Fila TOTAL Top
+    TOT_H = 9 * _mm
+    c.setFillColor(TOTAL_BG)
+    c.rect(M, y - TOT_H, table_w, TOT_H, fill=1, stroke=1)
+    c.setFillColor(_col.white)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(col_x[0] + 2 * _mm, y - TOT_H + 3 * _mm, f"TOTAL TOP {len(df_top)}")
+    c.drawRightString(col_x[3] + col_widths[3] - 1.5 * _mm, y - TOT_H + 3 * _mm, _fmt_num(tot_b, 0))
+    c.drawRightString(col_x[4] + col_widths[4] - 1.5 * _mm, y - TOT_H + 3 * _mm, _fmt_num(tot_h))
+    c.drawRightString(col_x[5] + col_widths[5] - 1.5 * _mm, y - TOT_H + 3 * _mm, _fmt_money(tot_i))
+    y -= TOT_H
+
+    # ─ Resumen por DIVISIÓN ──────────────────────────────────────────────
+    y -= 8 * _mm
+    c.setFillColor(DIV_HDR)
+    c.rect(M, y - 9 * _mm, table_w, 9 * _mm, fill=1, stroke=0)
+    c.setFillColor(_col.white)
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(M + 3 * _mm, y - 6 * _mm, "📊  TOTALES POR DIVISIÓN — Venta del Día")
+    y -= 9 * _mm
+
+    # Tabla división: Division | Bultos | HL | Importe
+    cw_d = [
+        table_w * 0.40,
+        table_w * 0.15,
+        table_w * 0.15,
+        table_w * 0.30,
+    ]
+    cx_d = [M]
+    for w in cw_d[:-1]:
+        cx_d.append(cx_d[-1] + w)
+
+    # Header
+    DHDR_H = 7 * _mm
+    c.setFillColor(GOLD)
+    c.rect(M, y - DHDR_H, table_w, DHDR_H, fill=1, stroke=1)
+    c.setFillColor(DARK)
+    c.setFont("Helvetica-Bold", 9)
+    for i, h in enumerate(["DIVISIÓN", "BULTOS", "HL", "IMPORTE"]):
+        c.drawCentredString(cx_d[i] + cw_d[i] / 2, y - DHDR_H + 2 * _mm, h)
+    y -= DHDR_H
+
+    DROW_H = 7 * _mm
+    tot_db = tot_dh = tot_di = 0
+    for i, row in df_div.reset_index(drop=True).iterrows():
+        if y < 25 * _mm:
+            c.showPage()
+            y = PH - 20 * _mm
+        bg = BAND_LIGHT if i % 2 == 0 else BAND_WHITE
+        c.setFillColor(bg)
+        c.rect(M, y - DROW_H, table_w, DROW_H, fill=1, stroke=0)
+        c.setStrokeColor(BORDER)
+        c.setLineWidth(0.3)
+        c.rect(M, y - DROW_H, table_w, DROW_H, fill=0, stroke=1)
+        for cx in cx_d[1:]:
+            c.line(cx, y - DROW_H, cx, y)
+
+        c.setFillColor(_col.black)
+        c.setFont("Helvetica", 8.5)
+        div_name = str(row["DIVISION"])[:38]
+        c.drawString(cx_d[0] + 1.5 * _mm, y - DROW_H + 2.2 * _mm, div_name)
+        c.setFont("Helvetica-Bold", 8.5)
+        c.drawRightString(cx_d[1] + cw_d[1] - 1.5 * _mm, y - DROW_H + 2.2 * _mm, _fmt_num(row["BULTOS"], 0))
+        c.setFont("Helvetica", 8.5)
+        c.drawRightString(cx_d[2] + cw_d[2] - 1.5 * _mm, y - DROW_H + 2.2 * _mm, _fmt_num(row["HL"]))
+        c.drawRightString(cx_d[3] + cw_d[3] - 1.5 * _mm, y - DROW_H + 2.2 * _mm, _fmt_money(row["IMPORTE"]))
+        tot_db += float(row["BULTOS"])
+        tot_dh += float(row["HL"])
+        tot_di += float(row["IMPORTE"])
+        y -= DROW_H
+
+    # Total división
+    c.setFillColor(TOTAL_BG)
+    c.rect(M, y - 8 * _mm, table_w, 8 * _mm, fill=1, stroke=1)
+    c.setFillColor(_col.white)
+    c.setFont("Helvetica-Bold", 9.5)
+    c.drawString(cx_d[0] + 2 * _mm, y - 8 * _mm + 2.5 * _mm, "TOTAL GENERAL")
+    c.drawRightString(cx_d[1] + cw_d[1] - 1.5 * _mm, y - 8 * _mm + 2.5 * _mm, _fmt_num(tot_db, 0))
+    c.drawRightString(cx_d[2] + cw_d[2] - 1.5 * _mm, y - 8 * _mm + 2.5 * _mm, _fmt_num(tot_dh))
+    c.drawRightString(cx_d[3] + cw_d[3] - 1.5 * _mm, y - 8 * _mm + 2.5 * _mm, _fmt_money(tot_di))
+
+    # Footer
+    c.setFillColor(_col.HexColor("#555555"))
+    c.setFont("Helvetica-Oblique", 7)
+    c.drawString(M, 10 * _mm, "Fuente: ANR.xlsx — Hoja BASE (cols H,I,K,M,O,AT). Top 10 por bultos desc.")
+    c.drawRightString(PW - M, 10 * _mm,
+                      f"Picking Orchestrator v{APP_VERSION} · {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+
+    c.save()
+    return bio.getvalue()
+
+
+def build_top_clientes_anr_pdf(df_top: pd.DataFrame, fecha_str: str = "") -> bytes:
+    """PDF a color: Top Clientes (hoja CLIENTES del ANR)."""
+    from reportlab.lib.pagesizes import A4 as _A4
+    from reportlab.lib import colors as _col
+    from reportlab.lib.units import mm as _mm
+    from reportlab.pdfgen import canvas as _cv
+    import io as _io
+
+    PW, PH = _A4
+    M = 12 * _mm
+
+    DARK = _col.HexColor("#1a3a6b")
+    GOLD = _col.HexColor("#f8d772")
+    BAND_LIGHT = _col.HexColor("#f4f6fa")
+    BAND_WHITE = _col.white
+    BORDER = _col.HexColor("#8c8c8c")
+    TOTAL_BG = _col.HexColor("#1a3a6b")
+
+    bio = _io.BytesIO()
+    c = _cv.Canvas(bio, pagesize=_A4)
+
+    HDR_H = 22 * _mm
+    c.setFillColor(DARK)
+    c.rect(0, PH - HDR_H, PW, HDR_H, fill=1, stroke=0)
+    c.setFillColor(GOLD)
+    c.setFont("Helvetica-Bold", 17)
+    c.drawString(M, PH - 11 * _mm, "TOP CLIENTES — Venta del Día (ANR)")
+    c.setFillColor(_col.white)
+    c.setFont("Helvetica", 10)
+    c.drawString(M, PH - 17 * _mm, "Beccacece Hnos SA · DPO 2.1 — Pilar Almacén")
+    c.setFont("Helvetica-Bold", 11)
+    c.drawRightString(PW - M, PH - 11 * _mm, f"Fecha: {fecha_str}")
+
+    tot_b = float(df_top["BULTOS"].sum()) if len(df_top) else 0
+    tot_i = float(df_top["IMPORTE"].sum()) if len(df_top) else 0
+    tot_h = float(df_top["HL"].sum()) if len(df_top) else 0
+    c.setFont("Helvetica", 9)
+    c.drawRightString(PW - M, PH - 17 * _mm,
+                      f"Bultos: {_fmt_num(tot_b, 0)} · HL: {_fmt_num(tot_h)} · Imp: {_fmt_money(tot_i)}")
+
+    y = PH - HDR_H - 8 * _mm
+    table_w = PW - 2 * M
+    # # | Cliente | Bultos | HL | Importe
+    col_widths = [
+        table_w * 0.06,
+        table_w * 0.46,
+        table_w * 0.13,
+        table_w * 0.11,
+        table_w * 0.24,
+    ]
+    col_x = [M]
+    for w in col_widths[:-1]:
+        col_x.append(col_x[-1] + w)
+
+    THDR_H = 8 * _mm
+    c.setFillColor(GOLD)
+    c.rect(M, y - THDR_H, table_w, THDR_H, fill=1, stroke=1)
+    c.setStrokeColor(BORDER)
+    c.setFillColor(DARK)
+    c.setFont("Helvetica-Bold", 9.5)
+    for i, h in enumerate(["#", "CLIENTE", "BULTOS", "HL", "IMPORTE"]):
+        c.drawCentredString(col_x[i] + col_widths[i] / 2, y - THDR_H + 2.5 * _mm, h)
+    y -= THDR_H
+
+    ROW_H = 8 * _mm
+    for i, row in df_top.reset_index(drop=True).iterrows():
+        bg = BAND_LIGHT if i % 2 == 0 else BAND_WHITE
+        c.setFillColor(bg)
+        c.rect(M, y - ROW_H, table_w, ROW_H, fill=1, stroke=0)
+        c.setStrokeColor(BORDER)
+        c.setLineWidth(0.3)
+        c.rect(M, y - ROW_H, table_w, ROW_H, fill=0, stroke=1)
+        for cx in col_x[1:]:
+            c.line(cx, y - ROW_H, cx, y)
+
+        c.setFillColor(_col.black)
+        c.setFont("Helvetica-Bold", 10)
+        c.drawCentredString(col_x[0] + col_widths[0] / 2, y - ROW_H + 2.7 * _mm, str(i + 1))
+        c.setFont("Helvetica", 9)
+        cli = str(row["CLIENTE"])[:62]
+        c.drawString(col_x[1] + 1.5 * _mm, y - ROW_H + 2.7 * _mm, cli)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawRightString(col_x[2] + col_widths[2] - 1.5 * _mm, y - ROW_H + 2.7 * _mm,
+                          _fmt_num(row["BULTOS"], 0))
+        c.setFont("Helvetica", 9)
+        c.drawRightString(col_x[3] + col_widths[3] - 1.5 * _mm, y - ROW_H + 2.7 * _mm,
+                          _fmt_num(row["HL"]))
+        c.drawRightString(col_x[4] + col_widths[4] - 1.5 * _mm, y - ROW_H + 2.7 * _mm,
+                          _fmt_money(row["IMPORTE"]))
+        y -= ROW_H
+
+    # Total
+    TOT_H = 9 * _mm
+    c.setFillColor(TOTAL_BG)
+    c.rect(M, y - TOT_H, table_w, TOT_H, fill=1, stroke=1)
+    c.setFillColor(_col.white)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(col_x[0] + 2 * _mm, y - TOT_H + 3 * _mm, f"TOTAL TOP {len(df_top)}")
+    c.drawRightString(col_x[2] + col_widths[2] - 1.5 * _mm, y - TOT_H + 3 * _mm, _fmt_num(tot_b, 0))
+    c.drawRightString(col_x[3] + col_widths[3] - 1.5 * _mm, y - TOT_H + 3 * _mm, _fmt_num(tot_h))
+    c.drawRightString(col_x[4] + col_widths[4] - 1.5 * _mm, y - TOT_H + 3 * _mm, _fmt_money(tot_i))
+
+    # Footer
+    c.setFillColor(_col.HexColor("#555555"))
+    c.setFont("Helvetica-Oblique", 7)
+    c.drawString(M, 10 * _mm, "Fuente: ANR.xlsx — Hoja CLIENTES (cols A,B,E,H). Top 10 por bultos desc.")
+    c.drawRightString(PW - M, 10 * _mm,
+                      f"Picking Orchestrator v{APP_VERSION} · {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+
+    c.save()
+    return bio.getvalue()
+
+
 def render_tab_top_skus():
-    st.subheader("🏆 Top SKUs — Totalidad de la Venta del Día")
+    st.subheader("🏆 Tops del Día — ANR (Análisis de Rechazos / Venta)")
     st.caption(
-        "Ranking por **Bultos** del CAR del día (TOTAL venta, no solo picking). "
-        "HL calculado con **VALOR HL × Bultos** (DDM Frescura). "
-        "Universo: SKUs presentes en DDM (excluye envases/esqueletos). "
-        "**Se actualiza automáticamente** al subir CAR + Frescura en Planilla de Carga."
+        "Input: **ANR.xlsx** — informe que contiene la venta del próximo día. "
+        "Genera **Top 10 SKUs** (con resumen por división) y **Top 10 Clientes**, "
+        "cada uno con su propio PDF descargable."
     )
 
-    # Reusar uploads de Tab 1 (Planilla) prioritariamente
-    car_use = st.session_state.get("t1_car") or st.session_state.get("t4_car") or st.session_state.get("ts_car")
-    fr_use  = st.session_state.get("t1_fr")  or st.session_state.get("t4_fr")  or st.session_state.get("ts_fr")
-
-    if not (car_use and fr_use):
-        st.info(
-            "Subí el **CAR.xlsx** y la **Frescura 3.0** en la pestaña "
-            "**📦 Planilla de Carga** para que este Top SKUs se genere automáticamente."
-        )
-        with st.expander("…o subí los archivos acá mismo"):
-            col_a, col_b = st.columns(2)
-            with col_a:
-                car_file = _file_uploader("CAR.xlsx (export Chess)", ["xlsx"], key="ts_car")
-            with col_b:
-                fr_file = _file_uploader("Frescura 3.0.xlsx", ["xlsx"], key="ts_fr")
-            car_use = car_file or car_use
-            fr_use  = fr_file  or fr_use
-            if not (car_use and fr_use):
-                return
+    # Uploader único de ANR (con cache en session_state)
+    anr_file = _file_uploader("ANR.xlsx (Análisis de Rechazos)", ["xlsx"], key="ts_anr",
+                              required=False)
+    anr_use = anr_file or st.session_state.get("ts_anr")
+    if not anr_use:
+        st.info("Subí el **ANR.xlsx** para generar los tops.")
+        return
 
     try:
-        df_top = _build_top10_skus(car_use.getvalue(), fr_use.getvalue())
+        anr_bytes = anr_use.getvalue()
+        df_top_skus = _build_top10_skus_anr(anr_bytes, n=10)
+        df_div      = _build_division_summary_anr(anr_bytes)
+        df_top_cli  = _build_top10_clientes_anr(anr_bytes, n=10)
     except Exception as e:
-        st.error(f"❌ Error construyendo Top SKUs: {e}")
+        st.error(f"❌ Error procesando ANR: {e}")
         with st.expander("Stack trace"):
             import traceback
             st.code(traceback.format_exc())
         return
 
-    if df_top.empty:
-        st.warning("No se encontraron SKUs con bultos > 0 (post-filtro DDM).")
-        return
-
     fecha_hoy = datetime.now().strftime("%d/%m/%Y")
-    tot_bultos = df_top["BULTOS"].sum()
-    tot_hl     = df_top["HL"].sum() if "HL" in df_top.columns else 0
 
-    mc1, mc2, mc3 = st.columns(3)
-    mc1.metric("SKUs únicos en Top",     len(df_top))
-    mc2.metric("Bultos acumulados",      f"{tot_bultos:,.0f}")
-    mc3.metric("HL acumulados",          f"{tot_hl:,.2f}")
+    # ════════════════════════════════════════════════════════════════════
+    # SECCIÓN 1 — TOP 10 SKUs + RESUMEN POR DIVISIÓN
+    # ════════════════════════════════════════════════════════════════════
+    st.markdown("### 🏆 Top 10 SKUs — Venta del Día")
 
-    # Tabla display
-    df_display = df_top.copy()
-    df_display["BULTOS"] = df_display["BULTOS"].map(lambda x: f"{x:,.0f}")
-    df_display["HL"]     = df_display["HL"].map(lambda x: f"{x:,.2f}" if x else "—")
-    if "U_PAQUETE" in df_display.columns:
-        df_display["U_PAQUETE"] = df_display["U_PAQUETE"].map(
-            lambda x: f"{x:,.2f}" if pd.notna(x) and x != 0 else "—"
-        )
-    df_display["CODIGO"] = df_display["CODIGO"].astype(int).astype(str)
+    if df_top_skus.empty:
+        st.warning("No se encontraron SKUs con ventas > 0 en el ANR.")
+    else:
+        tb = float(df_top_skus["BULTOS"].sum())
+        th = float(df_top_skus["HL"].sum())
+        ti = float(df_top_skus["IMPORTE"].sum())
+        mc1, mc2, mc3 = st.columns(3)
+        mc1.metric("Bultos (Top 10)",   _fmt_num(tb, 0))
+        mc2.metric("HL (Top 10)",       _fmt_num(th))
+        mc3.metric("Importe (Top 10)",  _fmt_money(ti))
 
-    # Quitar ABC del display (a pedido del usuario)
-    if "ABC" in df_display.columns:
-        df_display = df_display.drop(columns=["ABC"])
+        df_disp = df_top_skus.copy()
+        df_disp["CODIGO"]  = df_disp["CODIGO"].astype(int).astype(str)
+        df_disp["BULTOS"]  = df_disp["BULTOS"].map(lambda x: _fmt_num(x, 0))
+        df_disp["HL"]      = df_disp["HL"].map(lambda x: _fmt_num(x))
+        df_disp["IMPORTE"] = df_disp["IMPORTE"].map(lambda x: _fmt_money(x))
+        df_disp.index = range(1, len(df_disp) + 1)
+        df_disp.rename(columns={
+            "CODIGO": "Código",
+            "DESCRIPCION": "Descripción",
+            "BULTOS": "Bultos",
+            "HL": "HL",
+            "IMPORTE": "Importe",
+        }, inplace=True)
+        df_disp = df_disp[["Código", "Descripción", "Bultos", "HL", "Importe"]]
+        st.dataframe(df_disp, width="stretch", height=440)
 
-    rename_display = {
-        "CODIGO":      "Código",
-        "DESCRIPCION": "Descripción",
-        "BULTOS":      "Bultos",
-        "HL":          "HL",
-        "U_PAQUETE":   "U. Paquete",
-        "RUBRO":       "Rubro",
-    }
-    df_display.rename(columns={k: v for k, v in rename_display.items() if k in df_display.columns}, inplace=True)
+    # ── Resumen por División ────────────────────────────────────────────
+    st.markdown("### 📊 Totales por División — Venta del Día")
+    if df_div.empty:
+        st.warning("No se encontraron divisiones en el ANR.")
+    else:
+        df_div_disp = df_div.copy()
+        df_div_disp["BULTOS"]  = df_div_disp["BULTOS"].map(lambda x: _fmt_num(x, 0))
+        df_div_disp["HL"]      = df_div_disp["HL"].map(lambda x: _fmt_num(x))
+        df_div_disp["IMPORTE"] = df_div_disp["IMPORTE"].map(lambda x: _fmt_money(x))
+        df_div_disp.rename(columns={
+            "DIVISION": "División",
+            "BULTOS": "Bultos",
+            "HL": "HL",
+            "IMPORTE": "Importe",
+        }, inplace=True)
+        # Fila total
+        tot_db = float(df_div["BULTOS"].sum())
+        tot_dh = float(df_div["HL"].sum())
+        tot_di = float(df_div["IMPORTE"].sum())
+        df_div_disp.loc[len(df_div_disp)] = [
+            "TOTAL GENERAL",
+            _fmt_num(tot_db, 0),
+            _fmt_num(tot_dh),
+            _fmt_money(tot_di),
+        ]
+        st.dataframe(df_div_disp, width="stretch", height=380, hide_index=True)
 
-    # El índice 1..N (rankeo) ya viene en df_top.index; mostrarlo como única "#"
-    st.dataframe(df_display, width="stretch", height=440)
+    # PDF Top SKUs
+    if not df_top_skus.empty and not df_div.empty:
+        try:
+            pdf_skus = build_top_skus_anr_pdf(df_top_skus, df_div, fecha_str=fecha_hoy)
+            st.download_button(
+                "⬇ Descargar PDF Top SKUs + Divisiones",
+                data=pdf_skus,
+                file_name=_stamp("Top_SKUs_ANR", "pdf"),
+                mime="application/pdf",
+                type="primary",
+                width="stretch",
+                key="topskus_anr_pdf_dl",
+            )
+        except Exception as e:
+            st.error(f"❌ Error generando PDF Top SKUs: {e}")
 
-    # PDF + TSV
-    try:
-        pdf_bytes = build_top_skus_pdf(df_top, fecha_str=fecha_hoy)
-    except Exception as e:
-        pdf_bytes = None
-        st.error(f"❌ Error generando PDF Top SKUs: {e}")
+    st.divider()
 
-    col_dl1, col_dl2 = st.columns(2)
-    if pdf_bytes:
-        col_dl1.download_button(
-            "⬇ Descargar PDF Top SKUs (color)",
-            data=pdf_bytes,
-            file_name=_stamp("Top_SKUs", "pdf"),
-            mime="application/pdf",
-            type="primary",
-            width="stretch",
-            key="topskus_pdf_dl",
-        )
-    tsv_raw = df_display.to_csv(sep="\t", index=False)
-    col_dl2.download_button(
-        "📋 Descargar TSV (pegar en Sheets)",
-        data=tsv_raw.encode("utf-8"),
-        file_name=f"top_skus_{fecha_hoy.replace('/', '-')}.tsv",
-        mime="text/tab-separated-values",
-        width="stretch",
-        key="topskus_tsv_dl",
-    )
+    # ════════════════════════════════════════════════════════════════════
+    # SECCIÓN 2 — TOP 10 CLIENTES
+    # ════════════════════════════════════════════════════════════════════
+    st.markdown("### 👥 Top 10 Clientes — Venta del Día")
+    if df_top_cli.empty:
+        st.warning("No se encontraron clientes con ventas > 0 en el ANR.")
+    else:
+        tcb = float(df_top_cli["BULTOS"].sum())
+        tch = float(df_top_cli["HL"].sum())
+        tci = float(df_top_cli["IMPORTE"].sum())
+        cc1, cc2, cc3 = st.columns(3)
+        cc1.metric("Bultos (Top 10)",   _fmt_num(tcb, 0))
+        cc2.metric("HL (Top 10)",       _fmt_num(tch))
+        cc3.metric("Importe (Top 10)",  _fmt_money(tci))
+
+        df_cli_disp = df_top_cli.copy()
+        df_cli_disp["BULTOS"]  = df_cli_disp["BULTOS"].map(lambda x: _fmt_num(x, 0))
+        df_cli_disp["HL"]      = df_cli_disp["HL"].map(lambda x: _fmt_num(x))
+        df_cli_disp["IMPORTE"] = df_cli_disp["IMPORTE"].map(lambda x: _fmt_money(x))
+        df_cli_disp.index = range(1, len(df_cli_disp) + 1)
+        df_cli_disp.rename(columns={
+            "CLIENTE": "Cliente",
+            "BULTOS":  "Bultos",
+            "HL":      "HL",
+            "IMPORTE": "Importe",
+        }, inplace=True)
+        st.dataframe(df_cli_disp, width="stretch", height=440)
+
+        # PDF Top Clientes
+        try:
+            pdf_cli = build_top_clientes_anr_pdf(df_top_cli, fecha_str=fecha_hoy)
+            st.download_button(
+                "⬇ Descargar PDF Top Clientes",
+                data=pdf_cli,
+                file_name=_stamp("Top_Clientes_ANR", "pdf"),
+                mime="application/pdf",
+                type="primary",
+                width="stretch",
+                key="topcli_anr_pdf_dl",
+            )
+        except Exception as e:
+            st.error(f"❌ Error generando PDF Top Clientes: {e}")
 
     with st.expander("ℹ️ Metodología"):
         st.markdown(
-            "- **Bultos**: suma de todos los remitos del CAR del día (excluye anulados).\n"
-            "- **HL**: `Bultos × VALOR HL` — factor de la DDM (Frescura 3.0).\n"
-            "- **Filtro DDM**: solo SKUs del universo almacén. Excluye envases/esqueletos "
-            "(2776 BOT ARACELI, 2731 Q CERVEZAS, 2730 Q PLAS, 2780 BOT AMBAR, 5192, etc.).\n"
-            "- **Rubro / ABC**: clasificación CMQ (maestro).\n"
-            "- El ranking es del **día de carga actual** — no es histórico."
+            "- **Fuente**: archivo ANR.xlsx (Análisis de Rechazos), que también incluye la venta del próximo día.\n"
+            "- **Top SKUs**: hoja `BASE`, columnas H (artículo), I (descripción), K (bultos), "
+            "M (importe neto), O (unidad de medida → HL). Agrupado por código y ordenado por bultos desc.\n"
+            "- **Resumen por División**: columna AT (descripción división) — totales de HL, bultos e importe.\n"
+            "- **Top Clientes**: hoja `CLIENTES`, columnas A (cliente), B (bultos), E (importe), H (HL). "
+            "Ya viene preagregada; se ordena por bultos desc.\n"
+            "- Se omite la columna 'Unidad de Paquete' (no relevante para el análisis solicitado)."
         )
 
 
