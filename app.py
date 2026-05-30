@@ -1,6 +1,16 @@
 """
-Picking Orchestrator v4.25 — Beccacece Hnos SA
+Picking Orchestrator v4.26 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
+
+CAMBIOS v4.26:
+  - ✅ Fix Venta Especial: ahora SUMA al total (antes restaba incorrectamente).
+    Fórmula corregida: Neto = TotVal - CtaCte + VtaEsp - Rechazos
+  - 📋 Cierre D+1 — "Cierre Actualizado con Rechazos Reales":
+    • Nuevo uploader SR Actualizado en pestaña Archivos (key: cierre_sr_d1)
+    • Sección nueva dentro de la tab Cierre: carga el SR del día siguiente,
+      toma TotVal real por camión, recalcula CTA CTE del ANR original y
+      muestra el Cierre real con la plata que efectivamente trajeron los choferes.
+    • Exporta a PDF landscape y Excel igual que el Cierre del día.
 
 CAMBIOS v4.25:
   - Fix CRÍTICO: .applymap() → .map() (pandas >= 2.1) en tabla Cierre → resuelve AttributeError
@@ -84,7 +94,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.25.0"
+APP_VERSION = "4.26.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -1634,7 +1644,7 @@ def render_tab_archivos():
         "de la sesión sin necesidad de volver a cargarlos."
     )
 
-    col_a, col_b, col_c, col_d = st.columns(4)
+    col_a, col_b, col_c, col_d, col_e = st.columns(5)
 
     with col_a:
         st.markdown("#### 🗂️ CAR.xlsx")
@@ -1706,15 +1716,32 @@ def render_tab_archivos():
         else:
             st.info("Requerido para 💰 Cierre — cols A (idCns), B (dsCns), F (TotVal)")
 
+    with col_e:
+        st.markdown("#### 📅 SR D+1.xlsx")
+        sr_d1_file = st.file_uploader(
+            "SR Actualizado (día siguiente — col F TotVal real)",
+            type=["xlsx"],
+            key="arch_sr_d1",
+            accept_multiple_files=False,
+        )
+        if sr_d1_file:
+            st.session_state["cierre_sr_d1"] = sr_d1_file
+            st.success(f"✅ {sr_d1_file.name}")
+        elif st.session_state.get("cierre_sr_d1"):
+            st.info(f"📎 En uso: {st.session_state['cierre_sr_d1'].name}")
+        else:
+            st.info("Opcional — para 💰 Cierre D+1 con rechazos reales")
+
     st.divider()
 
     # Estado global
     st.markdown("#### 📋 Estado de archivos cargados")
     rows = [
-        ("CAR.xlsx",          "t1_car",     "Planilla de Carga, Resumen, Camiones T2, Proyección"),
-        ("Frescura 3.0.xlsx", "t1_fr",      "Planilla de Carga, Proyección Picking, Clasificación"),
-        ("ANR.xlsx",          "tc_anr",     "Clasificación, Top SKUs, Top Clientes, Cierre"),
-        ("SR.xlsx",           "cierre_sr",  "💰 Cierre — totales por camión desde Chess"),
+        ("CAR.xlsx",          "t1_car",       "Planilla de Carga, Resumen, Camiones T2, Proyección"),
+        ("Frescura 3.0.xlsx", "t1_fr",        "Planilla de Carga, Proyección Picking, Clasificación"),
+        ("ANR.xlsx",          "tc_anr",       "Clasificación, Top SKUs, Top Clientes, Cierre"),
+        ("SR.xlsx",           "cierre_sr",    "💰 Cierre — totales por camión desde Chess"),
+        ("SR D+1.xlsx",       "cierre_sr_d1", "📅 Cierre Actualizado — TotVal real con rechazos"),
     ]
     for nombre, key, usado_en in rows:
         f = st.session_state.get(key)
@@ -5656,8 +5683,8 @@ def _build_cierre_df(df_sr: pd.DataFrame, df_anr: pd.DataFrame,
 
         vta_esp = float(venta_especial_map.get(cns, 0.0))
 
-        # Neto = TotVal - CtaCte - VtaEsp - Rechazos
-        neto = tot_val - cta_cte_monto - vta_esp - rechazos
+        # Neto = TotVal - CtaCte + VtaEsp - Rechazos
+        neto = tot_val - cta_cte_monto + vta_esp - rechazos
 
         rows.append({
             "idCns":        cns,
@@ -5824,7 +5851,7 @@ def _cierre_pdf(df_main: pd.DataFrame, totales: dict,
         ("D) Total Preventa del dia (Mercaderia que sale a reparto)", totales["tot_chess"],       DARK_BLUE),
         ("E) CTA CTE (total a descontar)",                           totales["tot_cta_cte"],     RED_NEG if totales["tot_cta_cte"] > 0 else rl_colors.black),
         ("F) Venta especial",                                        totales["tot_vta_esp"],      rl_colors.black),
-        ("F) Total neto a ingresar repartos (D - E - F)",            totales["tot_neto_global"],  GREEN_OK),
+        ("F) Total neto a ingresar repartos (D - E + F)",            totales["tot_neto_global"],  GREEN_OK),
         ("G) Rechazos",                                              totales["tot_rechazos"],      RED_NEG if totales["tot_rechazos"] > 0 else rl_colors.black),
         ("H) Total del dia neto rechazos",                           totales["tot_dia_neto"],     GREEN_OK),
     ]
@@ -5989,7 +6016,7 @@ def _cierre_excel(df_main: pd.DataFrame, totales: dict,
         ("D) Total Preventa del día",                              totales["tot_chess"],       None),
         ("E) CTA CTE (total a descontar)",                         totales["tot_cta_cte"],     "b91c1c" if totales["tot_cta_cte"] > 0 else None),
         ("F) Venta especial",                                      totales["tot_vta_esp"],     None),
-        ("F) Total neto a ingresar repartos (D - E - F)",          totales["tot_neto_global"], "1a7a4a"),
+        ("F) Total neto a ingresar repartos (D - E + F)",          totales["tot_neto_global"], "1a7a4a"),
         ("G) Rechazos",                                            totales["tot_rechazos"],    "b91c1c" if totales["tot_rechazos"] > 0 else None),
         ("H) Total del día neto rechazos",                         totales["tot_dia_neto"],    "1a7a4a"),
         ("% Rechazo",                                              pct / 100,                  "b91c1c" if pct > 5 else "1a7a4a"),
@@ -6186,7 +6213,7 @@ def render_tab_cierre():
     tot_vta_esp     = df_main["VtaEsp"].sum()
     tot_rechazos    = df_main["Rechazos"].sum()
     tot_neto        = df_main["NetoIngresar"].sum()
-    tot_neto_global = tot_chess - tot_cta_cte - cobro_anticipado - tot_vta_esp
+    tot_neto_global = tot_chess - tot_cta_cte + tot_vta_esp
     tot_dia_neto    = tot_neto_global - tot_rechazos
     pct_rechazo     = (tot_rechazos / tot_chess * 100) if tot_chess > 0 else 0.0
 
@@ -6350,6 +6377,494 @@ def render_tab_cierre():
                 with st.expander("Stack trace"):
                     import traceback
                     st.code(traceback.format_exc())
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # SECCIÓN D+1 — CIERRE ACTUALIZADO CON RECHAZOS REALES
+    # ═══════════════════════════════════════════════════════════════════════════
+    st.divider()
+    st.markdown("### 📅 Cierre D+1 — Actualizado con Rechazos Reales")
+    st.caption(
+        "Al día siguiente del reparto, subí el **SR Actualizado** (col F = TotVal real cobrado "
+        "por el chofer). La app recalcula el cierre con la plata que efectivamente ingresó, "
+        "aplicando los mismos CTA CTE del día original."
+    )
+
+    sr_d1_file = st.session_state.get("cierre_sr_d1")
+
+    if not sr_d1_file:
+        st.info("⬅️ Subí el **SR D+1.xlsx** en la pestaña **📁 Archivos** para generar el Cierre Actualizado.")
+    else:
+        try:
+            df_sr_d1 = _cierre_load_sr(sr_d1_file)
+        except Exception as e:
+            st.error(f"❌ Error leyendo SR D+1.xlsx: {e}")
+            df_sr_d1 = pd.DataFrame()
+
+        if not df_sr_d1.empty:
+            fecha_d1_str = datetime.now().strftime("%d/%m/%Y %H:%M") + " (D+1)"
+
+            # Construir cierre D+1: TotVal es el real cobrado, rechazos = diferencia con SR original
+            df_d1 = _build_cierre_d1(df_main, df_sr_d1, cta_cte_list_clean, df_anr)
+
+            # Totales D+1
+            d1_chess_orig   = df_d1["TotValOrig"].sum()
+            d1_real         = df_d1["TotValReal"].sum()
+            d1_cta_cte      = df_d1["CtaCte"].sum()
+            d1_rechazos     = df_d1["RechazoReal"].sum()
+            d1_neto         = df_d1["NetoReal"].sum()
+            d1_pct_rech     = (d1_rechazos / d1_chess_orig * 100) if d1_chess_orig > 0 else 0.0
+
+            # KPIs
+            k1, k2, k3, k4, k5 = st.columns(5)
+            k1.metric("📦 Preventa Original",  ars(d1_chess_orig))
+            k2.metric("💵 Cobrado Real",        ars(d1_real))
+            k3.metric("🔴 CTA CTE",             ars(d1_cta_cte))
+            k4.metric("❌ Rechazos Reales",     ars(d1_rechazos),
+                      delta=f"{d1_pct_rech:.1f}%" if d1_rechazos > 0 else None, delta_color="inverse")
+            k5.metric("💰 Neto Real a Ingresar", ars(d1_neto))
+
+            st.markdown("#### 🚛 Detalle D+1 por Camión")
+
+            def style_neto_d1(val):
+                color = "#1a7a4a" if val >= 0 else "#b91c1c"
+                return f"color: {color}; font-weight: bold"
+
+            def style_rech_d1(val):
+                return "color: #b91c1c;" if val > 0 else ""
+
+            df_d1_show = pd.DataFrame({
+                "Camión":          df_d1.apply(lambda r: f"{int(r['idCns'])} — {r['dsCns']}", axis=1),
+                "Preventa":        df_d1["TotValOrig"],
+                "Cobrado Real":    df_d1["TotValReal"],
+                "CTA CTE":         df_d1["CtaCte"],
+                "Rechazo Real":    df_d1["RechazoReal"],
+                "Neto Real":       df_d1["NetoReal"],
+            })
+
+            _use_map_d1 = hasattr(pd.io.formats.style.Styler, "map")
+            _base_d1 = df_d1_show.style.format({
+                "Preventa":     "$ {:,.0f}",
+                "Cobrado Real": "$ {:,.0f}",
+                "CTA CTE":      "$ {:,.0f}",
+                "Rechazo Real": "$ {:,.0f}",
+                "Neto Real":    "$ {:,.0f}",
+            })
+            if _use_map_d1:
+                styled_d1 = (_base_d1
+                    .map(style_neto_d1, subset=["Neto Real"])
+                    .map(style_rech_d1, subset=["Rechazo Real"])
+                    .set_properties(**{"text-align": "right"},
+                                    subset=["Preventa", "Cobrado Real", "CTA CTE", "Rechazo Real", "Neto Real"]))
+            else:
+                styled_d1 = (_base_d1
+                    .applymap(style_neto_d1, subset=["Neto Real"])
+                    .applymap(style_rech_d1, subset=["Rechazo Real"])
+                    .set_properties(**{"text-align": "right"},
+                                    subset=["Preventa", "Cobrado Real", "CTA CTE", "Rechazo Real", "Neto Real"]))
+
+            st.dataframe(styled_d1, use_container_width=True, hide_index=True, height=460)
+
+            # Resumen D+1
+            st.markdown("#### 📊 Resumen D+1")
+            res_d1 = {
+                "Concepto": [
+                    "D) Preventa original del día",
+                    "D') Cobrado real por choferes",
+                    "E) CTA CTE (descuento)",
+                    "G) Rechazos reales",
+                    "H) Neto real a ingresar",
+                    "% Rechazo real",
+                ],
+                "Monto": [
+                    f"$ {d1_chess_orig:,.0f}",
+                    f"$ {d1_real:,.0f}",
+                    f"$ {d1_cta_cte:,.0f}",
+                    f"$ {d1_rechazos:,.0f}",
+                    f"$ {d1_neto:,.0f}",
+                    f"{d1_pct_rech:.1f}%",
+                ],
+            }
+            st.dataframe(pd.DataFrame(res_d1), use_container_width=True, hide_index=True)
+
+            # Exportar D+1
+            st.markdown("#### 📥 Exportar D+1")
+            d1_exp1, d1_exp2 = st.columns(2)
+
+            totales_d1 = {
+                "tot_chess_orig": d1_chess_orig,
+                "tot_real":       d1_real,
+                "tot_cta_cte":    d1_cta_cte,
+                "tot_rechazos":   d1_rechazos,
+                "tot_neto":       d1_neto,
+                "pct_rech":       d1_pct_rech,
+            }
+
+            with d1_exp1:
+                if st.button("📊 Generar Excel D+1", type="primary", key="d1_xlsx_btn"):
+                    try:
+                        xls_d1 = _cierre_d1_excel(df_d1, totales_d1, fecha_d1_str)
+                        fname_d1 = f"CierreD1_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+                        st.download_button(
+                            label=f"⬇️ Descargar {fname_d1}",
+                            data=xls_d1,
+                            file_name=fname_d1,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="d1_dl_xlsx",
+                        )
+                    except Exception as e:
+                        st.error(f"❌ Error generando Excel D+1: {e}")
+                        with st.expander("Stack trace"):
+                            import traceback
+                            st.code(traceback.format_exc())
+
+            with d1_exp2:
+                if st.button("📄 Generar PDF D+1 (landscape)", type="primary", key="d1_pdf_btn"):
+                    try:
+                        pdf_d1 = _cierre_d1_pdf(df_d1, totales_d1, fecha_d1_str)
+                        fname_d1 = f"CierreD1_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+                        st.download_button(
+                            label=f"⬇️ Descargar {fname_d1}",
+                            data=pdf_d1,
+                            file_name=fname_d1,
+                            mime="application/pdf",
+                            key="d1_dl_pdf",
+                        )
+                    except Exception as e:
+                        st.error(f"❌ Error generando PDF D+1: {e}")
+                        with st.expander("Stack trace"):
+                            import traceback
+                            st.code(traceback.format_exc())
+
+
+def _build_cierre_d1(df_orig: pd.DataFrame, df_sr_d1: pd.DataFrame,
+                     cta_cte_list: list, df_anr: pd.DataFrame) -> pd.DataFrame:
+    """
+    Construye la tabla de Cierre D+1.
+    df_orig: DataFrame del cierre original (idCns, dsCns, TotVal, CtaCte, ...)
+    df_sr_d1: SR del día siguiente con TotVal real cobrado por el chofer.
+    Los rechazos reales = TotValOrig - TotValReal (lo que no se cobró).
+    CTA CTE se reutiliza del ANR original o del cierre anterior.
+    """
+    cta_cte_codigos = {int(c["codigo"]) for c in cta_cte_list}
+    # Índice del SR D+1 por idCns
+    sr_d1_idx = {int(r["idCns"]): float(r["TotVal"]) for _, r in df_sr_d1.iterrows()}
+
+    rows = []
+    for _, row in df_orig.iterrows():
+        cns         = int(row["idCns"])
+        nombre      = str(row["dsCns"])
+        tot_orig    = float(row["TotVal"])
+        cta_cte_m   = float(row["CtaCte"])
+
+        # TotVal real: si el camión no aparece en D+1, se asume que cobró todo
+        tot_real    = sr_d1_idx.get(cns, tot_orig)
+
+        # Rechazo real: diferencia entre lo que salió y lo que cobró
+        # Si cobró más (por redondeos), rechazo = 0
+        rechazo_real = max(0.0, tot_orig - tot_real)
+
+        # Neto real = cobrado - CTA CTE
+        neto_real = tot_real - cta_cte_m
+
+        rows.append({
+            "idCns":        cns,
+            "dsCns":        nombre,
+            "TotValOrig":   tot_orig,
+            "TotValReal":   tot_real,
+            "CtaCte":       cta_cte_m,
+            "RechazoReal":  rechazo_real,
+            "NetoReal":     neto_real,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def _cierre_d1_pdf(df_d1: pd.DataFrame, totales: dict, fecha_str: str) -> bytes:
+    """PDF landscape del Cierre D+1."""
+    from reportlab.lib.pagesizes import A4, landscape as rl_landscape
+    from reportlab.lib import colors as rl_colors
+    from reportlab.lib.units import mm
+    from reportlab.pdfgen import canvas as rl_canvas
+
+    buf = io.BytesIO()
+    PW, PH = rl_landscape(A4)
+    M = 14 * mm
+    c = rl_canvas.Canvas(buf, pagesize=rl_landscape(A4))
+
+    DARK_BLUE  = rl_colors.HexColor("#1a3a6b")
+    MED_BLUE   = rl_colors.HexColor("#2e5fa3")
+    LIGHT_GRAY = rl_colors.HexColor("#F0F4FA")
+    GREEN_OK   = rl_colors.HexColor("#1a7a4a")
+    RED_NEG    = rl_colors.HexColor("#b91c1c")
+    AMBER_BG   = rl_colors.HexColor("#FEF3C7")
+    AMBER_TXT  = rl_colors.HexColor("#92400e")
+
+    def fmt_ars(v):
+        s = f"{abs(v):,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"$ {s}" if v >= 0 else f"($ {s})"
+
+    # HEADER
+    y = PH - M
+    c.setFillColor(DARK_BLUE)
+    c.rect(M, y - 32, PW - 2*M, 34, fill=1, stroke=0)
+    c.setFillColor(rl_colors.white)
+    c.setFont("Helvetica-Bold", 15)
+    c.drawString(M + 10, y - 20, "CIERRE FINANCIERO D+1 — RECHAZOS REALES")
+    c.setFont("Helvetica", 9)
+    c.drawRightString(PW - M - 8, y - 12, f"Beccacece Hnos SA  |  {fecha_str}")
+    c.drawRightString(PW - M - 8, y - 23, "Distribuidor CMQ — ABInBev")
+    y -= 46
+
+    # TABLA
+    usable_w = PW - 2 * M
+    col_labels = ["Camión", "Preventa", "Cobrado Real", "CTA CTE", "Rechazo Real", "Neto Real"]
+    col_w = [
+        usable_w * 0.27,
+        usable_w * 0.145,
+        usable_w * 0.145,
+        usable_w * 0.12,
+        usable_w * 0.145,
+        usable_w * 0.175,
+    ]
+    row_h = 13
+    hdr_h = 16
+
+    c.setFillColor(MED_BLUE)
+    c.rect(M, y - hdr_h, usable_w, hdr_h, fill=1, stroke=0)
+    c.setFillColor(rl_colors.white)
+    c.setFont("Helvetica-Bold", 9)
+    x_cur = M + 5
+    for lbl, cw in zip(col_labels, col_w):
+        c.drawString(x_cur, y - hdr_h + 5, lbl)
+        x_cur += cw
+    y -= hdr_h + 2
+
+    for i, row in df_d1.iterrows():
+        bg = LIGHT_GRAY if i % 2 == 0 else rl_colors.white
+        c.setFillColor(bg)
+        c.rect(M, y - row_h, usable_w, row_h, fill=1, stroke=0)
+
+        vals = [
+            f"{int(row['idCns'])} — {row['dsCns']}",
+            fmt_ars(row["TotValOrig"]),
+            fmt_ars(row["TotValReal"]),
+            fmt_ars(row["CtaCte"]) if row["CtaCte"] > 0 else "—",
+            fmt_ars(row["RechazoReal"]) if row["RechazoReal"] > 0 else "—",
+            fmt_ars(row["NetoReal"]),
+        ]
+        x_cur = M + 5
+        for vi, (val, cw) in enumerate(zip(vals, col_w)):
+            if vi == 5:
+                c.setFillColor(GREEN_OK if row["NetoReal"] >= 0 else RED_NEG)
+                c.setFont("Helvetica-Bold", 8.5)
+            elif vi == 4 and val != "—":
+                c.setFillColor(RED_NEG)
+                c.setFont("Helvetica", 8.5)
+            elif vi == 3 and val != "—":
+                c.setFillColor(RED_NEG)
+                c.setFont("Helvetica", 8.5)
+            else:
+                c.setFillColor(rl_colors.black)
+                c.setFont("Helvetica", 8.5)
+            c.drawString(x_cur, y - row_h + 4, val)
+            x_cur += cw
+        y -= row_h
+
+    # FILA TOTAL
+    y -= 4
+    c.setFillColor(DARK_BLUE)
+    c.rect(M, y - 16, usable_w, 16, fill=1, stroke=0)
+    c.setFillColor(rl_colors.white)
+    c.setFont("Helvetica-Bold", 9)
+    tot_vals = [
+        "TOTAL",
+        fmt_ars(totales["tot_chess_orig"]),
+        fmt_ars(totales["tot_real"]),
+        fmt_ars(totales["tot_cta_cte"]) if totales["tot_cta_cte"] > 0 else "—",
+        fmt_ars(totales["tot_rechazos"]) if totales["tot_rechazos"] > 0 else "—",
+        fmt_ars(totales["tot_neto"]),
+    ]
+    x_cur = M + 5
+    for tv, cw in zip(tot_vals, col_w):
+        c.drawString(x_cur, y - 12, tv)
+        x_cur += cw
+    y -= 24
+
+    # RESUMEN
+    resumen_h = 90
+    c.setFillColor(rl_colors.HexColor("#F0F4FA"))
+    c.rect(M, y - resumen_h, usable_w, resumen_h + 4, fill=1, stroke=0)
+    c.setFillColor(DARK_BLUE)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(M + 8, y - 14, "RESUMEN D+1")
+
+    resumen_items = [
+        ("D) Preventa original del dia",     totales["tot_chess_orig"], DARK_BLUE),
+        ("D') Cobrado real por choferes",    totales["tot_real"],        GREEN_OK),
+        ("E) CTA CTE (descuento)",           totales["tot_cta_cte"],     RED_NEG if totales["tot_cta_cte"] > 0 else rl_colors.black),
+        ("G) Rechazos reales",               totales["tot_rechazos"],    RED_NEG if totales["tot_rechazos"] > 0 else rl_colors.black),
+        ("H) Neto real a ingresar",          totales["tot_neto"],        GREEN_OK),
+        (f"% Rechazo real",                  None,                       RED_NEG if totales["pct_rech"] > 5 else GREEN_OK),
+    ]
+
+    half_w = usable_w / 2 - 10
+    yi = y - 30
+    for label, val, col_txt in resumen_items:
+        c.setFillColor(rl_colors.black)
+        c.setFont("Helvetica", 8.5)
+        c.drawString(M + 8, yi, label)
+        c.setFillColor(col_txt)
+        c.setFont("Helvetica-Bold", 9)
+        if val is None:
+            c.drawRightString(M + half_w, yi, f"{totales['pct_rech']:.1f}%")
+        else:
+            c.drawRightString(M + half_w, yi, fmt_ars(val))
+        yi -= 13
+
+    # FOOTER
+    c.setFillColor(rl_colors.HexColor("#555555"))
+    c.setFont("Helvetica", 6.5)
+    c.drawCentredString(
+        PW / 2, M - 4,
+        f"Beccacece Hnos SA  ·  Cierre D+1 generado: {fecha_str}  ·  Picking Orchestrator v{APP_VERSION}"
+    )
+
+    c.save()
+    return buf.getvalue()
+
+
+def _cierre_d1_excel(df_d1: pd.DataFrame, totales: dict, fecha_str: str) -> bytes:
+    """Excel del Cierre D+1."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Cierre D+1"
+
+    hdr_fill   = PatternFill("solid", fgColor="1a3a6b")
+    hdr_font   = Font(color="FFFFFF", bold=True, size=10)
+    tot_fill   = PatternFill("solid", fgColor="2e5fa3")
+    tot_font   = Font(color="FFFFFF", bold=True, size=10)
+    alt_fill   = PatternFill("solid", fgColor="EEF3FB")
+    green_font = Font(color="1a7a4a", bold=True)
+    red_font   = Font(color="b91c1c", bold=True)
+    bold_font  = Font(bold=True)
+    thin       = Side(style="thin", color="CCCCCC")
+    border     = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center_al  = Alignment(horizontal="center", vertical="center")
+    right_al   = Alignment(horizontal="right", vertical="center")
+    left_al    = Alignment(horizontal="left", vertical="center")
+    money_fmt  = '#,##0'
+
+    ws.merge_cells("A1:G1")
+    ws["A1"] = f"CIERRE FINANCIERO D+1 — RECHAZOS REALES — {fecha_str}"
+    ws["A1"].font = Font(bold=True, size=13, color="1a3a6b")
+    ws["A1"].alignment = center_al
+    ws.row_dimensions[1].height = 22
+
+    ws.merge_cells("A2:G2")
+    ws["A2"] = "Beccacece Hnos SA — Distribuidor CMQ / ABInBev"
+    ws["A2"].font = Font(size=9, color="555555", italic=True)
+    ws["A2"].alignment = center_al
+
+    headers = ["ID", "Camión", "Preventa ($)", "Cobrado Real ($)", "CTA CTE ($)", "Rechazo Real ($)", "Neto Real ($)"]
+    for ci, hdr in enumerate(headers, 1):
+        cell = ws.cell(row=4, column=ci, value=hdr)
+        cell.fill = hdr_fill
+        cell.font = hdr_font
+        cell.alignment = center_al
+        cell.border = border
+    ws.row_dimensions[4].height = 16
+
+    for ri, row in df_d1.iterrows():
+        r = ri + 5
+        vals = [
+            int(row["idCns"]),
+            row["dsCns"],
+            row["TotValOrig"],
+            row["TotValReal"],
+            row["CtaCte"] if row["CtaCte"] > 0 else 0,
+            row["RechazoReal"] if row["RechazoReal"] > 0 else 0,
+            row["NetoReal"],
+        ]
+        fill_row = alt_fill if ri % 2 == 0 else PatternFill()
+        for ci, val in enumerate(vals, 1):
+            cell = ws.cell(row=r, column=ci, value=val)
+            cell.border = border
+            cell.fill = fill_row
+            if ci == 1:
+                cell.alignment = center_al
+            elif ci == 2:
+                cell.alignment = left_al
+                cell.font = bold_font
+            else:
+                cell.alignment = right_al
+                cell.number_format = money_fmt
+                if ci == 7:
+                    cell.font = green_font if row["NetoReal"] >= 0 else red_font
+                elif ci == 6 and row["RechazoReal"] > 0:
+                    cell.font = red_font
+        ws.row_dimensions[r].height = 14
+
+    tr = len(df_d1) + 5
+    tot_vals = ["", "TOTAL",
+                totales["tot_chess_orig"], totales["tot_real"],
+                totales["tot_cta_cte"], totales["tot_rechazos"], totales["tot_neto"]]
+    for ci, val in enumerate(tot_vals, 1):
+        cell = ws.cell(row=tr, column=ci, value=val)
+        cell.fill = tot_fill
+        cell.font = tot_font
+        cell.border = border
+        cell.alignment = right_al if ci > 2 else center_al
+        if ci > 2:
+            cell.number_format = money_fmt
+    ws.row_dimensions[tr].height = 16
+
+    # Resumen
+    rs = tr + 2
+    pct = totales["pct_rech"]
+    resumen_rows = [
+        ("D) Preventa original del día",      totales["tot_chess_orig"], None),
+        ("D') Cobrado real por choferes",     totales["tot_real"],       "1a7a4a"),
+        ("E) CTA CTE (total a descontar)",    totales["tot_cta_cte"],    "b91c1c" if totales["tot_cta_cte"] > 0 else None),
+        ("G) Rechazos reales",                totales["tot_rechazos"],   "b91c1c" if totales["tot_rechazos"] > 0 else None),
+        ("H) Neto real a ingresar",           totales["tot_neto"],       "1a7a4a"),
+        ("% Rechazo real",                    pct / 100,                 "b91c1c" if pct > 5 else "1a7a4a"),
+    ]
+
+    ws.merge_cells(f"A{rs}:G{rs}")
+    ws[f"A{rs}"] = "RESUMEN D+1"
+    ws[f"A{rs}"].font = Font(bold=True, size=10, color="1a3a6b")
+    ws[f"A{rs}"].fill = PatternFill("solid", fgColor="D9E4F5")
+    ws[f"A{rs}"].alignment = center_al
+    rs += 1
+
+    for label, val, color in resumen_rows:
+        ws.merge_cells(f"A{rs}:E{rs}")
+        ws[f"A{rs}"] = label
+        ws[f"A{rs}"].font = Font(size=9)
+        ws[f"A{rs}"].alignment = left_al
+        ws.merge_cells(f"F{rs}:G{rs}")
+        cell_val = ws[f"F{rs}"]
+        cell_val.value = val
+        cell_val.alignment = right_al
+        if label.startswith("%"):
+            cell_val.number_format = "0.0%"
+        else:
+            cell_val.number_format = money_fmt
+        cell_val.font = Font(bold=True, color=color, size=9) if color else Font(bold=True, size=9)
+        ws.row_dimensions[rs].height = 13
+        rs += 1
+
+    col_widths = [8, 24, 22, 22, 18, 22, 26]
+    for ci, w in enumerate(col_widths, 1):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 if __name__ == "__main__":
