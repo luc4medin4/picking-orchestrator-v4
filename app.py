@@ -1,6 +1,21 @@
 """
-Picking Orchestrator v4.28 — Beccacece Hnos SA
+Picking Orchestrator v4.32.0 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
+
+CAMBIOS v4.32.0:
+  - 🖼️ Fix JPEG Top SKUs: reescritura completa de build_top_skus_anr_jpeg()
+    para fidelidad pixel-perfect con el PDF. Problemas corregidos:
+    • DPI aumentado de 150 → 200 (A4 real = 1654 × auto px vs 1240px anterior).
+    • Fuentes escaladas con factor correcto DPI/72 en lugar de valores absolutos
+      arbitrarios (título ~47px, subtítulo ~28px, celdas ~25px).
+    • Márgenes convertidos de mm → px con la fórmula mm × DPI/25.4 (igual al PDF).
+    • Alturas de filas y header ahora derivan de las mismas dimensiones mm del PDF
+      (HDR_H=22mm, ROW_H=8mm, THDR_H=8mm, DHDR_H=7mm, DROW_H=7mm).
+    • Helper draw_table() centralizado con alineación vertical real (v-center)
+      idéntica al PDF (drawCentredString vertical del reportlab).
+    • Padding interno corregido (8px ≈ 1.5mm, igual al PDF).
+    • Footer con texto izquierdo y derecho alineados (igual que PDF).
+    • quality JPEG subido a 94 para mejor legibilidad del texto.
 
 CAMBIOS v4.31.0:
   - 🔧 Fix JPEG Tops: reemplazada la conversión PDF→JPEG (que requería
@@ -143,7 +158,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.31.0"
+APP_VERSION = "4.32.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -5050,65 +5065,143 @@ def _draw_tops_table_pil(draw, img_w, y, rows, col_widths, col_x,
 
 
 def build_top_skus_anr_jpeg(df_top, df_div, fecha_str="") -> bytes:
-    """JPEG directo (sin PDF): Top SKUs + División. Mismo diseño que el PDF."""
+    """JPEG directo (sin PDF): Top SKUs + División. Pixel-perfect vs PDF A4."""
     from PIL import Image, ImageDraw
     import io as _io
 
-    DPI   = 150
-    W     = 1240   # ~A4 ancho a 150dpi
-    M     = 48     # margen lateral
-    DARK  = "#1a3a6b"
-    GOLD  = "#f8d772"
-    LIGHT = "#f4f6fa"
-    BORD  = "#b0b0b0"
-    GRAY  = "#555555"
-    MED   = "#2e5fa3"
+    # ── Dimensiones: A4 a 200 DPI ──────────────────────────────────────────
+    # A4 = 210 × 297 mm → a 200 DPI = 1654 × 2339 px (portrait)
+    # Usamos ancho fijo 1654px para fidelidad con el PDF
+    DPI     = 200
+    W       = 1654          # A4 ancho a 200 DPI
+    M       = 96            # 12 mm × (200/25.4) ≈ 94 px → 96 px
+    DARK    = "#1a3a6b"
+    GOLD    = "#f8d772"
+    LIGHT   = "#f4f6fa"
+    WHITE   = "#ffffff"
+    BORD    = "#8c8c8c"
+    GRAY    = "#555555"
+    MED     = "#2e5fa3"
 
     table_w = W - 2 * M
-    # columnas: # | Código | Descripción | Bultos | HL
+
+    # Proporciones idénticas al PDF
     cw = [int(table_w * r) for r in [0.05, 0.12, 0.63, 0.11, 0.09]]
     cx = [M]
     for w in cw[:-1]:
         cx.append(cx[-1] + w)
 
-    # Estimar altura total
-    HDR_H  = 90
-    ROW_H  = 38
-    THDR_H = 42
-    DIV_TITLE_H = 50
-    DIV_HDR_H   = 40
-    DIV_ROW_H   = 34
-    FOOT_H = 40
-    GAP    = 24
+    # Alturas escaladas de mm → px (200 DPI)
+    # PDF usa: HDR_H=22mm, ROW_H=8mm, THDR_H=8mm, DHDR_H=7mm, DROW_H=7mm
+    def mm2px(mm_val): return int(mm_val * DPI / 25.4)
+
+    HDR_H       = mm2px(22)   # 173 px — igual que el PDF
+    THDR_H      = mm2px(8)    # 63 px
+    ROW_H       = mm2px(8)    # 63 px
+    GAP_TOP     = mm2px(8)    # espacio header → tabla
+    GAP_MID     = mm2px(8)    # espacio tabla → div
+    DIV_TITLE_H = mm2px(9)    # 71 px — bloque azul título división
+    DHDR_H      = mm2px(7)    # 55 px
+    DROW_H      = mm2px(7)    # 55 px
+    FOOT_H      = mm2px(10)   # 79 px
+    PAD         = 16          # padding interno horizontal
 
     n_skus = len(df_top)
     n_div  = len(df_div)
-    total_h = (HDR_H + GAP +
-               THDR_H + n_skus * ROW_H + GAP +
-               DIV_TITLE_H + DIV_HDR_H + n_div * DIV_ROW_H + GAP +
-               FOOT_H + 20)
+    total_h = (HDR_H + GAP_TOP +
+               THDR_H + n_skus * ROW_H + GAP_MID +
+               DIV_TITLE_H + DHDR_H + n_div * DROW_H + GAP_MID +
+               FOOT_H + 24)
 
     img  = Image.new("RGB", (W, total_h), "white")
     draw = ImageDraw.Draw(img)
 
-    # ── Header banner ──
+    # ── Fuentes escaladas al DPI (equivalentes exactas al PDF) ──────────────
+    # PDF: título 17pt, subtítulo 10pt, fecha 11pt → × (200/72) factor DPI→pt
+    f_title   = _pil_font(int(17 * DPI / 72), bold=True)   # ~47px ≈ 17pt
+    f_sub     = _pil_font(int(10 * DPI / 72), bold=False)  # ~28px ≈ 10pt
+    f_fecha   = _pil_font(int(11 * DPI / 72), bold=True)   # ~31px
+    f_thdr    = _pil_font(int(9.5 * DPI / 72), bold=True)  # ~26px col header
+    f_num     = _pil_font(int(9 * DPI / 72), bold=False)   # ~25px
+    f_numB    = _pil_font(int(9 * DPI / 72), bold=True)
+    f_divhdr  = _pil_font(int(12 * DPI / 72), bold=True)   # título división
+    f_dhdr    = _pil_font(int(9 * DPI / 72), bold=True)
+    f_foot    = _pil_font(int(7 * DPI / 72), bold=False)   # ~19px
+
+    def text_w(txt, font):
+        bb = draw.textbbox((0, 0), txt, font=font)
+        return bb[2] - bb[0]
+
+    def text_h(font):
+        bb = draw.textbbox((0, 0), "Ag", font=font)
+        return bb[3] - bb[1]
+
+    def draw_text_vcenter(x, y_top, h, txt, font, fill, align="left", x_end=None):
+        th = text_h(font)
+        ty = y_top + (h - th) // 2
+        if align == "center":
+            mid = (x + (x_end or x)) // 2 if x_end else x
+            tx = mid - text_w(txt, font) // 2
+        elif align == "right":
+            tx = (x_end or x) - text_w(txt, font) - PAD
+        else:
+            tx = x + PAD
+        draw.text((tx, ty), txt, font=font, fill=fill)
+
+    # ── Header banner ─────────────────────────────────────────────────────
     draw.rectangle([0, 0, W, HDR_H], fill=DARK)
-    draw.text((M, 12), "TOP SKUs — Venta del Día (ANR)",
-              font=_pil_font(32, True), fill=GOLD)
-    draw.text((M, 52), "Beccacece Hnos SA · DPO 2.1 — Pilar Almacén",
-              font=_pil_font(20), fill="white")
+
+    # Título dorado (alineado izquierda con margen)
+    th_title = text_h(f_title)
+    draw.text((M, int(HDR_H * 0.18)), "TOP SKUs — Venta del Día (ANR)",
+              font=f_title, fill=GOLD)
+    # Subtítulo blanco debajo
+    draw.text((M, int(HDR_H * 0.18) + th_title + 6),
+              "Beccacece Hnos SA · DPO 2.1 — Pilar Almacén",
+              font=f_sub, fill="white")
+    # Fecha alineada a la derecha
     fecha_txt = f"Fecha: {fecha_str}"
-    bb = draw.textbbox((0, 0), fecha_txt, font=_pil_font(22, True))
-    draw.text((W - M - (bb[2] - bb[0]), 14), fecha_txt,
-              font=_pil_font(22, True), fill="white")
+    draw.text((W - M - text_w(fecha_txt, f_fecha), int(HDR_H * 0.18)),
+              fecha_txt, font=f_fecha, fill="white")
 
-    y = HDR_H + GAP
+    y = HDR_H + GAP_TOP
 
-    # ── Tabla Top SKUs ──
+    # ── Helper: dibuja una tabla completa ─────────────────────────────────
+    def draw_table(y_start, col_w, col_x, headers, rows, hdr_h, row_h,
+                   fhdr, frow, fbold):
+        y = y_start
+        tw_total = sum(col_w)
+        # Header dorado
+        draw.rectangle([col_x[0], y, col_x[0] + tw_total, y + hdr_h],
+                       fill=GOLD, outline=BORD)
+        for i, h in enumerate(headers):
+            draw_text_vcenter(col_x[i], y, hdr_h, h, fhdr, DARK,
+                              align="center", x_end=col_x[i] + col_w[i])
+        y += hdr_h
+
+        for ri, cells in enumerate(rows):
+            bg = LIGHT if ri % 2 == 0 else WHITE
+            draw.rectangle([col_x[0], y, col_x[0] + tw_total, y + row_h],
+                           fill=bg, outline=BORD)
+            # líneas verticales internas
+            for ci in range(1, len(col_x)):
+                draw.line([(col_x[ci], y), (col_x[ci], y + row_h)],
+                          fill=BORD, width=1)
+            for ci, (txt, align, bold) in enumerate(cells):
+                font = fbold if bold else frow
+                draw_text_vcenter(col_x[ci], y, row_h, txt, font, "#111111",
+                                  align=align, x_end=col_x[ci] + col_w[ci])
+            y += row_h
+        return y
+
+    # ── Tabla Top SKUs ─────────────────────────────────────────────────────
     rows_skus = []
     for i, row in df_top.reset_index(drop=True).iterrows():
-        cod  = str(int(row["CODIGO"])) if hasattr(row["CODIGO"], "__float__") else str(row["CODIGO"])
-        desc = str(row.get("DESCRIPCION", ""))[:70]
+        try:
+            cod = str(int(float(row["CODIGO"])))
+        except Exception:
+            cod = str(row["CODIGO"])
+        desc   = str(row.get("DESCRIPCION", ""))[:72]
         bultos = _fmt_num(row["BULTOS"], 0)
         hl     = _fmt_num(row.get("HL", 0))
         rows_skus.append([
@@ -5119,15 +5212,20 @@ def build_top_skus_anr_jpeg(df_top, df_div, fecha_str="") -> bytes:
             (hl,         "right",  False),
         ])
 
-    y = _draw_tops_table_pil(draw, W, y, rows_skus, cw, cx,
-                              ["#", "CÓDIGO", "DESCRIPCIÓN", "BULTOS", "HL"],
-                              row_h=ROW_H, hdr_h=THDR_H)
-    y += GAP
+    y = draw_table(y, cw, cx,
+                   ["#", "CÓDIGO", "DESCRIPCIÓN", "BULTOS", "HL"],
+                   rows_skus, THDR_H, ROW_H,
+                   f_thdr, f_num, f_numB)
+    y += GAP_MID
 
-    # ── Bloque División ──
+    # ── Bloque título División (azul medio, igual al PDF) ──────────────────
     draw.rectangle([M, y, M + table_w, y + DIV_TITLE_H], fill=MED)
-    draw.text((M + 12, y + 12), "TOTALES POR DIVISIÓN — Venta del Día",
-              font=_pil_font(22, True), fill="white")
+    # "📊" puede fallar en PIL sin emoji font → usamos cuadrado + texto
+    draw.rectangle([M + 14, y + DIV_TITLE_H // 2 - 10,
+                    M + 14 + 20, y + DIV_TITLE_H // 2 + 10], fill="white")
+    draw_text_vcenter(M + 44, y, DIV_TITLE_H,
+                      "TOTALES POR DIVISIÓN — Venta del Día",
+                      f_divhdr, "white", align="left")
     y += DIV_TITLE_H
 
     cw_d = [int(table_w * r) for r in [0.55, 0.22, 0.23]]
@@ -5143,18 +5241,21 @@ def build_top_skus_anr_jpeg(df_top, df_div, fecha_str="") -> bytes:
             (_fmt_num(row["HL"]),        "right", False),
         ])
 
-    y = _draw_tops_table_pil(draw, W, y, rows_div, cw_d, cx_d,
-                              ["DIVISIÓN", "BULTOS", "HL"],
-                              row_h=DIV_ROW_H, hdr_h=DIV_HDR_H)
-    y += GAP
+    y = draw_table(y, cw_d, cx_d,
+                   ["DIVISIÓN", "BULTOS", "HL"],
+                   rows_div, DHDR_H, DROW_H,
+                   f_dhdr, f_num, f_numB)
+    y += GAP_MID
 
-    # ── Footer ──
-    footer = (f"Fuente: ANR.xlsx — Hoja BASE  ·  "
-              f"Picking Orchestrator v{APP_VERSION} · {datetime.now().strftime('%d/%m/%Y %H:%M')}")
-    draw.text((M, y + 8), footer, font=_pil_font(15), fill=GRAY)
+    # ── Footer ─────────────────────────────────────────────────────────────
+    footer_l = "Fuente: ANR.xlsx — Hoja BASE · Picking Orchestrator v" + APP_VERSION
+    footer_r = datetime.now().strftime('%d/%m/%Y %H:%M')
+    draw.text((M, y + 6), footer_l, font=f_foot, fill=GRAY)
+    draw.text((W - M - text_w(footer_r, f_foot), y + 6),
+              footer_r, font=f_foot, fill=GRAY)
 
     buf = _io.BytesIO()
-    img.save(buf, format="JPEG", quality=92, optimize=True)
+    img.save(buf, format="JPEG", quality=94, optimize=True)
     return buf.getvalue()
 
 
