@@ -2,6 +2,13 @@
 Picking Orchestrator v4.27 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
 
+CAMBIOS v4.27.1:
+  - 🔧 Fix Camiones T2: ModuleNotFoundError al generar PDF landscape.
+    _t2_rotate_to_landscape() reimportaba pypdf localmente sin verificar
+    _PYPDF_AVAILABLE, crasheando si pypdf no estaba instalado en el entorno.
+    Ahora: intenta pypdf → fallback a pikepdf → fallback sin rotación.
+    La tab T2 nunca crashea por este motivo.
+
 CAMBIOS v4.27:
   - 🔧 Fix CRÍTICO Boletas: el ANR subido en Archivos no llegaba a la tab Boletas.
     La key usada en Boletas era "anr_df" (DataFrame) pero Archivos solo guardaba
@@ -103,7 +110,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.27.0"
+APP_VERSION = "4.27.1"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -1953,19 +1960,44 @@ _T2_REQUEST_TIMEOUT = 120  # segundos (makeCopy + export tarda ~15-30s)
 
 def _t2_rotate_to_landscape(pdf_bytes: bytes) -> bytes:
     """
-    Rota todas las páginas del PDF 90° en sentido antihorario (portrait → landscape).
-    Devuelve los nuevos bytes del PDF rotado.
+    Rota todas las páginas del PDF 90° (portrait → landscape).
+    Intenta pypdf primero; si no está instalado, cae a pikepdf;
+    si tampoco está, devuelve el PDF sin rotar (sin crashear la app).
     """
-    from pypdf import PdfReader, PdfWriter
-    reader = PdfReader(io.BytesIO(pdf_bytes))
-    writer = PdfWriter()
-    for page in reader.pages:
-        page.rotate(90)
-        writer.add_page(page)
-    buf = io.BytesIO()
-    writer.write(buf)
-    buf.seek(0)
-    return buf.read()
+    # Intento 1: pypdf (puede no estar disponible en Streamlit Cloud)
+    if _PYPDF_AVAILABLE:
+        try:
+            from pypdf import PdfReader, PdfWriter
+            reader = PdfReader(io.BytesIO(pdf_bytes))
+            writer = PdfWriter()
+            for page in reader.pages:
+                page.rotate(90)
+                writer.add_page(page)
+            buf = io.BytesIO()
+            writer.write(buf)
+            buf.seek(0)
+            return buf.read()
+        except Exception:
+            pass  # Cae al siguiente método
+
+    # Intento 2: pikepdf (disponible en Streamlit Cloud por defecto)
+    try:
+        import pikepdf
+        with pikepdf.open(io.BytesIO(pdf_bytes)) as pdf:
+            for page in pdf.pages:
+                page.rotate(90, relative=True)
+            buf = io.BytesIO()
+            pdf.save(buf)
+            buf.seek(0)
+            return buf.read()
+    except ImportError:
+        pass  # Tampoco está pikepdf
+    except Exception:
+        pass
+
+    # Fallback: devolver sin rotar para no romper la descarga
+    log_event("WARNING", "No se pudo rotar el PDF (pypdf y pikepdf no disponibles). Se descarga en portrait.")
+    return pdf_bytes
 
 
 def _t2_fetch_pdf_from_apps_script() -> tuple[bytes | None, str, list[str], str | None]:
