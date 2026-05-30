@@ -1,6 +1,16 @@
 """
-Picking Orchestrator v4.27 — Beccacece Hnos SA
+Picking Orchestrator v4.28 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
+
+CAMBIOS v4.28.0:
+  - 🔧 Fix Camiones T2: impresión horizontal real.
+    Rotar un PDF portrait 90° con pypdf/pikepdf no produce un PDF landscape
+    real: el contenido se distorsiona y queda mal aprovechado en la página.
+    La solución correcta es exportar landscape DESDE el Apps Script usando
+    el parámetro `fitw=true&size=7` en la URL de export de Google Sheets.
+    En el app.py se eliminó el llamado a _t2_rotate_to_landscape() en el
+    flujo de render_tab_t2() (la función se conserva pero ya no se invoca).
+    ⚠️  REQUIERE también actualizar el Apps Script (ver nota en código).
 
 CAMBIOS v4.27.1:
   - 🔧 Fix Camiones T2: ModuleNotFoundError al generar PDF landscape.
@@ -110,7 +120,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.27.1"
+APP_VERSION = "4.28.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -2105,15 +2115,17 @@ def render_tab_t2():
 
         if error:
             st.error(f"❌ {error}")
-            log_event("error", f"T2 v4.22.0: {error}")
+            log_event("error", f"T2 v4.28.0: {error}")
         elif pdf_bytes:
-            pdf_bytes = _t2_rotate_to_landscape(pdf_bytes)
+            # Nota: la rotación landscape se maneja en el Apps Script (parámetro
+            # `fitw=true&size=7` en la URL de export). No se rota acá para evitar
+            # distorsión del contenido (rotar un PDF portrait ≠ landscape real).
             st.session_state["t3_pdf_bytes"]    = pdf_bytes
             st.session_state["t3_pdf_filename"] = filename
             st.session_state["t3_pdf_trucks"]   = trucks
             log_event(
                 "info",
-                f"T2 v4.22.0: PDF generado (horizontal) | {len(trucks)} camiones | "
+                f"T2 v4.28.0: PDF generado (landscape nativo) | {len(trucks)} camiones | "
                 f"{len(pdf_bytes)//1024} KB",
             )
 
