@@ -49,7 +49,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.18.0"
+APP_VERSION = "4.20.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -1817,405 +1817,187 @@ def render_tab_resumen():
     st.session_state["last_resumen_pdf"] = pdf_bytes
 
 
-# ── TAB 3 — Camiones T2: Imprimir hojas desde Sheets ───────────────────────
+# ── TAB 3 — Camiones T2: PDF vía Apps Script Web App (v4.18.1) ─────────────
 #
-#  LÓGICA:
-#  1. Usuario sube CAR.xlsx → se extraen los números de camión con datos
-#  2. Se construye la URL de impresión de la hoja correspondiente en el
-#     T2 Status Carga Sheets (cada camión tiene su propia hoja: "101", "102", etc.)
-#  3. Se abre cada URL en una nueva pestaña via JS → el browser lanza
-#     el diálogo de impresión nativo (con el visual del Sheets intacto)
+#  CAMBIOS v4.18.1:
+#  - Eliminada dependencia de pypdf. El merge ahora lo hace un Apps Script
+#    Web App deployado en el propio Google Sheet T2 Status Carga.
+#  - Eliminada detección via CAR.xlsx. El Apps Script detecta directamente
+#    qué camiones tienen reparto leyendo F3 de cada hoja numérica del Sheet
+#    (F3 > 0 = camión con carga). Ya no hace falta CAR para esta pestaña.
+#  - PDF embebido (iframe) + botón de descarga. Listo para Ctrl+P.
 #
-#  SHEETS ID: 1QCoMtpHcUaTITp9p9-1mo914HsaH0siq_bHL7nmJ_DA
-#  URL de impresión por hoja: https://docs.google.com/spreadsheets/d/{ID}/export
-#    → Alternativa más confiable: abrir la hoja con ?gid=XXX&rm=print
-#    → Para abrir pestaña de impresión del browser: usar la URL de edit con
-#      el parámetro rm=print aplicado al gid específico de cada hoja.
+#  ARQUITECTURA:
+#    Streamlit (botón) → GET https://script.google.com/.../exec
+#                     → Apps Script:
+#                         1. Lee F3 de cada hoja 101-129
+#                         2. Crea copia temporal del Sheet
+#                         3. Oculta hojas sin reparto
+#                         4. Exporta PDF (Carta, 1 hoja por camión)
+#                         5. Borra la copia temporal
+#                     → JSON con PDF en base64
+#    Streamlit muestra preview + botón descarga
 #
-#  NOTA: el gid de cada hoja (101, 102, etc.) se puede hardcodear o leer
-#  dinámicamente. En v4.8 se lee dinámicamente via gspread (opcional).
-#  Por ahora la estrategia es abrir la URL de cada hoja en modo "edit" con
-#  focus en esa hoja — el usuario imprime con Ctrl+P — O mejor aún: usar
-#  la URL de exportación a PDF directa de Google Sheets por hoja (sin login
-#  extra si ya está autenticado en el browser).
-#
-#  URL export PDF por hoja (requiere sesión Google activa en el browser):
-#  https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=pdf
-#    &gid={GID}&portrait=false&fitw=true&gridlines=false
-#    &top_margin=0.25&bottom_margin=0.25&left_margin=0.25&right_margin=0.25
+#  SETUP INICIAL: ver T2_README.md (deploy del Apps Script + pegar URL acá).
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ID del Sheets T2 Status Carga (fijo)
-_T2_SHEETS_ID = "1QCoMtpHcUaTITp9p9-1mo914HsaH0siq_bHL7nmJ_DA"
+# URL del Apps Script Web App. Pegar la URL /exec del deploy aquí.
+# Formato: https://script.google.com/macros/s/AKfycb.../exec
+_T2_WEB_APP_URL = "PEGAR_URL_DEL_WEB_APP_ACA"
 
-# Mapa camión → gid de la hoja en el Sheets.
-# ─────────────────────────────────────────────────────────────────────────────
-# CÓMO OBTENER EL GID DE UNA HOJA:
-#   1. Abrí el Sheets T2 Status Carga en el browser.
-#   2. Hacé click en la pestaña del camión (ej: "106").
-#   3. Copiá el número después de `#gid=` en la URL (ej: 1234567890).
-#   4. Agregalo acá: 106: 1234567890,
-#
-# FALLBACK AUTOMÁTICO: Si un camión NO está en este mapa, la app usa la URL
-# de la hoja por su nombre (número del camión como nombre de pestaña).
-# Esto funciona mientras el nombre de la hoja coincida exactamente con el
-# número del camión (ej: la pestaña se llama "101", "106", etc.).
-# La URL by-name es menos confiable que la by-GID (Google la puede rechazar
-# si hay ambigüedad), pero funciona en la práctica para hojas con nombre simple.
-# ─────────────────────────────────────────────────────────────────────────────
-_T2_GID_MAP: dict[int, int] = {
-    # camion: gid  ← completar con los GIDs reales del Sheets
-    101: 157072406,
-    # 106: XXXXXXX,
-    # 108: XXXXXXX,
-    # 111: XXXXXXX,
-    # 112: XXXXXXX,
-    # 113: XXXXXXX,
-    # 115: XXXXXXX,
-    # 120: XXXXXXX,
-    # 121: XXXXXXX,
-    # 122: XXXXXXX,
-    # 124: XXXXXXX,
-    # 128: XXXXXXX,
-}
+_T2_REQUEST_TIMEOUT = 120  # segundos (makeCopy + export tarda ~15-30s)
 
 
-def _t2_build_print_url(sheet_id: str, gid: int) -> str:
-    """URL de exportación PDF por GID (más confiable)."""
-    base = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export"
-    params = (
-        f"?format=pdf"
-        f"&gid={gid}"
-        f"&portrait=false"
-        f"&fitw=true"
-        f"&gridlines=false"
-        f"&printtitle=false"
-        f"&sheetnames=false"
-        f"&pagenum=UNDEFINED"
-        f"&attachment=false"
-        f"&top_margin=0.25"
-        f"&bottom_margin=0.25"
-        f"&left_margin=0.25"
-        f"&right_margin=0.25"
-    )
-    return base + params
-
-
-def _t2_build_print_url_by_name(sheet_id: str, sheet_name: str) -> str:
+def _t2_fetch_pdf_from_apps_script() -> tuple[bytes | None, str, list[str], str | None]:
     """
-    URL de exportación PDF por nombre de hoja (fallback sin GID).
-    Usa el parámetro `sheet` con el nombre URL-encoded.
-    Funciona cuando la pestaña del Sheets tiene exactamente ese nombre.
+    Llama al Apps Script Web App y devuelve:
+        (pdf_bytes, filename, trucks, error_msg)
+    Si hay error, pdf_bytes es None y error_msg trae el detalle.
     """
-    import urllib.parse
-    base = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export"
-    params = (
-        f"?format=pdf"
-        f"&sheet={urllib.parse.quote(str(sheet_name))}"
-        f"&portrait=false"
-        f"&fitw=true"
-        f"&gridlines=false"
-        f"&printtitle=false"
-        f"&sheetnames=false"
-        f"&pagenum=UNDEFINED"
-        f"&attachment=false"
-        f"&top_margin=0.25"
-        f"&bottom_margin=0.25"
-        f"&left_margin=0.25"
-        f"&right_margin=0.25"
-    )
-    return base + params
-
-
-def _t2_build_view_url(sheet_id: str, gid: int) -> str:
-    """URL de visualización directa de la hoja por GID."""
-    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit#gid={gid}"
-
-
-def _t2_build_view_url_by_name(sheet_id: str, sheet_name: str) -> str:
-    """URL de visualización directa de la hoja por nombre (fallback)."""
-    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
-
-
-@st.cache_data(show_spinner=False)
-def _t2_load_camiones_car(car_bytes: bytes) -> list[int]:
-    """
-    Lee el CAR.xlsx desde la hoja 'Planilla de carga' (o Hoja1 si no existe)
-    y devuelve los números de camión con Bultos > 0, ordenados ascendentemente.
-
-    El CAR tiene header en fila 1 (índice 0) y datos desde fila 2 en adelante
-    — SIN el bloque azul de 40 filas de la Frescura. Se lee directo con header=0.
-    """
-    xls = pd.ExcelFile(io.BytesIO(car_bytes))
-
-    # Elegir hoja: preferir 'Planilla de carga', sino la primera disponible
-    sheet_candidates = ["Planilla de carga", "Planilla de Carga", "PLANILLA DE CARGA", "Hoja1"]
-    sheet_name = 0
-    for sc in sheet_candidates:
-        if sc in xls.sheet_names:
-            sheet_name = sc
-            break
-
-    raw = pd.read_excel(xls, sheet_name=sheet_name, header=0)
-
-    col_trans = find_col(raw, "Transporte")
-    col_bult  = find_col(raw, "Bultos")
-
-    if col_trans is None:
-        raise ValueError(
-            f"No se encontró columna 'Transporte' en el CAR "
-            f"(hoja: '{sheet_name}'). Columnas disponibles: {list(raw.columns)}"
-        )
-
-    raw[col_trans] = pd.to_numeric(raw[col_trans], errors="coerce")
-    raw = raw.dropna(subset=[col_trans])
-    raw = raw[raw[col_trans] > 0]
-    raw[col_trans] = raw[col_trans].apply(lambda x: int(float(x)))
-
-    if col_bult:
-        raw[col_bult] = pd.to_numeric(raw[col_bult], errors="coerce").fillna(0)
-        raw = raw[raw[col_bult] > 0]
-
-    camiones = sorted(raw[col_trans].unique().tolist())
-    return camiones
-
-
-def _t2_js_open_tabs(urls: list[str]) -> str:
-    """
-    Genera el HTML+JS que abre cada URL en una nueva pestaña del browser.
-    Usa window.open() con un pequeño delay entre pestañas para evitar que
-    el bloqueador de popups las cancele. Se avisa al usuario que debe
-    permitir popups para este sitio.
-    """
-    js_lines = []
-    for i, url in enumerate(urls):
-        delay_ms = i * 600  # 600ms entre pestañas
-        js_lines.append(
-            f"setTimeout(function(){{ window.open('{url}', '_blank'); }}, {delay_ms});"
-        )
-    js_block = "\n    ".join(js_lines)
-
-    html = f"""
-    <div style="
-        background: #f0f9ff;
-        border: 1px solid #0ea5e9;
-        border-radius: 8px;
-        padding: 14px 18px;
-        font-family: sans-serif;
-        font-size: 13px;
-        color: #0c4a6e;
-        margin-bottom: 10px;
-    ">
-        ⚠️ <b>Si el browser bloquea las pestañas:</b> hacé click en el ícono de popup
-        bloqueado en la barra de direcciones y seleccioná <i>"Permitir siempre"</i>.
-        Luego presioná el botón nuevamente.
-    </div>
-    <button
-        onclick="abrirHojas()"
-        style="
-            background: #1a3a6b;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            padding: 10px 22px;
-            font-size: 15px;
-            font-weight: 600;
-            cursor: pointer;
-            letter-spacing: 0.3px;
-        "
-    >
-        🖨️ Abrir {len(urls)} hoja(s) para imprimir
-    </button>
-    <script>
-    function abrirHojas() {{
-        {js_block}
-    }}
-    </script>
-    """
-    return html
-
-
-def _t2_fetch_and_merge_pdfs(sheet_id: str, camiones: list[int]) -> tuple[bytes | None, list[str]]:
-    """
-    v4.16 — Descarga server-side cada hoja del Sheets como PDF y las mergea
-    en un único PDF (1 hoja por camión). Devuelve (pdf_bytes, errores).
-
-    Requiere que el Sheets esté compartido como 'cualquiera con el link puede ver'
-    o que la app corra con OAuth/service-account autorizado. Si la URL devuelve
-    HTML de login en lugar de PDF, marca error para ese camión.
-    """
+    import base64
     import requests
-    from pypdf import PdfWriter, PdfReader
 
-    writer = PdfWriter()
-    errores: list[str] = []
-    ok_count = 0
+    try:
+        resp = requests.get(_T2_WEB_APP_URL, timeout=_T2_REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.Timeout:
+        return None, "", [], "Timeout: el Apps Script tardó más de 2 minutos."
+    except requests.RequestException as e:
+        return None, "", [], f"Error de red llamando al Apps Script: {e}"
+    except ValueError:
+        return None, "", [], "Respuesta inválida del Apps Script (no es JSON)."
 
-    for cam in camiones:
-        url = _t2_build_print_url_by_name(sheet_id, str(cam))
-        try:
-            r = requests.get(url, timeout=20, allow_redirects=True)
-        except Exception as e:
-            errores.append(f"Camión {cam}: error de red ({e.__class__.__name__})")
-            continue
+    if not data.get("success"):
+        return None, "", [], f"Apps Script devolvió error: {data.get('error', 'desconocido')}"
 
-        ctype = (r.headers.get("Content-Type") or "").lower()
-        body  = r.content or b""
-        # Validar que sea realmente un PDF (empieza con %PDF-)
-        if r.status_code != 200 or not body.startswith(b"%PDF-"):
-            if "html" in ctype or body[:200].lower().startswith(b"<!doctype html") or b"<html" in body[:200].lower():
-                errores.append(f"Camión {cam}: el Sheets pidió login (HTTP {r.status_code})")
-            else:
-                errores.append(f"Camión {cam}: respuesta no-PDF (HTTP {r.status_code}, ctype={ctype})")
-            continue
+    try:
+        pdf_bytes = base64.b64decode(data["pdf_base64"])
+    except Exception as e:
+        return None, "", [], f"Error decodificando PDF: {e}"
 
-        try:
-            reader = PdfReader(io.BytesIO(body))
-            for page in reader.pages:
-                writer.add_page(page)
-            ok_count += 1
-        except Exception as e:
-            errores.append(f"Camión {cam}: PDF inválido ({e})")
-            continue
-
-    if ok_count == 0:
-        return None, errores
-
-    out = io.BytesIO()
-    writer.write(out)
-    return out.getvalue(), errores
+    return (
+        pdf_bytes,
+        data.get("filename", "T2_Camiones.pdf"),
+        data.get("trucks", []),
+        None,
+    )
 
 
 def render_tab_t2():
+    import base64
+
     st.subheader("🚛 Camiones T2 — PDF único para imprimir")
     st.caption(
-        "v4.16 — Detecta los camiones con carga en el **CAR del día siguiente**, "
-        "descarga cada hoja del Sheets T2 Status Carga y las **combina en un único PDF** "
-        "(1 hoja por camión). Sin abrir pestañas ni pasar por el Sheets."
+        "v4.18.1 — Detecta automáticamente los camiones con reparto en el "
+        "**Sheet T2 Status Carga** (F3 > 0) y genera un PDF combinado "
+        "(1 hoja por camión, tamaño Carta) listo para imprimir."
     )
 
-    # ── Instrucciones colapsables ─────────────────────────────────────────────
     with st.expander("ℹ️ Cómo funciona", expanded=False):
         st.markdown(
             """
-            1. La app reutiliza el **CAR** ya subido en 📦 Planilla de Carga (o lo subís acá).
-            2. Detecta automáticamente los camiones con bultos > 0 (los que salen mañana).
-            3. Para cada camión descarga **solo su hoja** del Sheets T2 como PDF.
-            4. Mergea todas las hojas en **un único PDF** y lo ofrece para descarga.
-            5. Lo abrís en Acrobat / Visor y mandás a imprimir todo de una.
+            1. Al apretar **Generar PDF**, Streamlit llama a un Apps Script
+               deployado dentro del propio Sheet T2 Status Carga.
+            2. El Apps Script lee la celda **F3** de cada hoja numérica
+               (101–129). Si F3 > 0, ese camión tiene reparto y se incluye.
+            3. Crea una copia temporal del Sheet, oculta las hojas que no van,
+               exporta como PDF (Carta, con header de fecha/título) y borra
+               la copia temporal.
+            4. Devuelve el PDF a Streamlit, que lo muestra embebido + botón
+               de descarga. Ctrl+P sobre el preview imprime directo.
 
-            > **Requisito:** el Sheets T2 Status Carga debe estar compartido como
-            > **"cualquiera con el link puede ver"** para que el servidor de Streamlit
-            > pueda bajar los PDFs sin login. Si no, vas a ver errores de "pidió login"
-            > y deberías cambiar el sharing (Compartir → General access → Anyone with the link → Viewer).
+            > **Ya no hace falta subir el CAR** para esta pestaña — la detección
+            > es directa desde el Sheet, que se mantiene actualizado con la
+            > planilla de inputs.
+            >
+            > **Setup inicial:** ver `T2_README.md` para el deploy del Apps Script.
             """
         )
 
     st.divider()
 
-    # ── CAR: reusar de Archivos / Planilla ───────────────────────────────────
-    car_use = st.session_state.get("t1_car") or st.session_state.get("t4_car") \
-              or st.session_state.get("tc_car") or st.session_state.get("t3_car")
-
-    if not car_use:
-        st.info("⬅️ Subí el **CAR.xlsx** en la pestaña **📁 Archivos** para continuar.")
-        return
-    else:
-        st.success("✅ CAR detectado desde 📁 Archivos.")
-
-    # ── Detectar camiones con carga ───────────────────────────────────────────
-    try:
-        with st.spinner("Leyendo camiones del CAR..."):
-            camiones_car = _t2_load_camiones_car(car_use.getvalue())
-        log_event("info", f"T2 v4.16: CAR leído → {len(camiones_car)} camiones: {camiones_car}")
-    except Exception as e:
-        st.error(f"❌ Error leyendo CAR: {e}")
-        log_event("error", f"T2: Error leyendo CAR: {e}")
+    # ── Validar config ────────────────────────────────────────────────────────
+    if _T2_WEB_APP_URL.startswith("PEGAR"):
+        st.error(
+            "⚠️ Falta configurar `_T2_WEB_APP_URL` en el código. "
+            "Hacé el deploy del Apps Script (ver T2_README.md) y pegá la URL "
+            "`/exec` en la constante al inicio de esta sección."
+        )
         return
 
-    if not camiones_car:
-        st.warning("No se encontraron camiones con bultos en el CAR.")
-        return
+    # ── Botones de acción ─────────────────────────────────────────────────────
+    col_gen, col_clear = st.columns([3, 1])
+    with col_gen:
+        gen_clicked = st.button(
+            "🖨️  Generar PDF Camiones",
+            type="primary",
+            width="stretch",
+            key="t3_btn_generate",
+        )
+    with col_clear:
+        clear_clicked = st.button(
+            "🗑️ Limpiar",
+            width="stretch",
+            key="t3_btn_clear",
+        )
 
-    todos_camiones = sorted(camiones_car)
-    st.metric("🚛 Camiones con reparto mañana", len(todos_camiones))
+    if clear_clicked:
+        for k in ("t3_pdf_bytes", "t3_pdf_filename", "t3_pdf_trucks"):
+            st.session_state.pop(k, None)
+        st.rerun()
 
-    # ── Selector ──────────────────────────────────────────────────────────────
-    camiones_sel = st.multiselect(
-        "Filtrar camiones (dejar vacío = todos los que tienen carga)",
-        options=todos_camiones,
-        default=[],
-        key="t3_sel",
-        help="Seleccioná solo los camiones que querés imprimir ahora.",
-    )
-    camiones_a_imprimir = camiones_sel if camiones_sel else todos_camiones
+    if gen_clicked:
+        with st.spinner("Generando PDF... (15–30 segundos)"):
+            pdf_bytes, filename, trucks, error = _t2_fetch_pdf_from_apps_script()
 
-    st.markdown(
-        f"**{len(camiones_a_imprimir)} hoja(s) a combinar:** "
-        f"{', '.join(str(c) for c in camiones_a_imprimir)}"
-    )
-
-    # ── Botón principal: generar PDF único ────────────────────────────────────
-    if st.button("🖨️  Generar PDF único para imprimir", type="primary",
-                 width="stretch", key="t3_btn_merge"):
-        with st.spinner(f"Descargando y mergeando {len(camiones_a_imprimir)} hojas..."):
-            pdf_bytes, errores = _t2_fetch_and_merge_pdfs(
-                _T2_SHEETS_ID, camiones_a_imprimir
+        if error:
+            st.error(f"❌ {error}")
+            log_event("error", f"T2 v4.18.1: {error}")
+        elif pdf_bytes:
+            st.session_state["t3_pdf_bytes"]    = pdf_bytes
+            st.session_state["t3_pdf_filename"] = filename
+            st.session_state["t3_pdf_trucks"]   = trucks
+            log_event(
+                "info",
+                f"T2 v4.18.1: PDF generado | {len(trucks)} camiones | "
+                f"{len(pdf_bytes)//1024} KB",
             )
 
-        if pdf_bytes:
-            ok_count = len(camiones_a_imprimir) - len(errores)
-            st.success(
-                f"✅ PDF generado: {ok_count}/{len(camiones_a_imprimir)} camiones "
-                f"({len(pdf_bytes)//1024} KB)"
-            )
-            st.session_state["t3_pdf_bytes"]  = pdf_bytes
-            st.session_state["t3_pdf_errors"] = errores
-        else:
-            st.error("❌ No se pudo generar el PDF. Revisá los errores abajo.")
-            st.session_state["t3_pdf_bytes"]  = None
-            st.session_state["t3_pdf_errors"] = errores
-
-    # ── Download button (persistente entre re-runs) ───────────────────────────
+    # ── Render del PDF cacheado ───────────────────────────────────────────────
     pdf_cached = st.session_state.get("t3_pdf_bytes")
-    errs       = st.session_state.get("t3_pdf_errors") or []
     if pdf_cached:
+        trucks   = st.session_state.get("t3_pdf_trucks", [])
+        filename = st.session_state.get("t3_pdf_filename", "T2_Camiones.pdf")
+
+        st.success(
+            f"✅ {len(trucks)} camión(es) listos para imprimir: "
+            f"**{', '.join(trucks)}** ({len(pdf_cached)//1024} KB)"
+        )
+
         st.download_button(
-            "⬇  Descargar PDF combinado",
+            f"⬇  Descargar {filename}",
             data=pdf_cached,
-            file_name=_stamp("Camiones_T2", "pdf"),
+            file_name=filename,
             mime="application/pdf",
             type="primary",
             width="stretch",
             key="t3_pdf_dl",
         )
 
-    if errs:
-        with st.expander(f"⚠️ {len(errs)} camión(es) con problemas", expanded=True):
-            for msg in errs:
-                st.write(f"- {msg}")
-            st.caption(
-                "Si todos dicen *'pidió login'* → el Sheets es privado. "
-                "Compartilo como **'Cualquiera con el link · Lector'** y reintenta."
-            )
-
-    # ── Fallback: links individuales si el merge falla ───────────────────────
-    with st.expander("🔗 Links individuales (fallback si server-side no funciona)",
-                     expanded=False):
-        st.caption(
-            "Si el Sheets es privado y no podés cambiar el sharing, usá estos links "
-            "(abren con tu sesión de Google logueada)."
+        # Preview embebido — Ctrl+P imprime directo
+        b64 = base64.b64encode(pdf_cached).decode("utf-8")
+        st.markdown(
+            f"""
+            <iframe
+                src="data:application/pdf;base64,{b64}"
+                width="100%"
+                height="900"
+                style="border: 1px solid #d0d0d0; border-radius: 8px; margin-top: 12px;">
+            </iframe>
+            """,
+            unsafe_allow_html=True,
         )
-        for c in camiones_a_imprimir:
-            url = _t2_build_print_url_by_name(_T2_SHEETS_ID, str(c))
-            st.markdown(f"- **Camión {c}**: [📄 Descargar PDF de esta hoja]({url})")
-
-    log_event(
-        "info",
-        f"T2 v4.16: render OK | camiones={camiones_a_imprimir} | pdf_cached={bool(pdf_cached)}",
-    )
-
-
 
 # ── TAB 4 — Proyección Picking ×4 — v4.6 ──────────────────────────────────
 #
@@ -5128,60 +4910,220 @@ def render_tab_top_skus():
         )
 
 
-# ── TAB BOLETAS — Impresión de Boletas ordenadas por camión ─────────────────
+# ── TAB BOLETAS v4.19 — Agrupación por camión con fallback ANR ──────────────
 
-def _extract_reparto_from_pdf(pdf_bytes: bytes) -> int | None:
+def _build_anr_lookup() -> dict:
     """
-    Extrae el número de reparto del contenido de un PDF.
-    Busca el patrón 'Reparto: XXXXXXXX' y devuelve el número como int.
-    Si no lo encuentra, devuelve None.
+    Construye dos diccionarios desde ANR en session_state:
+      - cliente_to_camion: {nombre_cliente_normalizado: num_camion_int}
+      - reparto_to_camion: {num_reparto_int: num_camion_int}  (vacío por ahora, placeholder)
+      - transporte_to_nombre: {num_transporte_int: desc_transporte_str}
+    Devuelve dict con esas tres claves. Si no hay ANR, devuelve dicts vacíos.
     """
+    result = {
+        "cliente_to_camion": {},
+        "transporte_to_nombre": {},
+    }
+    df_anr = st.session_state.get("anr_df")
+    if df_anr is None:
+        return result
+
+    try:
+        # La hoja BASE tiene la fila 0 como header real después de leer con header=0
+        df = df_anr.copy()
+        # Si la primera fila tiene los nombres de columna como valores (caso raw), reparar
+        if "EMPRESA" not in df.columns and df.iloc[0].astype(str).str.contains("EMPRESA").any():
+            df.columns = df.iloc[0]
+            df = df.iloc[1:].reset_index(drop=True)
+
+        # Normalizar nombres de columnas
+        df.columns = [str(c).strip().upper() for c in df.columns]
+
+        desc_cli_col = next((c for c in df.columns if "DESCRIPCIÓN CLIENTE" in c and "DETALLADA" not in c and "DOMICILIO" not in c), None)
+        trans_col = next((c for c in df.columns if c == "TRANSPORTE"), None)
+        desc_trans_col = next((c for c in df.columns if "DESCRIPCIÓN TRANSPORTE" in c and "DETALLADA" not in c), None)
+
+        if desc_cli_col and trans_col:
+            for _, row in df[[desc_cli_col, trans_col]].dropna().iterrows():
+                cli_raw = str(row[desc_cli_col]).strip()
+                try:
+                    cam = int(row[trans_col])
+                except (ValueError, TypeError):
+                    continue
+                # Guardar versión normalizada (sin tildes, lowercase)
+                cli_norm = _norm(cli_raw)
+                result["cliente_to_camion"][cli_norm] = cam
+
+        if trans_col and desc_trans_col:
+            for _, row in df[[trans_col, desc_trans_col]].dropna().drop_duplicates().iterrows():
+                try:
+                    cam = int(row[trans_col])
+                except (ValueError, TypeError):
+                    continue
+                result["transporte_to_nombre"][cam] = str(row[desc_trans_col]).strip()
+
+    except Exception as e:
+        pass  # Si falla, devolvemos dicts vacíos
+
+    return result
+
+
+def _extract_pdf_text_all_pages(pdf_bytes: bytes) -> str:
+    """Extrae todo el texto de todas las páginas de un PDF como string único."""
     import re
     try:
         import pdfplumber
+        texts = []
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages:
-                text = page.extract_text() or ""
-                # Buscar patrón "Reparto: 00092046" o similar
-                m = re.search(r"Reparto[:\s]+0*(\d+)", text, re.IGNORECASE)
-                if m:
-                    return int(m.group(1))
+                t = page.extract_text() or ""
+                texts.append(t)
+        return "\n".join(texts)
     except Exception:
         pass
-    return None
+    # Fallback a pypdf
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        return "\n".join(p.extract_text() or "" for p in reader.pages)
+    except Exception:
+        return ""
 
 
-def _extract_camion_from_reparto(reparto: int | None) -> int | None:
+def _detect_camion_for_pdf(pdf_bytes: bytes, anr_lookup: dict) -> tuple[int | None, str]:
     """
-    Mapea el número de reparto al número de camión.
-    Convención observada: reparto 92046 → camión 101, 92045 → camión 102, etc.
-    En la práctica los últimos 2-3 dígitos del reparto identifican el camión.
-    Si no se puede determinar, devuelve None.
+    Detecta el número de camión (TRANSPORTE en ANR) para un PDF dado.
+    Aplica detección en capas:
+      Capa 1: "Reparto: XXXXXXXX" → busca en ANR por reparto (si hay mapeo) → si no, usa directo
+      Capa 2: "Transporte: NNN" o "NNN - NOMBRE" en Composición de Carga
+      Capa 3: "Fletero: NOMBRE" → busca nombre en transporte_to_nombre invertido
+      Capa 4: Nombre del cliente → busca en cliente_to_camion del ANR
+    Devuelve (num_camion_int_or_None, metodo_str).
     """
-    if reparto is None:
-        return None
-    # Los repartos observados: 92046, 92045 → los últimos dígitos
-    # Se ordena por número de reparto ascendente → camión 101 en adelante
-    return reparto  # Se usa el reparto directamente para ordenar
+    import re
+
+    text = _extract_pdf_text_all_pages(pdf_bytes)
+    if not text:
+        return None, "sin texto"
+
+    cliente_to_camion = anr_lookup.get("cliente_to_camion", {})
+    transporte_to_nombre = anr_lookup.get("transporte_to_nombre", {})
+    # Invertido: nombre_normalizado → num_camion
+    nombre_to_camion = {_norm(v): k for k, v in transporte_to_nombre.items()}
+
+    # ── Capa 1: campo Reparto ────────────────────────────────────────────────
+    # "Reparto: 00092046" o "Reparto  00092046"
+    m = re.search(r"Reparto[:\s]+0*(\d{3,})", text, re.IGNORECASE)
+    if m:
+        reparto_num = int(m.group(1))
+        # El reparto en sí es el número de transporte/camión en el sistema
+        # Verificar si ese número existe como TRANSPORTE en ANR
+        if reparto_num in transporte_to_nombre:
+            return reparto_num, f"Reparto→ANR ({reparto_num})"
+        # Si no, devolvemos el reparto como número de orden (comportamiento anterior)
+        return reparto_num, f"Reparto ({reparto_num})"
+
+    # ── Capa 2: Composición de Carga — "Transporte: NNN - NOMBRE" ───────────
+    # Patrón: "128 - VILLALOBO" o "Transporte: 128 - VILLALOBO"
+    m = re.search(r"Transporte[:\s]+(\d+)\s*[-–]\s*(\w+)", text, re.IGNORECASE)
+    if m:
+        cam = int(m.group(1))
+        return cam, f"Composición Carga ({cam})"
+
+    # También puede aparecer solo el número de transporte en la línea de cabecera
+    m = re.search(r"Dep[oó]sito[:\s]+\d+[^\n]*Transporte[:\s]*(\d+)", text, re.IGNORECASE)
+    if m:
+        cam = int(m.group(1))
+        return cam, f"Comp.Carga/Depósito ({cam})"
+
+    # ── Capa 3: campo Fletero → nombre del chofer/transporte ────────────────
+    # "Fletero: ARANDA" o "Fletero:  COLOMBO S"
+    m = re.search(r"Fletero[:\s]+([A-ZÁ-Úa-zá-ú\s]+?)(?:\n|&|$)", text, re.IGNORECASE)
+    if m:
+        fletero_raw = m.group(1).strip()
+        fletero_norm = _norm(fletero_raw)
+        # Buscar match parcial en nombre_to_camion
+        for nombre_norm, cam in nombre_to_camion.items():
+            if fletero_norm in nombre_norm or nombre_norm in fletero_norm:
+                return cam, f"Fletero ({fletero_raw}→{cam})"
+        # Si no matchea exacto, buscar en cliente_to_camion con el nombre del fletero
+        # (a veces el fletero tiene el apellido del transporte)
+        for nombre_norm, cam in nombre_to_camion.items():
+            words_fletero = set(fletero_norm.split())
+            words_nombre = set(nombre_norm.split())
+            if words_fletero & words_nombre:  # intersección de palabras
+                return cam, f"Fletero~match ({fletero_raw}→{cam})"
+
+    # ── Capa 4: nombre del cliente → ANR lookup ──────────────────────────────
+    # Buscar el campo "Cliente:" en la boleta (Factura A / Presupuesto / FAC.PRES)
+    # Patrones posibles:
+    #   "Cliente:   (016345) ELI SOCIEDAD ANONIMA"
+    #   "MOLINAS JONATHAM ALEXIS"  (FAC.PRES sin etiqueta clara)
+    clientes_encontrados = []
+
+    # Patrón Factura A/B: "Cliente:   (XXXXXX) NOMBRE APELLIDO"
+    for m in re.finditer(r"Cliente[:\s]+\(\d+\)\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ\s]+?)(?:\n|Domicilio|$)", text, re.IGNORECASE):
+        clientes_encontrados.append(m.group(1).strip())
+
+    # Patrón FAC.PRES / texto suelto: buscar líneas que sean nombres de clientes del ANR
+    # (heurística: línea de 2-4 palabras en mayúsculas, sin números, que matchee en ANR)
+    if not clientes_encontrados:
+        lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+        for ln in lines:
+            # Solo líneas que parezcan nombres propios (2-4 palabras, mayúsculas, sin números)
+            if re.match(r"^[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ\s]{5,60}$", ln) and not any(c.isdigit() for c in ln):
+                words = ln.split()
+                if 2 <= len(words) <= 5:
+                    clientes_encontrados.append(ln)
+
+    for cliente_raw in clientes_encontrados:
+        cli_norm = _norm(cliente_raw)
+        # Match exacto
+        if cli_norm in cliente_to_camion:
+            return cliente_to_camion[cli_norm], f"Cliente→ANR ({cliente_raw})"
+        # Match parcial: al menos 2 palabras en común
+        words_pdf = set(cli_norm.split())
+        for cli_anr_norm, cam in cliente_to_camion.items():
+            words_anr = set(cli_anr_norm.split())
+            comunes = words_pdf & words_anr
+            if len(comunes) >= 2:
+                return cam, f"Cliente~match ({cliente_raw}→{cam})"
+
+    return None, "no detectado"
 
 
 def render_tab_boletas():
     """
-    Tab de impresión de boletas.
-    El usuario sube múltiples PDFs (facturas, remitos, NC, presupuestos).
-    La app detecta el número de reparto de cada uno, los agrupa por camión
-    (reparto), los ordena de menor a mayor (101 en adelante) y genera un
-    único PDF listo para imprimir de una sola vez.
+    Tab de impresión de boletas v4.19.
+    Agrupa PDFs por camión usando detección multicapa + ANR como fallback.
+    No altera los documentos: solo los reordena antes de combinar.
     """
     st.subheader("🖨️ Impresión de Boletas")
     st.caption(
         "Subí todos los PDFs de boletas del próximo día. "
-        "La app los ordena automáticamente por camión (de menor a mayor) "
+        "La app los agrupa automáticamente por camión (usando ANR como referencia) "
         "y genera un único PDF listo para mandar a imprimir."
     )
 
+    # ── Verificar si hay ANR cargado ─────────────────────────────────────────
+    anr_df = st.session_state.get("anr_df")
+    if anr_df is None:
+        st.warning(
+            "⚠️ **ANR no cargado.** Para el cross-reference cliente→camión, "
+            "cargá el ANR.xlsx en la pestaña 📁 **Archivos** primero. "
+            "Sin ANR, solo se detecta el campo `Reparto` del PDF."
+        )
+        anr_lookup = {"cliente_to_camion": {}, "transporte_to_nombre": {}}
+    else:
+        anr_lookup = _build_anr_lookup()
+        n_clientes = len(anr_lookup["cliente_to_camion"])
+        n_transportes = len(anr_lookup["transporte_to_nombre"])
+        st.success(
+            f"✅ ANR cargado — {n_clientes} clientes mapeados · {n_transportes} camiones registrados"
+        )
+
     uploaded_files = st.file_uploader(
-        "PDFs de boletas (facturas, remitos, NC, presupuestos) *",
+        "PDFs de boletas (facturas A/B/C, remitos, NC, presupuestos, composición de carga) *",
         type=["pdf"],
         accept_multiple_files=True,
         key="boletas_pdfs",
@@ -5194,64 +5136,71 @@ def render_tab_boletas():
     st.divider()
 
     # ── Procesar cada PDF ────────────────────────────────────────────────────
-    with st.spinner("Analizando PDFs..."):
-        file_data = []  # lista de dicts: {name, reparto, bytes}
-        warnings = []
+    with st.spinner("Analizando PDFs y detectando camiones..."):
+        file_data = []
+        no_detectados = []
 
         for uf in uploaded_files:
             raw = uf.read()
-            reparto = _extract_reparto_from_pdf(raw)
-            file_data.append({
+            camion, metodo = _detect_camion_for_pdf(raw, anr_lookup)
+            entry = {
                 "name": uf.name,
-                "reparto": reparto,
+                "camion": camion,
+                "metodo": metodo,
                 "bytes": raw,
-            })
-            if reparto is None:
-                warnings.append(f"⚠️ No se detectó reparto en: **{uf.name}**")
+            }
+            file_data.append(entry)
+            if camion is None:
+                no_detectados.append(uf.name)
 
-    # ── Mostrar advertencias ─────────────────────────────────────────────────
-    if warnings:
-        with st.expander(f"⚠️ {len(warnings)} archivo(s) sin reparto detectado", expanded=True):
-            for w in warnings:
-                st.markdown(w)
-            st.caption("Estos archivos se incluirán al final del PDF combinado.")
+    # ── Advertencias ─────────────────────────────────────────────────────────
+    if no_detectados:
+        with st.expander(f"⚠️ {len(no_detectados)} archivo(s) sin camión detectado", expanded=True):
+            for nd in no_detectados:
+                st.markdown(f"- **{nd}**")
+            st.caption(
+                "Estos archivos se incluirán al final del PDF combinado. "
+                "Revisá que el ANR esté cargado y actualizado para mejorar la detección."
+            )
 
-    # ── Separar con reparto y sin reparto ────────────────────────────────────
-    con_reparto = [f for f in file_data if f["reparto"] is not None]
-    sin_reparto = [f for f in file_data if f["reparto"] is None]
-
-    # Ordenar por número de reparto (ascendente → camión 101 primero)
-    con_reparto_sorted = sorted(con_reparto, key=lambda x: x["reparto"])
+    # ── Separar detectados / no detectados y ordenar ─────────────────────────
+    con_camion = sorted(
+        [f for f in file_data if f["camion"] is not None],
+        key=lambda x: x["camion"],
+    )
+    sin_camion = [f for f in file_data if f["camion"] is None]
 
     # ── Tabla resumen ────────────────────────────────────────────────────────
-    from pypdf import PdfReader
+    from pypdf import PdfReader as _PRcount
 
     def _count_pages(pdf_bytes):
         try:
-            return len(PdfReader(io.BytesIO(pdf_bytes)).pages)
+            return len(_PRcount(io.BytesIO(pdf_bytes)).pages)
         except Exception:
             return "?"
 
-    resumen_data = []
-    repartos_vistos = {}
-    camion_num = 101
+    transporte_to_nombre = anr_lookup.get("transporte_to_nombre", {})
 
-    for f in con_reparto_sorted:
-        rep = f["reparto"]
-        if rep not in repartos_vistos:
-            repartos_vistos[rep] = camion_num
-            camion_num += 1
+    resumen_data = []
+    camiones_unicos = {}
+
+    for f in con_camion:
+        cam = f["camion"]
+        nombre_transporte = transporte_to_nombre.get(cam, "—")
         resumen_data.append({
-            "Camión": f"CAM {repartos_vistos[rep]}",
-            "Reparto": str(rep),
+            "N° Camión": cam,
+            "Transporte": nombre_transporte,
+            "Método": f["metodo"],
             "Archivo": f["name"],
             "Páginas": _count_pages(f["bytes"]),
         })
+        camiones_unicos[cam] = nombre_transporte
 
-    for f in sin_reparto:
+    for f in sin_camion:
         resumen_data.append({
-            "Camión": "SIN CAMIÓN",
-            "Reparto": "—",
+            "N° Camión": "—",
+            "Transporte": "SIN CAMIÓN",
+            "Método": f["metodo"],
             "Archivo": f["name"],
             "Páginas": _count_pages(f["bytes"]),
         })
@@ -5260,11 +5209,12 @@ def render_tab_boletas():
 
     col_info, col_metrics = st.columns([3, 1])
     with col_info:
-        st.markdown("#### 📋 Orden de impresión")
+        st.markdown("#### 📋 Agrupación por camión")
         st.dataframe(df_resumen, use_container_width=True, hide_index=True)
     with col_metrics:
         st.metric("Total PDFs", len(file_data))
-        st.metric("Camiones detectados", len(repartos_vistos))
+        st.metric("Camiones detectados", len(camiones_unicos))
+        st.metric("Sin camión", len(sin_camion))
         total_pags = sum(
             _count_pages(f["bytes"]) for f in file_data
             if isinstance(_count_pages(f["bytes"]), int)
@@ -5273,60 +5223,125 @@ def render_tab_boletas():
 
     st.divider()
 
+    # ── Selector de modo de salida ────────────────────────────────────────────
+    modo = st.radio(
+        "Modo de salida:",
+        ["📄 Un PDF unificado (todos los camiones)", "🚛 Un PDF por camión (ZIP)"],
+        horizontal=True,
+        key="boletas_modo",
+    )
+
     # ── Botón de generación ──────────────────────────────────────────────────
-    if st.button("🖨️ Generar PDF unificado para imprimir", type="primary", use_container_width=True):
+    if st.button("🖨️ Generar PDF(s)", type="primary", use_container_width=True):
         with st.spinner("Combinando PDFs..."):
             try:
                 from pypdf import PdfWriter, PdfReader as _PR
 
-                writer = PdfWriter()
+                orden_final = con_camion + sin_camion
 
-                # Agregar en orden: primero los que tienen reparto, luego los sin reparto
-                orden_final = con_reparto_sorted + sin_reparto
+                if "unificado" in modo:
+                    # ── Modo 1: PDF único ────────────────────────────────────
+                    writer = PdfWriter()
+                    for f in orden_final:
+                        reader = _PR(io.BytesIO(f["bytes"]))
+                        for page in reader.pages:
+                            writer.add_page(page)
 
-                for f in orden_final:
-                    reader = _PR(io.BytesIO(f["bytes"]))
-                    for page in reader.pages:
-                        writer.add_page(page)
+                    output_buf = io.BytesIO()
+                    writer.write(output_buf)
+                    output_buf.seek(0)
+                    pdf_combinado = output_buf.read()
 
-                # Generar bytes del PDF combinado
-                output_buf = io.BytesIO()
-                writer.write(output_buf)
-                output_buf.seek(0)
-                pdf_combinado = output_buf.read()
+                    fecha_str = datetime.now().strftime("%Y%m%d_%H%M")
+                    filename = f"Boletas_Impresion_{fecha_str}.pdf"
 
-                fecha_str = datetime.now().strftime("%Y%m%d_%H%M")
-                filename = f"Boletas_Impresion_{fecha_str}.pdf"
+                    st.success(
+                        f"✅ PDF generado — {len(orden_final)} archivos · {total_pags} páginas · "
+                        f"{len(camiones_unicos)} camión(es)"
+                    )
+                    st.download_button(
+                        label="⬇️ Descargar PDF unificado",
+                        data=pdf_combinado,
+                        file_name=filename,
+                        mime="application/pdf",
+                        type="primary",
+                        use_container_width=True,
+                        key="boletas_dl_unificado",
+                    )
 
-                st.success(f"✅ PDF generado — {len(orden_final)} archivos · {total_pags} páginas totales")
+                else:
+                    # ── Modo 2: ZIP con un PDF por camión ────────────────────
+                    import zipfile
 
-                st.download_button(
-                    label="⬇️ Descargar PDF unificado",
-                    data=pdf_combinado,
-                    file_name=filename,
-                    mime="application/pdf",
-                    type="primary",
-                    use_container_width=True,
-                    key="boletas_dl",
-                )
+                    # Agrupar por camión
+                    grupos: dict = {}
+                    for f in con_camion:
+                        cam = f["camion"]
+                        grupos.setdefault(cam, []).append(f)
+                    if sin_camion:
+                        grupos["SIN_CAMION"] = sin_camion
+
+                    zip_buf = io.BytesIO()
+                    total_archivos = 0
+                    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for cam_key in sorted(
+                            grupos.keys(),
+                            key=lambda x: (0, x) if isinstance(x, int) else (1, str(x))
+                        ):
+                            archivos_cam = grupos[cam_key]
+                            writer_cam = PdfWriter()
+                            for f in archivos_cam:
+                                reader = _PR(io.BytesIO(f["bytes"]))
+                                for page in reader.pages:
+                                    writer_cam.add_page(page)
+
+                            buf_cam = io.BytesIO()
+                            writer_cam.write(buf_cam)
+                            buf_cam.seek(0)
+
+                            nombre_trans = transporte_to_nombre.get(cam_key, str(cam_key)) if isinstance(cam_key, int) else "SIN_CAMION"
+                            nombre_trans_safe = nombre_trans.replace(" ", "_").replace("/", "-")
+                            pdf_name = f"CAM_{cam_key}_{nombre_trans_safe}.pdf"
+                            zf.writestr(pdf_name, buf_cam.read())
+                            total_archivos += 1
+
+                    zip_buf.seek(0)
+                    fecha_str = datetime.now().strftime("%Y%m%d_%H%M")
+                    zip_name = f"Boletas_PorCamion_{fecha_str}.zip"
+
+                    st.success(
+                        f"✅ ZIP generado — {total_archivos} PDF(s) · "
+                        f"{len(camiones_unicos)} camión(es)"
+                    )
+                    st.download_button(
+                        label="⬇️ Descargar ZIP (un PDF por camión)",
+                        data=zip_buf.read(),
+                        file_name=zip_name,
+                        mime="application/zip",
+                        type="primary",
+                        use_container_width=True,
+                        key="boletas_dl_zip",
+                    )
 
             except Exception as e:
-                st.error(f"❌ Error al combinar PDFs: {e}")
+                st.error(f"❌ Error al generar PDF(s): {e}")
                 with st.expander("Stack trace"):
                     import traceback
                     st.code(traceback.format_exc())
 
-    with st.expander("ℹ️ ¿Cómo funciona?"):
+    with st.expander("ℹ️ ¿Cómo funciona? (detección multicapa)"):
         st.markdown(
-            "1. **Detección automática**: se lee el campo `Reparto` de cada PDF para identificar el camión.\n"
-            "2. **Ordenamiento**: los archivos se ordenan por número de reparto ascendente "
-            "(el reparto más bajo = Camión 101, el siguiente = Camión 102, y así sucesivamente).\n"
-            "3. **PDF único**: todos los archivos se combinan en un solo PDF en el orden determinado, "
-            "listo para enviar a la impresora una sola vez.\n"
-            "4. **Sin reparto detectado**: los PDFs donde no se encuentra el campo Reparto "
-            "se agregan al final del documento.\n\n"
-            "**Formatos soportados**: facturas A, remitos, notas de crédito, presupuestos — "
-            "cualquier PDF generado por el sistema de Beccacece Hnos SA."
+            "La detección del camión se aplica en capas, en orden:\n\n"
+            "1. **Reparto** → campo `Reparto: XXXXXXXX` en el PDF. Si el número coincide con un camión del ANR, lo asigna directamente.\n"
+            "2. **Composición de Carga** → campo `Transporte: NNN - NOMBRE` en la cabecera del documento.\n"
+            "3. **Fletero** → campo `Fletero: NOMBRE` en facturas A/B/C. Busca el nombre en el listado de transportes del ANR.\n"
+            "4. **Cliente → ANR** → extrae el nombre del cliente del PDF y lo cruza con la hoja BASE del ANR para obtener su camión asignado.\n\n"
+            "**Modos de salida:**\n"
+            "- *PDF unificado*: todos los camiones en un solo archivo, ordenados de menor a mayor.\n"
+            "- *ZIP por camión*: un PDF separado por cada camión (ideal para imprimir por separado).\n\n"
+            "Los documentos **no se modifican**: solo se reordenan y combinan.\n\n"
+            "**Formatos soportados**: Factura A/B/C, Remito, Nota de Crédito, "
+            "Presupuesto, Composición de Carga, FAC.PRES — cualquier PDF del sistema Beccacece."
         )
 
 
