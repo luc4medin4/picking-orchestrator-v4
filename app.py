@@ -1,6 +1,15 @@
 """
-Picking Orchestrator v4.26 — Beccacece Hnos SA
+Picking Orchestrator v4.27 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
+
+CAMBIOS v4.27:
+  - 🔧 Fix CRÍTICO Boletas: el ANR subido en Archivos no llegaba a la tab Boletas.
+    La key usada en Boletas era "anr_df" (DataFrame) pero Archivos solo guardaba
+    el file object bajo "tc_anr". Ahora al cargar ANR.xlsx en Archivos se parsea
+    inmediatamente y se guarda también como DataFrame en "anr_df" (hoja BASE,
+    header=0 raw para que _build_anr_lookup encuentre las cols DESCRIPCIÓN CLIENTE
+    y DESCRIPCIÓN TRANSPORTE). Fix sin romper el Cierre (que usa _cierre_load_anr
+    con header=1 independientemente).
 
 CAMBIOS v4.26:
   - ✅ Fix Venta Especial: ahora SUMA al total (antes restaba incorrectamente).
@@ -94,7 +103,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.26.0"
+APP_VERSION = "4.27.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -1694,6 +1703,21 @@ def render_tab_archivos():
         )
         if anr_file:
             st.session_state["tc_anr"] = anr_file
+            # Parse y guardar como DataFrame crudo para que Boletas/_build_anr_lookup lo encuentre
+            try:
+                anr_file.seek(0)
+                xl_anr = pd.ExcelFile(anr_file)
+                _sheet_anr = xl_anr.sheet_names[0]
+                for _s in xl_anr.sheet_names:
+                    if _s.upper() == "BASE":
+                        _sheet_anr = _s
+                        break
+                anr_file.seek(0)
+                _df_anr_raw = pd.read_excel(anr_file, sheet_name=_sheet_anr, header=0)
+                st.session_state["anr_df"] = _df_anr_raw
+                anr_file.seek(0)
+            except Exception as _e:
+                st.session_state["anr_df"] = None
             st.success(f"✅ {anr_file.name}")
         elif st.session_state.get("tc_anr"):
             st.info(f"📎 En uso: {st.session_state['tc_anr'].name}")
@@ -1739,7 +1763,7 @@ def render_tab_archivos():
     rows = [
         ("CAR.xlsx",          "t1_car",       "Planilla de Carga, Resumen, Camiones T2, Proyección"),
         ("Frescura 3.0.xlsx", "t1_fr",        "Planilla de Carga, Proyección Picking, Clasificación"),
-        ("ANR.xlsx",          "tc_anr",       "Clasificación, Top SKUs, Top Clientes, Cierre"),
+        ("ANR.xlsx",          "tc_anr",       "Clasificación, Top SKUs, Top Clientes, Cierre, 🖨️ Boletas"),
         ("SR.xlsx",           "cierre_sr",    "💰 Cierre — totales por camión desde Chess"),
         ("SR D+1.xlsx",       "cierre_sr_d1", "📅 Cierre Actualizado — TotVal real con rechazos"),
     ]
