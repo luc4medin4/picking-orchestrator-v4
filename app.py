@@ -2,6 +2,20 @@
 Picking Orchestrator v4.28 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
 
+CAMBIOS v4.30.0:
+  - 🧹 Top SKUs PDF + Top Clientes PDF: eliminada la línea "Bultos: X · HL: Y"
+    del header. Esos datos correspondían solo al top 10, no a la venta total
+    del día, generando confusión. La fecha queda como único dato en el header
+    derecho. Los totales reales siguen visibles en la sección 1 de la UI.
+
+CAMBIOS v4.29.0:
+  - 🖼️ Top SKUs + Top Clientes: nuevos botones JPEG al lado de cada PDF.
+    La misma imagen que arrojaría el PDF se descarga en .jpg listo para
+    compartir por mensaje/WhatsApp. Conversión en cascada sin dependencias
+    obligatorias: pdf2image+poppler → PyMuPDF/fitz. Si ninguno está
+    disponible, el botón muestra un warning sin romper la app.
+    Nueva función helper _pdf_to_jpeg() reutilizable.
+
 CAMBIOS v4.28.0:
   - 🔧 Fix Camiones T2: impresión horizontal real.
     Rotar un PDF portrait 90° con pypdf/pikepdf no produce un PDF landscape
@@ -120,7 +134,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.28.0"
+APP_VERSION = "4.30.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -4650,6 +4664,75 @@ def _fmt_num(v: float, dec: int = 2) -> str:
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def _pdf_to_jpeg(pdf_bytes: bytes, dpi: int = 180) -> bytes:
+    """
+    Convierte un PDF (una o varias páginas) en un JPEG único.
+    Si hay varias páginas las apila verticalmente.
+    Estrategia en cascada sin dependencias externas obligatorias:
+      1. pdf2image + poppler (disponible en Streamlit Cloud)
+      2. PyMuPDF / fitz (alternativa sin poppler)
+    """
+    import io as _io
+
+    # Intento 1: pdf2image (requiere poppler — disponible en Streamlit Cloud)
+    try:
+        from pdf2image import convert_from_bytes
+        pages = convert_from_bytes(pdf_bytes, dpi=dpi, fmt="RGB")
+        if not pages:
+            raise ValueError("pdf2image: sin páginas")
+        from PIL import Image as _PILImage
+        if len(pages) == 1:
+            img = pages[0]
+        else:
+            total_h = sum(p.height for p in pages)
+            max_w   = max(p.width for p in pages)
+            img = _PILImage.new("RGB", (max_w, total_h), "white")
+            y_off = 0
+            for p in pages:
+                img.paste(p, (0, y_off))
+                y_off += p.height
+        buf = _io.BytesIO()
+        img.save(buf, format="JPEG", quality=92, optimize=True)
+        return buf.getvalue()
+    except Exception:
+        pass
+
+    # Intento 2: PyMuPDF / fitz (sin poppler)
+    try:
+        import fitz
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        from PIL import Image as _PILImage
+        imgs = []
+        for page in doc:
+            mat = fitz.Matrix(dpi / 72, dpi / 72)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            img = _PILImage.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            imgs.append(img)
+        doc.close()
+        if not imgs:
+            raise ValueError("fitz: sin páginas")
+        if len(imgs) == 1:
+            final = imgs[0]
+        else:
+            total_h = sum(i.height for i in imgs)
+            max_w   = max(i.width for i in imgs)
+            final = _PILImage.new("RGB", (max_w, total_h), "white")
+            y_off = 0
+            for i in imgs:
+                final.paste(i, (0, y_off))
+                y_off += i.height
+        buf = _io.BytesIO()
+        final.save(buf, format="JPEG", quality=92, optimize=True)
+        return buf.getvalue()
+    except Exception:
+        pass
+
+    raise RuntimeError(
+        "No se pudo convertir el PDF a JPEG. "
+        "Instalá pdf2image+poppler o PyMuPDF (pip install pymupdf) en el entorno."
+    )
+
+
 def build_top_skus_anr_pdf(df_top: pd.DataFrame, df_div: pd.DataFrame,
                            fecha_str: str = "") -> bytes:
     """PDF a color: Top SKUs (arriba) + Resumen por División (abajo)."""
@@ -4686,12 +4769,6 @@ def build_top_skus_anr_pdf(df_top: pd.DataFrame, df_div: pd.DataFrame,
     c.drawString(M, PH - 17 * _mm, "Beccacece Hnos SA · DPO 2.1 — Pilar Almacén")
     c.setFont("Helvetica-Bold", 11)
     c.drawRightString(PW - M, PH - 11 * _mm, f"Fecha: {fecha_str}")
-
-    tot_b = float(df_top["BULTOS"].sum()) if len(df_top) else 0
-    tot_h = float(df_top["HL"].sum()) if len(df_top) else 0
-    c.setFont("Helvetica", 9)
-    c.drawRightString(PW - M, PH - 17 * _mm,
-                      f"Bultos: {_fmt_num(tot_b, 0)} · HL: {_fmt_num(tot_h)}")
 
     # ─ Tabla Top SKUs ─
     y = PH - HDR_H - 8 * _mm
@@ -4847,12 +4924,6 @@ def build_top_clientes_anr_pdf(df_top: pd.DataFrame, fecha_str: str = "") -> byt
     c.setFont("Helvetica-Bold", 11)
     c.drawRightString(PW - M, PH - 11 * _mm, f"Fecha: {fecha_str}")
 
-    tot_b = float(df_top["BULTOS"].sum()) if len(df_top) else 0
-    tot_h = float(df_top["HL"].sum()) if len(df_top) else 0
-    c.setFont("Helvetica", 9)
-    c.drawRightString(PW - M, PH - 17 * _mm,
-                      f"Bultos: {_fmt_num(tot_b, 0)} · HL: {_fmt_num(tot_h)}")
-
     y = PH - HDR_H - 8 * _mm
     table_w = PW - 2 * M
     # # | Cliente | Bultos | HL
@@ -5006,19 +5077,35 @@ def render_tab_top_skus():
             },
         )
 
-        # PDF Top SKUs (hoja 1: venta general + top 10 SKUs)
+        # PDF + JPEG Top SKUs (hoja 1: venta general + top 10 SKUs)
         if not df_div.empty:
             try:
                 pdf_skus = build_top_skus_anr_pdf(df_top_skus, df_div, fecha_str=fecha_hoy)
-                st.download_button(
-                    "⬇ Descargar PDF — Venta total + Top 10 SKUs (1 hoja)",
-                    data=pdf_skus,
-                    file_name=_stamp("Top_SKUs_ANR", "pdf"),
-                    mime="application/pdf",
-                    type="primary",
-                    width="stretch",
-                    key="topskus_anr_pdf_dl",
-                )
+                col_pdf_s, col_jpg_s = st.columns(2)
+                with col_pdf_s:
+                    st.download_button(
+                        "⬇ PDF — Venta total + Top 10 SKUs",
+                        data=pdf_skus,
+                        file_name=_stamp("Top_SKUs_ANR", "pdf"),
+                        mime="application/pdf",
+                        type="primary",
+                        width="stretch",
+                        key="topskus_anr_pdf_dl",
+                    )
+                with col_jpg_s:
+                    try:
+                        jpg_skus = _pdf_to_jpeg(pdf_skus)
+                        st.download_button(
+                            "🖼️ JPEG — Venta total + Top 10 SKUs",
+                            data=jpg_skus,
+                            file_name=_stamp("Top_SKUs_ANR", "jpg"),
+                            mime="image/jpeg",
+                            type="secondary",
+                            width="stretch",
+                            key="topskus_anr_jpg_dl",
+                        )
+                    except Exception as ej:
+                        st.warning(f"⚠️ JPEG no disponible: {ej}")
             except Exception as e:
                 st.error(f"❌ Error generando PDF Top SKUs: {e}")
 
@@ -5048,18 +5135,34 @@ def render_tab_top_skus():
             },
         )
 
-        # PDF Top Clientes (hoja 2)
+        # PDF + JPEG Top Clientes (hoja 2)
         try:
             pdf_cli = build_top_clientes_anr_pdf(df_top_cli, fecha_str=fecha_hoy)
-            st.download_button(
-                "⬇ Descargar PDF — Top 10 Clientes (1 hoja)",
-                data=pdf_cli,
-                file_name=_stamp("Top_Clientes_ANR", "pdf"),
-                mime="application/pdf",
-                type="primary",
-                width="stretch",
-                key="topcli_anr_pdf_dl",
-            )
+            col_pdf_c, col_jpg_c = st.columns(2)
+            with col_pdf_c:
+                st.download_button(
+                    "⬇ PDF — Top 10 Clientes",
+                    data=pdf_cli,
+                    file_name=_stamp("Top_Clientes_ANR", "pdf"),
+                    mime="application/pdf",
+                    type="primary",
+                    width="stretch",
+                    key="topcli_anr_pdf_dl",
+                )
+            with col_jpg_c:
+                try:
+                    jpg_cli = _pdf_to_jpeg(pdf_cli)
+                    st.download_button(
+                        "🖼️ JPEG — Top 10 Clientes",
+                        data=jpg_cli,
+                        file_name=_stamp("Top_Clientes_ANR", "jpg"),
+                        mime="image/jpeg",
+                        type="secondary",
+                        width="stretch",
+                        key="topcli_anr_jpg_dl",
+                    )
+                except Exception as ej:
+                    st.warning(f"⚠️ JPEG no disponible: {ej}")
         except Exception as e:
             st.error(f"❌ Error generando PDF Top Clientes: {e}")
 
