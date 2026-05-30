@@ -1,6 +1,11 @@
 """
-Picking Orchestrator v4.18 — Beccacece Hnos SA
+Picking Orchestrator v4.22 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
+
+CAMBIOS v4.22:
+  - 🔄 Camiones T2: impresión horizontal (landscape). El PDF descargado del
+    Apps Script ahora se rota 90° (portrait → landscape) antes de mostrarse
+    y descargarse, aprovechando mejor el espacio en la hoja al imprimir.
 
 CAMBIOS v4.18:
   - 📁 Nueva pestaña "Archivos" (primera tab): carga centralizada de CAR.xlsx,
@@ -49,7 +54,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.21.0"
+APP_VERSION = "4.22.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -1848,6 +1853,23 @@ _T2_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwcFO8gby7kZvEhiWoUg_
 _T2_REQUEST_TIMEOUT = 120  # segundos (makeCopy + export tarda ~15-30s)
 
 
+def _t2_rotate_to_landscape(pdf_bytes: bytes) -> bytes:
+    """
+    Rota todas las páginas del PDF 90° en sentido antihorario (portrait → landscape).
+    Devuelve los nuevos bytes del PDF rotado.
+    """
+    from pypdf import PdfReader, PdfWriter
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    writer = PdfWriter()
+    for page in reader.pages:
+        page.rotate(90)
+        writer.add_page(page)
+    buf = io.BytesIO()
+    writer.write(buf)
+    buf.seek(0)
+    return buf.read()
+
+
 def _t2_fetch_pdf_from_apps_script() -> tuple[bytes | None, str, list[str], str | None]:
     """
     Llama al Apps Script Web App y devuelve:
@@ -1953,14 +1975,15 @@ def render_tab_t2():
 
         if error:
             st.error(f"❌ {error}")
-            log_event("error", f"T2 v4.18.1: {error}")
+            log_event("error", f"T2 v4.22.0: {error}")
         elif pdf_bytes:
+            pdf_bytes = _t2_rotate_to_landscape(pdf_bytes)
             st.session_state["t3_pdf_bytes"]    = pdf_bytes
             st.session_state["t3_pdf_filename"] = filename
             st.session_state["t3_pdf_trucks"]   = trucks
             log_event(
                 "info",
-                f"T2 v4.18.1: PDF generado | {len(trucks)} camiones | "
+                f"T2 v4.22.0: PDF generado (horizontal) | {len(trucks)} camiones | "
                 f"{len(pdf_bytes)//1024} KB",
             )
 
