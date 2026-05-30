@@ -1,6 +1,17 @@
 """
-Picking Orchestrator v4.22 — Beccacece Hnos SA
+Picking Orchestrator v4.23 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
+
+CAMBIOS v4.23:
+  - 💰 Nueva sección "Cierre" (tab independiente): dashboard financiero diario
+    para gerencia. Fuente: SR.xlsx (cols A/B/F) + ANR.xlsx.
+    • Tabla por camión: Total Chess, CTA CTE descontado por camión, Cobro
+      anticipado, Venta especial, Neto a ingresar, Rechazos.
+    • Resumen global: Total reparto, % Rechazo, Neto final.
+    • Lista editable de clientes CTA CTE (agregar/quitar con código+nombre).
+    • MUTUAL: fila de monitoreo separada (no es CTA CTE, se muestra aparte).
+    • Exportar a Excel (.xlsx) y PDF (reportlab) listo para gerencia.
+  - 📁 Archivos: nuevo uploader SR.xlsx (fuente Chess para Cierre).
 
 CAMBIOS v4.22:
   - 🔄 Camiones T2: impresión horizontal (landscape). El PDF descargado del
@@ -54,7 +65,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.22.0"
+APP_VERSION = "4.23.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -1594,17 +1605,17 @@ def _file_uploader(label: str, types: list[str], key: str, required: bool = True
 
 def render_tab_archivos():
     """
-    Tab central de carga de archivos. CAR.xlsx, Frescura 3.0.xlsx y ANR.xlsx
+    Tab central de carga de archivos. CAR.xlsx, Frescura 3.0.xlsx, ANR.xlsx y SR.xlsx
     se suben aquí una sola vez. Todas las demás pestañas consumen los archivos
     desde session_state (sin uploaders propios redundantes).
     """
     st.subheader("📁 Archivos del Día")
     st.caption(
-        "Subí aquí los tres archivos fuente. Quedan disponibles para **todas las pestañas** "
+        "Subí aquí los archivos fuente. Quedan disponibles para **todas las pestañas** "
         "de la sesión sin necesidad de volver a cargarlos."
     )
 
-    col_a, col_b, col_c = st.columns(3)
+    col_a, col_b, col_c, col_d = st.columns(4)
 
     with col_a:
         st.markdown("#### 🗂️ CAR.xlsx")
@@ -1658,16 +1669,33 @@ def render_tab_archivos():
         elif st.session_state.get("tc_anr"):
             st.info(f"📎 En uso: {st.session_state['tc_anr'].name}")
         else:
-            st.info("Opcional — requerido para 🏷️ Clasificación y 🏆 Top SKUs")
+            st.info("Opcional — requerido para 🏷️ Clasificación, Top SKUs y 💰 Cierre")
+
+    with col_d:
+        st.markdown("#### 💰 SR.xlsx")
+        sr_file = st.file_uploader(
+            "SR.xlsx (resumen Chess por camión)",
+            type=["xlsx"],
+            key="arch_sr",
+            accept_multiple_files=False,
+        )
+        if sr_file:
+            st.session_state["cierre_sr"] = sr_file
+            st.success(f"✅ {sr_file.name}")
+        elif st.session_state.get("cierre_sr"):
+            st.info(f"📎 En uso: {st.session_state['cierre_sr'].name}")
+        else:
+            st.info("Requerido para 💰 Cierre — cols A (idCns), B (dsCns), F (TotVal)")
 
     st.divider()
 
     # Estado global
     st.markdown("#### 📋 Estado de archivos cargados")
     rows = [
-        ("CAR.xlsx",        "t1_car",  "Planilla de Carga, Resumen, Camiones T2, Proyección"),
-        ("Frescura 3.0.xlsx","t1_fr",  "Planilla de Carga, Proyección Picking, Clasificación"),
-        ("ANR.xlsx",        "tc_anr",  "Clasificación, Top SKUs, Top Clientes"),
+        ("CAR.xlsx",          "t1_car",     "Planilla de Carga, Resumen, Camiones T2, Proyección"),
+        ("Frescura 3.0.xlsx", "t1_fr",      "Planilla de Carga, Proyección Picking, Clasificación"),
+        ("ANR.xlsx",          "tc_anr",     "Clasificación, Top SKUs, Top Clientes, Cierre"),
+        ("SR.xlsx",           "cierre_sr",  "💰 Cierre — totales por camión desde Chess"),
     ]
     for nombre, key, usado_en in rows:
         f = st.session_state.get(key)
@@ -5419,6 +5447,7 @@ def main():
         "🏷️ Clasificación",
         "🏆 Top SKUs",
         "🖨️ Boletas",
+        "💰 Cierre",
         "📤 Extraíbles Sheets",
         "✅ Validación + Log",
     ])
@@ -5430,8 +5459,789 @@ def main():
     with tabs[5]: render_tab_clasificacion()
     with tabs[6]: render_tab_top_skus()
     with tabs[7]: render_tab_boletas()
-    with tabs[8]: render_tab_extraibles()
-    with tabs[9]: render_tab_validacion()
+    with tabs[8]: render_tab_cierre()
+    with tabs[9]: render_tab_extraibles()
+    with tabs[10]: render_tab_validacion()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB CIERRE — Dashboard financiero diario (v4.23)
+# Fuente: SR.xlsx (cols A=idCns, B=dsCns, F=TotVal) + ANR.xlsx (detalle)
+# ════════════════════════════════════════════════════════════════════════════
+
+# Clientes CTA CTE predeterminados (imagen referencia — editables en runtime)
+_DEFAULT_CTA_CTE = [
+    {"codigo": 158,   "nombre": "AUTO GAS"},
+    {"codigo": 2088,  "nombre": "S.A.T"},
+    {"codigo": 3652,  "nombre": "EXFALO"},
+    {"codigo": 11605, "nombre": "ACEVEDO"},
+    {"codigo": 13262, "nombre": "STYL WILL"},
+    {"codigo": 16007, "nombre": "EL ABASTECEDOR"},
+    {"codigo": 17243, "nombre": "MARRELLA"},
+    {"codigo": 17227, "nombre": "BOCA NEGRA"},
+    {"codigo": 18428, "nombre": "BRUCE"},
+    {"codigo": 8780,  "nombre": "EXFAKO"},
+    {"codigo": 17149, "nombre": "LOMFALO SA"},
+    {"codigo": 16345, "nombre": "ELI SOCIEDAD ANONIMA"},
+    {"codigo": 17869, "nombre": "ELI S.A."},
+]
+_MUTUAL_CODIGO = 17954
+_MUTUAL_NOMBRE = "MUTUAL"
+
+
+def _cierre_load_sr(sr_file) -> pd.DataFrame:
+    """Carga SR.xlsx y retorna DataFrame con idCns, dsCns, TotVal."""
+    sr_file.seek(0)
+    df = pd.read_excel(sr_file, sheet_name=0, header=0)
+    df.columns = [str(c).strip() for c in df.columns]
+    # Normalizar nombres de columna por posición si no matchean
+    cols = list(df.columns)
+    rename = {}
+    if "idCns" not in cols:
+        rename[cols[0]] = "idCns"
+    if "dsCns" not in cols:
+        rename[cols[1]] = "dsCns"
+    if "TotVal" not in cols:
+        rename[cols[5]] = "TotVal"
+    if rename:
+        df = df.rename(columns=rename)
+    df["idCns"] = pd.to_numeric(df["idCns"], errors="coerce")
+    df["TotVal"] = pd.to_numeric(df["TotVal"], errors="coerce").fillna(0)
+    return df[["idCns", "dsCns", "TotVal"]].dropna(subset=["idCns"])
+
+
+def _cierre_load_anr(anr_file) -> pd.DataFrame:
+    """Carga ANR.xlsx y retorna DataFrame normalizado. Busca hoja 'ANR' o usa la primera."""
+    anr_file.seek(0)
+    xl = pd.ExcelFile(anr_file)
+    # Buscar hoja que se llame 'ANR', 'BASE', o usar la primera con más columnas
+    sheet = xl.sheet_names[0]
+    for s in xl.sheet_names:
+        if s.upper() in ("ANR", "BASE"):
+            sheet = s
+            break
+        # Preferir la hoja con más columnas (la de detalle)
+        try:
+            test = pd.read_excel(xl, sheet_name=s, nrows=2)
+            ref  = pd.read_excel(xl, sheet_name=sheet, nrows=2)
+            if len(test.columns) > len(ref.columns):
+                sheet = s
+        except Exception:
+            pass
+    anr_file.seek(0)
+    df = pd.read_excel(anr_file, sheet_name=sheet, header=0)
+    df.columns = [str(c).strip() for c in df.columns]
+    # Normalizar columnas clave por nombre o posición
+    col_map = {}
+    for i, c in enumerate(df.columns):
+        cn = c.upper().replace(" ", "")
+        if cn == "CLIENTE" or (i == 22 and "CLIENTE" not in col_map):
+            col_map.setdefault("CLIENTE", c)
+        if "IMPORTENETO" in cn and "RECHAZADO" not in cn:
+            col_map.setdefault("IMPORTE_NETO", c)
+        if cn == "TRANSPORTE":
+            col_map.setdefault("TRANSPORTE", c)
+        if "SINCARGO" in cn:
+            col_map.setdefault("SIN_CARGO", c)
+        if cn == "RECHAZO" and "IMPORTE" not in cn and "MOTIVO" not in cn:
+            col_map.setdefault("RECHAZO", c)
+        if "IMPORTENETORECH" in cn or ("IMPORTENETO" in cn and "RECHAZADO" in cn):
+            col_map.setdefault("IMPORTE_RECHAZADO", c)
+    # Fallback por índice si no encuentra
+    if "CLIENTE" not in col_map and len(df.columns) > 22:
+        col_map["CLIENTE"] = df.columns[22]
+    if "IMPORTE_NETO" not in col_map and len(df.columns) > 12:
+        col_map["IMPORTE_NETO"] = df.columns[12]
+    if "TRANSPORTE" not in col_map and len(df.columns) > 41:
+        col_map["TRANSPORTE"] = df.columns[41]
+    if "SIN_CARGO" not in col_map and len(df.columns) > 6:
+        col_map["SIN_CARGO"] = df.columns[6]
+    if "RECHAZO" not in col_map and len(df.columns) > 19:
+        col_map["RECHAZO"] = df.columns[19]
+    if "IMPORTE_RECHAZADO" not in col_map and len(df.columns) > 13:
+        col_map["IMPORTE_RECHAZADO"] = df.columns[13]
+
+    df2 = pd.DataFrame()
+    df2["CLIENTE"]           = pd.to_numeric(df[col_map["CLIENTE"]], errors="coerce")
+    df2["IMPORTE_NETO"]      = pd.to_numeric(df[col_map["IMPORTE_NETO"]], errors="coerce").fillna(0)
+    df2["TRANSPORTE"]        = pd.to_numeric(df[col_map["TRANSPORTE"]], errors="coerce")
+    df2["SIN_CARGO"]         = df[col_map["SIN_CARGO"]].astype(str).str.strip().str.upper()
+    df2["RECHAZO"]           = pd.to_numeric(df[col_map["RECHAZO"]], errors="coerce").fillna(0)
+    df2["IMPORTE_RECHAZADO"] = pd.to_numeric(df[col_map["IMPORTE_RECHAZADO"]], errors="coerce").fillna(0)
+    return df2.dropna(subset=["CLIENTE", "TRANSPORTE"])
+
+
+def _build_cierre_df(df_sr: pd.DataFrame, df_anr: pd.DataFrame,
+                     cta_cte_list: list, cobro_anticipado: float,
+                     venta_especial_map: dict) -> pd.DataFrame:
+    """
+    Construye la tabla principal del Cierre por camión.
+    Retorna DataFrame con columnas:
+      idCns, dsCns, TotVal, CtaCte, CobroAnt, VtaEsp, Rechazos, NetoIngresar
+    """
+    rows = []
+    cta_cte_codigos = {int(c["codigo"]) for c in cta_cte_list}
+
+    for _, sr_row in df_sr.iterrows():
+        cns = int(sr_row["idCns"])
+        nombre = str(sr_row["dsCns"])
+        tot_val = float(sr_row["TotVal"])
+
+        # Filtrar ANR de este camión
+        anr_cam = df_anr[df_anr["TRANSPORTE"] == cns]
+
+        # CTA CTE: suma de importe neto de clientes CTA CTE en este camión
+        cta_cte_monto = float(
+            anr_cam[anr_cam["CLIENTE"].isin(cta_cte_codigos)]["IMPORTE_NETO"].sum()
+        )
+
+        # Rechazos: suma de IMPORTE_RECHAZADO de este camión
+        rechazos = float(anr_cam["IMPORTE_RECHAZADO"].sum())
+
+        # Venta especial: valor ingresado manualmente por camión
+        vta_esp = float(venta_especial_map.get(cns, 0.0))
+
+        # Cobro anticipado: se distribuye si se ingresa globalmente (0 por defecto por camión)
+        cob_ant = 0.0  # por ahora global, no por camión
+
+        # Neto a ingresar = TotVal - CtaCte - VtaEsp - Rechazos
+        neto = tot_val - cta_cte_monto - vta_esp - rechazos
+
+        rows.append({
+            "idCns":        cns,
+            "dsCns":        nombre,
+            "TotVal":       tot_val,
+            "CtaCte":       cta_cte_monto,
+            "VtaEsp":       vta_esp,
+            "Rechazos":     rechazos,
+            "NetoIngresar": neto,
+        })
+
+    df_out = pd.DataFrame(rows)
+    return df_out
+
+
+def _cierre_pdf(df_main: pd.DataFrame, totales: dict,
+                mutual_monto: float, fecha_str: str,
+                cobro_anticipado: float) -> bytes:
+    """Genera PDF del Cierre para gerencia con reportlab."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors as rl_colors
+    from reportlab.lib.units import mm
+    from reportlab.pdfgen import canvas as rl_canvas
+
+    buf = io.BytesIO()
+    PW, PH = A4
+    M = 14 * mm
+    c = rl_canvas.Canvas(buf, pagesize=A4)
+
+    # ── Paleta ──────────────────────────────────────────────────────────────
+    DARK_BLUE  = rl_colors.HexColor("#1a3a6b")
+    MED_BLUE   = rl_colors.HexColor("#2e5fa3")
+    LIGHT_GRAY = rl_colors.HexColor("#F0F4FA")
+    ROW_ALT    = rl_colors.HexColor("#E8EEF8")
+    GREEN_OK   = rl_colors.HexColor("#1a7a4a")
+    RED_NEG    = rl_colors.HexColor("#b91c1c")
+    AMBER      = rl_colors.HexColor("#92400e")
+    GOLD       = rl_colors.HexColor("#d97706")
+
+    def fmt_ars(v):
+        return f"$ {v:>16,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    def fmt_pct(v):
+        return f"{v:.1f}%"
+
+    # ── HEADER ───────────────────────────────────────────────────────────────
+    y = PH - M
+    c.setFillColor(DARK_BLUE)
+    c.rect(M, y - 28, PW - 2*M, 30, fill=1, stroke=0)
+    c.setFillColor(rl_colors.white)
+    c.setFont("Helvetica-Bold", 13)
+    c.drawString(M + 6, y - 18, "💰 CIERRE FINANCIERO DEL DÍA")
+    c.setFont("Helvetica", 9)
+    c.drawRightString(PW - M - 6, y - 10, f"Beccacece Hnos SA   ·   {fecha_str}")
+    c.drawRightString(PW - M - 6, y - 20, "Distribuidor CMQ — ABInBev")
+
+    y -= 42
+
+    # ── TABLA PRINCIPAL ───────────────────────────────────────────────────────
+    # Columnas: Camión | Total Chess | CTA CTE | Vta Esp | Rechazos | Neto Ingresa
+    col_labels = ["Camión", "Total Chess", "CTA CTE", "Vta Esp", "Rechazos", "Neto a Ingresar"]
+    col_w      = [55*mm, 34*mm, 30*mm, 26*mm, 30*mm, 38*mm]
+    row_h      = 12
+    hdr_h      = 14
+
+    # Header tabla
+    c.setFillColor(MED_BLUE)
+    c.rect(M, y - hdr_h, PW - 2*M, hdr_h, fill=1, stroke=0)
+    c.setFillColor(rl_colors.white)
+    c.setFont("Helvetica-Bold", 7.5)
+    x_cur = M + 3
+    for lbl, cw in zip(col_labels, col_w):
+        c.drawString(x_cur, y - hdr_h + 4, lbl)
+        x_cur += cw
+    y -= hdr_h + 2
+
+    # Filas
+    c.setFont("Helvetica", 7.5)
+    for i, row in df_main.iterrows():
+        bg = LIGHT_GRAY if i % 2 == 0 else rl_colors.white
+        c.setFillColor(bg)
+        c.rect(M, y - row_h, PW - 2*M, row_h, fill=1, stroke=0)
+
+        vals = [
+            f"{int(row['idCns'])} - {row['dsCns']}",
+            fmt_ars(row["TotVal"]),
+            fmt_ars(row["CtaCte"]) if row["CtaCte"] > 0 else "—",
+            fmt_ars(row["VtaEsp"]) if row["VtaEsp"] > 0 else "—",
+            fmt_ars(row["Rechazos"]) if row["Rechazos"] > 0 else "—",
+            fmt_ars(row["NetoIngresar"]),
+        ]
+        x_cur = M + 3
+        for vi, (val, cw) in enumerate(zip(vals, col_w)):
+            c.setFillColor(rl_colors.black)
+            if vi == 5:  # Neto — color según valor
+                c.setFillColor(GREEN_OK if row["NetoIngresar"] >= 0 else RED_NEG)
+                c.setFont("Helvetica-Bold", 7.5)
+            else:
+                c.setFont("Helvetica", 7.5)
+            c.drawString(x_cur, y - row_h + 3, val)
+            x_cur += cw
+        y -= row_h
+
+        if y < M + 80:  # nueva página si queda poco espacio
+            c.showPage()
+            y = PH - M - 10
+
+    # ── LÍNEA TOTAL ───────────────────────────────────────────────────────────
+    y -= 4
+    c.setFillColor(DARK_BLUE)
+    c.rect(M, y - 14, PW - 2*M, 14, fill=1, stroke=0)
+    c.setFillColor(rl_colors.white)
+    c.setFont("Helvetica-Bold", 8)
+    tot_vals = [
+        "TOTAL",
+        fmt_ars(totales["tot_chess"]),
+        fmt_ars(totales["tot_cta_cte"]),
+        fmt_ars(totales["tot_vta_esp"]),
+        fmt_ars(totales["tot_rechazos"]),
+        fmt_ars(totales["tot_neto"]),
+    ]
+    x_cur = M + 3
+    for tv, cw in zip(tot_vals, col_w):
+        c.drawString(x_cur, y - 10, tv)
+        x_cur += cw
+    y -= 20
+
+    # ── BLOQUE RESUMEN GLOBAL ─────────────────────────────────────────────────
+    y -= 6
+    c.setFillColor(LIGHT_GRAY)
+    c.rect(M, y - 84, PW - 2*M, 86, fill=1, stroke=0)
+    c.setFillColor(DARK_BLUE)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(M + 6, y - 12, "RESUMEN DEL DÍA")
+
+    resumen_items = [
+        ("D) Total Preventa del día (Mercadería que sale a reparto)", totales["tot_chess"],       DARK_BLUE),
+        ("E) CTA CTE (total a descontar)",                           totales["tot_cta_cte"],     RED_NEG if totales["tot_cta_cte"] > 0 else rl_colors.black),
+        ("C) Cobro anticipado",                                      cobro_anticipado,            AMBER if cobro_anticipado > 0 else rl_colors.black),
+        ("F) Venta especial",                                        totales["tot_vta_esp"],      rl_colors.black),
+        ("F) Total neto a ingresar repartos (D - E - C - F)",       totales["tot_neto_global"],  GREEN_OK),
+        ("G) Rechazos",                                              totales["tot_rechazos"],     RED_NEG if totales["tot_rechazos"] > 0 else rl_colors.black),
+        ("H) Total del día neto rechazos",                           totales["tot_dia_neto"],     GREEN_OK),
+    ]
+
+    c.setFont("Helvetica", 8)
+    yi = y - 26
+    for label, val, col_txt in resumen_items:
+        c.setFillColor(rl_colors.black)
+        c.drawString(M + 6, yi, label)
+        c.setFillColor(col_txt)
+        c.setFont("Helvetica-Bold", 8)
+        c.drawRightString(PW - M - 6, yi, fmt_ars(val))
+        c.setFont("Helvetica", 8)
+        yi -= 11
+
+    # % Rechazo
+    pct = (totales["tot_rechazos"] / totales["tot_chess"] * 100) if totales["tot_chess"] > 0 else 0
+    c.setFillColor(rl_colors.black)
+    c.drawString(M + 6, yi, "% Rechazo")
+    c.setFillColor(RED_NEG if pct > 5 else GREEN_OK)
+    c.setFont("Helvetica-Bold", 8)
+    c.drawRightString(PW - M - 6, yi, fmt_pct(pct))
+    yi -= 14
+
+    # ── MUTUAL (monitoreo) ────────────────────────────────────────────────────
+    if mutual_monto > 0:
+        y2 = yi - 10
+        c.setFillColor(GOLD)
+        c.rect(M, y2 - 14, PW - 2*M, 16, fill=1, stroke=0)
+        c.setFillColor(rl_colors.white)
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(M + 6, y2 - 10, f"⚠ MUTUAL ({_MUTUAL_CODIGO}) — Monitoreo especial:")
+        c.setFont("Helvetica-Bold", 9)
+        c.drawRightString(PW - M - 6, y2 - 10, fmt_ars(mutual_monto))
+
+    # ── FOOTER ────────────────────────────────────────────────────────────────
+    c.setFillColor(rl_colors.HexColor("#555555"))
+    c.setFont("Helvetica", 6.5)
+    c.drawCentredString(PW / 2, M - 4, f"Beccacece Hnos SA  ·  Cierre generado: {fecha_str}  ·  Picking Orchestrator v4.23")
+
+    c.save()
+    return buf.getvalue()
+
+
+def _cierre_excel(df_main: pd.DataFrame, totales: dict,
+                  mutual_monto: float, fecha_str: str,
+                  cobro_anticipado: float) -> bytes:
+    """Genera Excel del Cierre con openpyxl."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Cierre"
+
+    # Estilos
+    hdr_fill  = PatternFill("solid", fgColor="1a3a6b")
+    hdr_font  = Font(color="FFFFFF", bold=True, size=10)
+    tot_fill  = PatternFill("solid", fgColor="2e5fa3")
+    tot_font  = Font(color="FFFFFF", bold=True, size=10)
+    alt_fill  = PatternFill("solid", fgColor="EEF3FB")
+    green_font = Font(color="1a7a4a", bold=True)
+    red_font   = Font(color="b91c1c", bold=True)
+    bold_font  = Font(bold=True)
+    thin       = Side(style="thin", color="CCCCCC")
+    border     = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center_al  = Alignment(horizontal="center", vertical="center")
+    right_al   = Alignment(horizontal="right", vertical="center")
+    left_al    = Alignment(horizontal="left", vertical="center")
+    money_fmt  = '#,##0'
+
+    # ── TÍTULO ───────────────────────────────────────────────────────────────
+    ws.merge_cells("A1:G1")
+    ws["A1"] = f"CIERRE FINANCIERO DEL DÍA — {fecha_str}"
+    ws["A1"].font = Font(bold=True, size=13, color="1a3a6b")
+    ws["A1"].alignment = center_al
+    ws.row_dimensions[1].height = 22
+
+    ws.merge_cells("A2:G2")
+    ws["A2"] = "Beccacece Hnos SA — Distribuidor CMQ / ABInBev"
+    ws["A2"].font = Font(size=9, color="555555", italic=True)
+    ws["A2"].alignment = center_al
+
+    # ── HEADER TABLA ─────────────────────────────────────────────────────────
+    headers = ["ID", "Camión", "Total Chess ($)", "CTA CTE ($)", "Vta Esp ($)", "Rechazos ($)", "Neto a Ingresar ($)"]
+    for ci, hdr in enumerate(headers, 1):
+        cell = ws.cell(row=4, column=ci, value=hdr)
+        cell.fill = hdr_fill
+        cell.font = hdr_font
+        cell.alignment = center_al
+        cell.border = border
+    ws.row_dimensions[4].height = 16
+
+    # ── FILAS ─────────────────────────────────────────────────────────────────
+    for ri, row in df_main.iterrows():
+        r = ri + 5
+        vals = [
+            int(row["idCns"]),
+            row["dsCns"],
+            row["TotVal"],
+            row["CtaCte"] if row["CtaCte"] > 0 else 0,
+            row["VtaEsp"] if row["VtaEsp"] > 0 else 0,
+            row["Rechazos"] if row["Rechazos"] > 0 else 0,
+            row["NetoIngresar"],
+        ]
+        fill_row = alt_fill if ri % 2 == 0 else PatternFill()
+        for ci, val in enumerate(vals, 1):
+            cell = ws.cell(row=r, column=ci, value=val)
+            cell.border = border
+            cell.fill = fill_row
+            if ci == 1:
+                cell.alignment = center_al
+            elif ci == 2:
+                cell.alignment = left_al
+                cell.font = bold_font
+            else:
+                cell.alignment = right_al
+                cell.number_format = money_fmt
+                if ci == 7:
+                    cell.font = green_font if row["NetoIngresar"] >= 0 else red_font
+        ws.row_dimensions[r].height = 14
+
+    # ── FILA TOTAL ────────────────────────────────────────────────────────────
+    tr = len(df_main) + 5
+    tot_vals = ["", "TOTAL", totales["tot_chess"], totales["tot_cta_cte"],
+                totales["tot_vta_esp"], totales["tot_rechazos"], totales["tot_neto"]]
+    for ci, val in enumerate(tot_vals, 1):
+        cell = ws.cell(row=tr, column=ci, value=val)
+        cell.fill = tot_fill
+        cell.font = tot_font
+        cell.border = border
+        cell.alignment = right_al if ci > 2 else center_al
+        if ci > 2:
+            cell.number_format = money_fmt
+    ws.row_dimensions[tr].height = 16
+
+    # ── RESUMEN GLOBAL ────────────────────────────────────────────────────────
+    rs = tr + 2
+    pct = (totales["tot_rechazos"] / totales["tot_chess"] * 100) if totales["tot_chess"] > 0 else 0
+    resumen_rows = [
+        ("D) Total Preventa del día",                            totales["tot_chess"],       None),
+        ("E) CTA CTE (total descontado)",                       totales["tot_cta_cte"],     "b91c1c" if totales["tot_cta_cte"] > 0 else None),
+        ("C) Cobro anticipado",                                  cobro_anticipado,            "92400e" if cobro_anticipado > 0 else None),
+        ("F) Venta especial",                                    totales["tot_vta_esp"],     None),
+        ("F) Total neto repartos (D - E - C - F)",              totales["tot_neto_global"], "1a7a4a"),
+        ("G) Rechazos",                                          totales["tot_rechazos"],    "b91c1c" if totales["tot_rechazos"] > 0 else None),
+        ("H) Total del día neto rechazos",                       totales["tot_dia_neto"],    "1a7a4a"),
+        (f"% Rechazo",                                           pct / 100,                  "b91c1c" if pct > 5 else "1a7a4a"),
+    ]
+
+    # Título bloque resumen
+    ws.merge_cells(f"A{rs}:G{rs}")
+    ws[f"A{rs}"] = "RESUMEN DEL DÍA"
+    ws[f"A{rs}"].font = Font(bold=True, size=10, color="1a3a6b")
+    ws[f"A{rs}"].fill = PatternFill("solid", fgColor="D9E4F5")
+    ws[f"A{rs}"].alignment = center_al
+    rs += 1
+
+    for label, val, color in resumen_rows:
+        ws.merge_cells(f"A{rs}:E{rs}")
+        ws[f"A{rs}"] = label
+        ws[f"A{rs}"].font = Font(size=9)
+        ws[f"A{rs}"].alignment = left_al
+        ws.merge_cells(f"F{rs}:G{rs}")
+        cell_val = ws[f"F{rs}"]
+        cell_val.value = val
+        cell_val.alignment = right_al
+        if label.startswith("%"):
+            cell_val.number_format = "0.0%"
+        else:
+            cell_val.number_format = money_fmt
+        if color:
+            cell_val.font = Font(bold=True, color=color, size=9)
+        else:
+            cell_val.font = Font(bold=True, size=9)
+        ws.row_dimensions[rs].height = 13
+        rs += 1
+
+    # ── MUTUAL ────────────────────────────────────────────────────────────────
+    if mutual_monto > 0:
+        rs += 1
+        ws.merge_cells(f"A{rs}:E{rs}")
+        ws[f"A{rs}"] = f"⚠ MUTUAL ({_MUTUAL_CODIGO}) — Monitoreo especial"
+        ws[f"A{rs}"].font = Font(bold=True, color="92400e", size=9)
+        ws[f"A{rs}"].fill = PatternFill("solid", fgColor="FEF3C7")
+        ws[f"A{rs}"].alignment = left_al
+        ws.merge_cells(f"F{rs}:G{rs}")
+        ws[f"F{rs}"] = mutual_monto
+        ws[f"F{rs}"].number_format = money_fmt
+        ws[f"F{rs}"].font = Font(bold=True, color="92400e")
+        ws[f"F{rs}"].fill = PatternFill("solid", fgColor="FEF3C7")
+        ws[f"F{rs}"].alignment = right_al
+
+    # Anchos de columna
+    col_widths = [8, 22, 20, 18, 16, 18, 22]
+    for ci, w in enumerate(col_widths, 1):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def render_tab_cierre():
+    """
+    💰 Cierre Financiero del Día.
+    Fuente: SR.xlsx (cols A/B/F) + ANR.xlsx (detalle cliente/camión).
+    """
+    st.subheader("💰 Cierre Financiero del Día")
+    st.caption(
+        "Dashboard para gerencia. Fuente: **SR.xlsx** (totales Chess por camión) + "
+        "**ANR.xlsx** (detalle para descuentos CTA CTE y rechazos)."
+    )
+
+    sr_file  = st.session_state.get("cierre_sr")
+    anr_file = st.session_state.get("tc_anr")
+
+    if not sr_file:
+        st.warning("⬅️ Subí el **SR.xlsx** en la pestaña **📁 Archivos** para generar el Cierre.")
+        return
+    if not anr_file:
+        st.info("ℹ️ Sin ANR.xlsx los descuentos CTA CTE y rechazos serán 0. "
+                "Subilo en **📁 Archivos** para cálculo completo.")
+
+    # ── Inicializar CTA CTE en session_state ─────────────────────────────────
+    if "cierre_cta_cte" not in st.session_state:
+        st.session_state["cierre_cta_cte"] = list(_DEFAULT_CTA_CTE)
+
+    # ── Cargar SR ─────────────────────────────────────────────────────────────
+    try:
+        df_sr = _cierre_load_sr(sr_file)
+    except Exception as e:
+        st.error(f"❌ Error leyendo SR.xlsx: {e}")
+        return
+
+    # ── Cargar ANR ────────────────────────────────────────────────────────────
+    df_anr = pd.DataFrame()
+    if anr_file:
+        try:
+            df_anr = _cierre_load_anr(anr_file)
+        except Exception as e:
+            st.warning(f"⚠️ Error leyendo ANR.xlsx: {e}. Continuando sin detalle.")
+
+    fecha_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PANEL LATERAL: Clientes CTA CTE + controles
+    # ═══════════════════════════════════════════════════════════════════════════
+    with st.expander("⚙️ Configuración — Clientes CTA CTE", expanded=False):
+        st.markdown("##### Lista de clientes con Cuenta Corriente")
+        st.caption("Estos clientes se descuentan del total de cada camión que los lleve.")
+
+        cta_list = st.session_state["cierre_cta_cte"]
+
+        # Tabla editable
+        if cta_list:
+            df_edit = pd.DataFrame(cta_list)
+            edited = st.data_editor(
+                df_edit,
+                column_config={
+                    "codigo": st.column_config.NumberColumn("Código", min_value=1, step=1),
+                    "nombre": st.column_config.TextColumn("Nombre / Razón Social"),
+                },
+                num_rows="dynamic",
+                use_container_width=True,
+                key="cta_cte_editor",
+            )
+            # Persistir cambios
+            st.session_state["cierre_cta_cte"] = edited.to_dict("records")
+        else:
+            st.info("Lista vacía. Agregá clientes con el botón de abajo.")
+            if st.button("➕ Cargar lista predeterminada"):
+                st.session_state["cierre_cta_cte"] = list(_DEFAULT_CTA_CTE)
+                st.rerun()
+
+        col_r1, col_r2 = st.columns(2)
+        with col_r1:
+            if st.button("🔄 Restaurar lista predeterminada", help="Vuelve a la lista original"):
+                st.session_state["cierre_cta_cte"] = list(_DEFAULT_CTA_CTE)
+                st.rerun()
+        with col_r2:
+            if st.button("🗑️ Limpiar lista"):
+                st.session_state["cierre_cta_cte"] = []
+                st.rerun()
+
+        st.divider()
+        st.markdown(f"**⚠️ MUTUAL ({_MUTUAL_CODIGO})** — Cliente de monitoreo especial (no es CTA CTE). "
+                    "Su monto se muestra separado en el resumen.")
+
+    # ── Controles adicionales ─────────────────────────────────────────────────
+    col_ctrl1, col_ctrl2, col_ctrl3 = st.columns(3)
+    with col_ctrl1:
+        cobro_anticipado = st.number_input(
+            "C) Cobro anticipado ($)",
+            min_value=0.0, value=0.0, step=1000.0, format="%.0f",
+            help="Monto global de cobro anticipado del día"
+        )
+    with col_ctrl2:
+        st.markdown("**Venta Especial por camión** — ingresá en la tabla de abajo si aplica.")
+    with col_ctrl3:
+        if st.button("🔄 Recalcular", type="primary"):
+            st.rerun()
+
+    # Venta especial por camión (opcional)
+    with st.expander("📝 Venta Especial por camión (opcional)", expanded=False):
+        vta_esp_data = []
+        for _, row in df_sr.iterrows():
+            vta_esp_data.append({"idCns": int(row["idCns"]), "dsCns": row["dsCns"], "VtaEsp": 0.0})
+        df_vta_esp = pd.DataFrame(vta_esp_data)
+        edited_vta = st.data_editor(
+            df_vta_esp,
+            column_config={
+                "idCns":  st.column_config.NumberColumn("ID", disabled=True),
+                "dsCns":  st.column_config.TextColumn("Camión", disabled=True),
+                "VtaEsp": st.column_config.NumberColumn("Venta Especial ($)", min_value=0.0, step=100.0, format="%.0f"),
+            },
+            use_container_width=True,
+            key="vta_esp_editor",
+        )
+        venta_especial_map = {int(r["idCns"]): float(r["VtaEsp"]) for _, r in edited_vta.iterrows()}
+
+    st.divider()
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # CONSTRUCCIÓN DEL DASHBOARD
+    # ═══════════════════════════════════════════════════════════════════════════
+    cta_cte_list = st.session_state["cierre_cta_cte"]
+
+    # Filtrar CTA CTE válidos (codigo numérico, no nulos)
+    cta_cte_list_clean = [
+        c for c in cta_cte_list
+        if c.get("codigo") and str(c.get("codigo")).strip() not in ("", "nan")
+    ]
+
+    df_main = _build_cierre_df(df_sr, df_anr, cta_cte_list_clean,
+                                cobro_anticipado, venta_especial_map if "venta_especial_map" in dir() else {})
+
+    # MUTUAL
+    mutual_monto = 0.0
+    if not df_anr.empty:
+        mutual_monto = float(df_anr[df_anr["CLIENTE"] == _MUTUAL_CODIGO]["IMPORTE_NETO"].sum())
+
+    # Totales
+    tot_chess       = df_main["TotVal"].sum()
+    tot_cta_cte     = df_main["CtaCte"].sum()
+    tot_vta_esp     = df_main["VtaEsp"].sum()
+    tot_rechazos    = df_main["Rechazos"].sum()
+    tot_neto        = df_main["NetoIngresar"].sum()
+    tot_neto_global = tot_chess - tot_cta_cte - cobro_anticipado - tot_vta_esp
+    tot_dia_neto    = tot_neto_global - tot_rechazos
+    pct_rechazo     = (tot_rechazos / tot_chess * 100) if tot_chess > 0 else 0.0
+
+    totales = {
+        "tot_chess":       tot_chess,
+        "tot_cta_cte":     tot_cta_cte,
+        "tot_vta_esp":     tot_vta_esp,
+        "tot_rechazos":    tot_rechazos,
+        "tot_neto":        tot_neto,
+        "tot_neto_global": tot_neto_global,
+        "tot_dia_neto":    tot_dia_neto,
+    }
+
+    # ── KPIs ──────────────────────────────────────────────────────────────────
+    def ars(v):
+        s = f"$ {abs(v):,.0f}".replace(",", ".")
+        return f"-{s}" if v < 0 else s
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("📦 Total Preventa", ars(tot_chess))
+    k2.metric("🔴 CTA CTE total",  ars(tot_cta_cte), delta=f"-{ars(tot_cta_cte)}" if tot_cta_cte > 0 else None, delta_color="inverse")
+    k3.metric("✅ Neto Repartos",  ars(tot_neto_global))
+    k4.metric("❌ Rechazos",       ars(tot_rechazos), delta=f"{pct_rechazo:.1f}%" if tot_rechazos > 0 else None, delta_color="inverse")
+    k5.metric("💰 Total Día Neto", ars(tot_dia_neto))
+
+    if mutual_monto > 0:
+        st.warning(f"⚠️ **MUTUAL ({_MUTUAL_CODIGO})** — Monto en reparto: **{ars(mutual_monto)}** (monitoreo especial, no es CTA CTE)")
+
+    st.divider()
+
+    # ── TABLA PRINCIPAL ───────────────────────────────────────────────────────
+    st.markdown("#### 🚛 Detalle por Camión")
+
+    def style_neto(val):
+        color = "#1a7a4a" if val >= 0 else "#b91c1c"
+        return f"color: {color}; font-weight: bold"
+
+    def style_cta(val):
+        return "color: #b91c1c; font-weight: bold" if val > 0 else ""
+
+    def style_rechazo(val):
+        return "color: #b91c1c;" if val > 0 else ""
+
+    df_display = df_main.copy()
+    df_display["Camión"]           = df_display.apply(lambda r: f"{int(r['idCns'])} — {r['dsCns']}", axis=1)
+    df_display["Total Chess"]      = df_display["TotVal"]
+    df_display["CTA CTE"]          = df_display["CtaCte"]
+    df_display["Vta Especial"]     = df_display["VtaEsp"]
+    df_display["Rechazos"]         = df_display["Rechazos"]
+    df_display["Neto a Ingresar"]  = df_display["NetoIngresar"]
+    df_show = df_display[["Camión","Total Chess","CTA CTE","Vta Especial","Rechazos","Neto a Ingresar"]]
+
+    styled = df_show.style\
+        .format({
+            "Total Chess":     "$ {:,.0f}",
+            "CTA CTE":         "$ {:,.0f}",
+            "Vta Especial":    "$ {:,.0f}",
+            "Rechazos":        "$ {:,.0f}",
+            "Neto a Ingresar": "$ {:,.0f}",
+        })\
+        .applymap(style_neto,    subset=["Neto a Ingresar"])\
+        .applymap(style_cta,     subset=["CTA CTE"])\
+        .applymap(style_rechazo, subset=["Rechazos"])\
+        .set_properties(**{"text-align": "right"}, subset=["Total Chess","CTA CTE","Vta Especial","Rechazos","Neto a Ingresar"])
+
+    st.dataframe(styled, use_container_width=True, hide_index=True, height=460)
+
+    # ── RESUMEN GLOBAL ────────────────────────────────────────────────────────
+    st.markdown("#### 📊 Resumen del Día")
+    rc1, rc2 = st.columns([1.6, 1])
+
+    with rc1:
+        res_data = {
+            "Concepto": [
+                "D) Total Preventa del día",
+                "E) CTA CTE (descuento)",
+                "C) Cobro anticipado",
+                "F) Venta especial",
+                "F) Total neto a ingresar repartos",
+                "G) Rechazos",
+                "H) Total del día neto rechazos",
+                "% Rechazo",
+            ],
+            "Monto": [
+                f"$ {tot_chess:,.0f}",
+                f"$ {tot_cta_cte:,.0f}",
+                f"$ {cobro_anticipado:,.0f}",
+                f"$ {tot_vta_esp:,.0f}",
+                f"$ {tot_neto_global:,.0f}",
+                f"$ {tot_rechazos:,.0f}",
+                f"$ {tot_dia_neto:,.0f}",
+                f"{pct_rechazo:.1f}%",
+            ],
+        }
+        df_res = pd.DataFrame(res_data)
+        st.dataframe(df_res, use_container_width=True, hide_index=True)
+
+    with rc2:
+        st.markdown("**CTA CTE detectados en el reparto de hoy:**")
+        if cta_cte_list_clean and not df_anr.empty:
+            cta_codigos = {int(c["codigo"]) for c in cta_cte_list_clean}
+            clientes_hoy = df_anr[df_anr["CLIENTE"].isin(cta_codigos)].groupby("CLIENTE")["IMPORTE_NETO"].sum()
+            nombre_map   = {int(c["codigo"]): c["nombre"] for c in cta_cte_list_clean}
+            for cod, monto in clientes_hoy[clientes_hoy > 0].items():
+                st.markdown(f"• **{nombre_map.get(int(cod), cod)}** — {ars(monto)}")
+            if clientes_hoy[clientes_hoy > 0].empty:
+                st.info("Ningún cliente CTA CTE tiene venta hoy.")
+        else:
+            st.info("Sin datos ANR o lista CTA CTE vacía.")
+
+    st.divider()
+
+    # ── EXPORTAR ──────────────────────────────────────────────────────────────
+    st.markdown("#### 📥 Exportar")
+    exp1, exp2 = st.columns(2)
+
+    with exp1:
+        if st.button("📊 Generar Excel", type="primary", key="cierre_xlsx"):
+            try:
+                xls_bytes = _cierre_excel(df_main, totales, mutual_monto, fecha_str, cobro_anticipado)
+                fname = f"Cierre_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+                st.download_button(
+                    label=f"⬇️ Descargar {fname}",
+                    data=xls_bytes,
+                    file_name=fname,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="cierre_dl_xlsx",
+                )
+            except Exception as e:
+                st.error(f"❌ Error generando Excel: {e}")
+
+    with exp2:
+        if st.button("📄 Generar PDF", type="primary", key="cierre_pdf_btn"):
+            try:
+                pdf_bytes = _cierre_pdf(df_main, totales, mutual_monto, fecha_str, cobro_anticipado)
+                fname = f"Cierre_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+                st.download_button(
+                    label=f"⬇️ Descargar {fname}",
+                    data=pdf_bytes,
+                    file_name=fname,
+                    mime="application/pdf",
+                    key="cierre_dl_pdf",
+                )
+            except Exception as e:
+                st.error(f"❌ Error generando PDF: {e}")
 
 
 if __name__ == "__main__":
