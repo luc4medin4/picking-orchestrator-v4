@@ -1,6 +1,12 @@
 """
-Picking Orchestrator v4.24 — Beccacece Hnos SA
+Picking Orchestrator v4.25 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
+
+CAMBIOS v4.25:
+  - Fix CRÍTICO: .applymap() → .map() (pandas >= 2.1) en tabla Cierre → resuelve AttributeError
+  - Eliminado "Cobro anticipado" de UI, PDF y Excel del Cierre (no aplica al flujo operativo)
+  - cobro_anticipado fijado en 0.0 (sin input, sin efecto en cálculos)
+  - Fórmulas resumen actualizadas: D - E - F (sin C)
 
 CAMBIOS v4.24:
   - 🔧 Fix _cierre_load_sr: TotVal toma col [2] 'A) TotVal Chess' (fuente limpia),
@@ -78,7 +84,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.24.0"
+APP_VERSION = "4.25.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -5817,9 +5823,8 @@ def _cierre_pdf(df_main: pd.DataFrame, totales: dict,
     resumen_items = [
         ("D) Total Preventa del dia (Mercaderia que sale a reparto)", totales["tot_chess"],       DARK_BLUE),
         ("E) CTA CTE (total a descontar)",                           totales["tot_cta_cte"],     RED_NEG if totales["tot_cta_cte"] > 0 else rl_colors.black),
-        ("C) Cobro anticipado",                                      cobro_anticipado,             AMBER_TXT if cobro_anticipado > 0 else rl_colors.black),
         ("F) Venta especial",                                        totales["tot_vta_esp"],      rl_colors.black),
-        ("F) Total neto a ingresar repartos (D - E - C - F)",        totales["tot_neto_global"],  GREEN_OK),
+        ("F) Total neto a ingresar repartos (D - E - F)",            totales["tot_neto_global"],  GREEN_OK),
         ("G) Rechazos",                                              totales["tot_rechazos"],      RED_NEG if totales["tot_rechazos"] > 0 else rl_colors.black),
         ("H) Total del dia neto rechazos",                           totales["tot_dia_neto"],     GREEN_OK),
     ]
@@ -5983,9 +5988,8 @@ def _cierre_excel(df_main: pd.DataFrame, totales: dict,
     resumen_rows = [
         ("D) Total Preventa del día",                              totales["tot_chess"],       None),
         ("E) CTA CTE (total a descontar)",                         totales["tot_cta_cte"],     "b91c1c" if totales["tot_cta_cte"] > 0 else None),
-        ("C) Cobro anticipado",                                    cobro_anticipado,            "92400e" if cobro_anticipado > 0 else None),
         ("F) Venta especial",                                      totales["tot_vta_esp"],     None),
-        ("F) Total neto a ingresar repartos (D - E - C - F)",      totales["tot_neto_global"], "1a7a4a"),
+        ("F) Total neto a ingresar repartos (D - E - F)",          totales["tot_neto_global"], "1a7a4a"),
         ("G) Rechazos",                                            totales["tot_rechazos"],    "b91c1c" if totales["tot_rechazos"] > 0 else None),
         ("H) Total del día neto rechazos",                         totales["tot_dia_neto"],    "1a7a4a"),
         ("% Rechazo",                                              pct / 100,                  "b91c1c" if pct > 5 else "1a7a4a"),
@@ -6130,18 +6134,13 @@ def render_tab_cierre():
                     "Su monto se muestra separado en el resumen.")
 
     # ── Controles adicionales ─────────────────────────────────────────────────
-    col_ctrl1, col_ctrl2, col_ctrl3 = st.columns(3)
+    col_ctrl1, col_ctrl2 = st.columns(2)
     with col_ctrl1:
-        cobro_anticipado = st.number_input(
-            "C) Cobro anticipado ($)",
-            min_value=0.0, value=0.0, step=1000.0, format="%.0f",
-            help="Monto global de cobro anticipado del día (afecta resumen, no tabla por camión)"
-        )
-    with col_ctrl2:
         st.markdown("**Venta Especial por camión** — ingresá en la tabla de abajo si aplica.")
-    with col_ctrl3:
+    with col_ctrl2:
         if st.button("🔄 Recalcular", type="primary"):
             st.rerun()
+    cobro_anticipado = 0.0
 
     # Venta especial por camión (opcional)
     with st.expander("📝 Venta Especial por camión (opcional)", expanded=False):
@@ -6244,18 +6243,28 @@ def render_tab_cierre():
     df_display["Neto a Ingresar"] = df_display["NetoIngresar"]
     df_show = df_display[["Camión", "Total Chess", "CTA CTE", "Rechazos", "Neto a Ingresar"]]
 
-    styled = df_show.style\
-        .format({
-            "Total Chess":     "$ {:,.0f}",
-            "CTA CTE":         "$ {:,.0f}",
-            "Rechazos":        "$ {:,.0f}",
-            "Neto a Ingresar": "$ {:,.0f}",
-        })\
-        .applymap(style_neto,    subset=["Neto a Ingresar"])\
-        .applymap(style_cta,     subset=["CTA CTE"])\
-        .applymap(style_rechazo, subset=["Rechazos"])\
-        .set_properties(**{"text-align": "right"},
-                        subset=["Total Chess", "CTA CTE", "Rechazos", "Neto a Ingresar"])
+    # pandas >= 2.1: applymap fue reemplazado por map
+    _use_map = hasattr(pd.io.formats.style.Styler, "map")
+    _styled_base = df_show.style.format({
+        "Total Chess":     "$ {:,.0f}",
+        "CTA CTE":         "$ {:,.0f}",
+        "Rechazos":        "$ {:,.0f}",
+        "Neto a Ingresar": "$ {:,.0f}",
+    })
+    if _use_map:
+        styled = (_styled_base
+            .map(style_neto,    subset=["Neto a Ingresar"])
+            .map(style_cta,     subset=["CTA CTE"])
+            .map(style_rechazo, subset=["Rechazos"])
+            .set_properties(**{"text-align": "right"},
+                            subset=["Total Chess", "CTA CTE", "Rechazos", "Neto a Ingresar"]))
+    else:
+        styled = (_styled_base
+            .applymap(style_neto,    subset=["Neto a Ingresar"])
+            .applymap(style_cta,     subset=["CTA CTE"])
+            .applymap(style_rechazo, subset=["Rechazos"])
+            .set_properties(**{"text-align": "right"},
+                            subset=["Total Chess", "CTA CTE", "Rechazos", "Neto a Ingresar"]))
 
     st.dataframe(styled, use_container_width=True, hide_index=True, height=460)
 
@@ -6268,7 +6277,6 @@ def render_tab_cierre():
             "Concepto": [
                 "D) Total Preventa del día",
                 "E) CTA CTE (descuento)",
-                "C) Cobro anticipado",
                 "F) Venta especial",
                 "F) Total neto a ingresar repartos",
                 "G) Rechazos",
@@ -6278,7 +6286,6 @@ def render_tab_cierre():
             "Monto": [
                 f"$ {tot_chess:,.0f}",
                 f"$ {tot_cta_cte:,.0f}",
-                f"$ {cobro_anticipado:,.0f}",
                 f"$ {tot_vta_esp:,.0f}",
                 f"$ {tot_neto_global:,.0f}",
                 f"$ {tot_rechazos:,.0f}",
