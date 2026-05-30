@@ -2,6 +2,15 @@
 Picking Orchestrator v4.28 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
 
+CAMBIOS v4.31.0:
+  - 🔧 Fix JPEG Tops: reemplazada la conversión PDF→JPEG (que requería
+    pdf2image+poppler o PyMuPDF, no disponibles en Streamlit Cloud) por
+    renderizado directo con Pillow. Nuevas funciones build_top_skus_anr_jpeg()
+    y build_top_clientes_anr_jpeg() generan el JPEG nativo con el mismo
+    diseño que el PDF (header azul/dorado, tabla con bandas, footer), sin
+    ninguna dependencia externa más allá de Pillow (ya incluido en Streamlit).
+    El botón JPEG ya no muestra el warning de dependencias faltantes.
+
 CAMBIOS v4.30.0:
   - 🧹 Top SKUs PDF + Top Clientes PDF: eliminada la línea "Bultos: X · HL: Y"
     del header. Esos datos correspondían solo al top 10, no a la venta total
@@ -134,7 +143,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.30.0"
+APP_VERSION = "4.31.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -4985,6 +4994,237 @@ def build_top_clientes_anr_pdf(df_top: pd.DataFrame, fecha_str: str = "") -> byt
     return bio.getvalue()
 
 
+
+# ── JPEG directo via Pillow (sin poppler, sin PyMuPDF) ───────────────────────
+_FONT_REG  = "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
+_FONT_BOLD = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
+
+def _pil_font(size: int, bold: bool = False):
+    from PIL import ImageFont
+    try:
+        return ImageFont.truetype(_FONT_BOLD if bold else _FONT_REG, size)
+    except Exception:
+        return ImageFont.load_default()
+
+
+def _draw_tops_table_pil(draw, img_w, y, rows, col_widths, col_x,
+                         headers, row_h=38, hdr_h=42):
+    """Dibuja header + filas de tabla con Pillow."""
+    from PIL import ImageDraw
+    DARK  = "#1a3a6b"
+    GOLD  = "#f8d772"
+    LIGHT = "#f4f6fa"
+    WHITE = "#ffffff"
+    BORD  = "#b0b0b0"
+
+    # Header de la tabla
+    draw.rectangle([col_x[0], y, col_x[0] + sum(col_widths), y + hdr_h],
+                   fill=GOLD, outline=BORD)
+    fh = _pil_font(18, bold=True)
+    for i, h in enumerate(headers):
+        cx = col_x[i] + col_widths[i] // 2
+        bb = draw.textbbox((0, 0), h, font=fh)
+        tw = bb[2] - bb[0]
+        draw.text((cx - tw // 2, y + (hdr_h - 20) // 2), h, font=fh, fill=DARK)
+    y += hdr_h
+
+    fr = _pil_font(17)
+    fb = _pil_font(17, bold=True)
+    for ri, cells in enumerate(rows):
+        bg = LIGHT if ri % 2 == 0 else WHITE
+        draw.rectangle([col_x[0], y, col_x[0] + sum(col_widths), y + row_h],
+                       fill=bg, outline=BORD)
+        for ci, (text, align, bold) in enumerate(cells):
+            font = fb if bold else fr
+            bb = draw.textbbox((0, 0), text, font=font)
+            tw = bb[2] - bb[0]
+            if align == "center":
+                tx = col_x[ci] + col_widths[ci] // 2 - tw // 2
+            elif align == "right":
+                tx = col_x[ci] + col_widths[ci] - tw - 8
+            else:
+                tx = col_x[ci] + 8
+            draw.text((tx, y + (row_h - 18) // 2), text, font=font, fill="#111111")
+        y += row_h
+    return y
+
+
+def build_top_skus_anr_jpeg(df_top, df_div, fecha_str="") -> bytes:
+    """JPEG directo (sin PDF): Top SKUs + División. Mismo diseño que el PDF."""
+    from PIL import Image, ImageDraw
+    import io as _io
+
+    DPI   = 150
+    W     = 1240   # ~A4 ancho a 150dpi
+    M     = 48     # margen lateral
+    DARK  = "#1a3a6b"
+    GOLD  = "#f8d772"
+    LIGHT = "#f4f6fa"
+    BORD  = "#b0b0b0"
+    GRAY  = "#555555"
+    MED   = "#2e5fa3"
+
+    table_w = W - 2 * M
+    # columnas: # | Código | Descripción | Bultos | HL
+    cw = [int(table_w * r) for r in [0.05, 0.12, 0.63, 0.11, 0.09]]
+    cx = [M]
+    for w in cw[:-1]:
+        cx.append(cx[-1] + w)
+
+    # Estimar altura total
+    HDR_H  = 90
+    ROW_H  = 38
+    THDR_H = 42
+    DIV_TITLE_H = 50
+    DIV_HDR_H   = 40
+    DIV_ROW_H   = 34
+    FOOT_H = 40
+    GAP    = 24
+
+    n_skus = len(df_top)
+    n_div  = len(df_div)
+    total_h = (HDR_H + GAP +
+               THDR_H + n_skus * ROW_H + GAP +
+               DIV_TITLE_H + DIV_HDR_H + n_div * DIV_ROW_H + GAP +
+               FOOT_H + 20)
+
+    img  = Image.new("RGB", (W, total_h), "white")
+    draw = ImageDraw.Draw(img)
+
+    # ── Header banner ──
+    draw.rectangle([0, 0, W, HDR_H], fill=DARK)
+    draw.text((M, 12), "TOP SKUs — Venta del Día (ANR)",
+              font=_pil_font(32, True), fill=GOLD)
+    draw.text((M, 52), "Beccacece Hnos SA · DPO 2.1 — Pilar Almacén",
+              font=_pil_font(20), fill="white")
+    fecha_txt = f"Fecha: {fecha_str}"
+    bb = draw.textbbox((0, 0), fecha_txt, font=_pil_font(22, True))
+    draw.text((W - M - (bb[2] - bb[0]), 14), fecha_txt,
+              font=_pil_font(22, True), fill="white")
+
+    y = HDR_H + GAP
+
+    # ── Tabla Top SKUs ──
+    rows_skus = []
+    for i, row in df_top.reset_index(drop=True).iterrows():
+        cod  = str(int(row["CODIGO"])) if hasattr(row["CODIGO"], "__float__") else str(row["CODIGO"])
+        desc = str(row.get("DESCRIPCION", ""))[:70]
+        bultos = _fmt_num(row["BULTOS"], 0)
+        hl     = _fmt_num(row.get("HL", 0))
+        rows_skus.append([
+            (str(i + 1), "center", True),
+            (cod,        "center", False),
+            (desc,       "left",   False),
+            (bultos,     "right",  True),
+            (hl,         "right",  False),
+        ])
+
+    y = _draw_tops_table_pil(draw, W, y, rows_skus, cw, cx,
+                              ["#", "CÓDIGO", "DESCRIPCIÓN", "BULTOS", "HL"],
+                              row_h=ROW_H, hdr_h=THDR_H)
+    y += GAP
+
+    # ── Bloque División ──
+    draw.rectangle([M, y, M + table_w, y + DIV_TITLE_H], fill=MED)
+    draw.text((M + 12, y + 12), "TOTALES POR DIVISIÓN — Venta del Día",
+              font=_pil_font(22, True), fill="white")
+    y += DIV_TITLE_H
+
+    cw_d = [int(table_w * r) for r in [0.55, 0.22, 0.23]]
+    cx_d = [M]
+    for w in cw_d[:-1]:
+        cx_d.append(cx_d[-1] + w)
+
+    rows_div = []
+    for _, row in df_div.reset_index(drop=True).iterrows():
+        rows_div.append([
+            (str(row["DIVISION"])[:55], "left",  False),
+            (_fmt_num(row["BULTOS"], 0), "right", True),
+            (_fmt_num(row["HL"]),        "right", False),
+        ])
+
+    y = _draw_tops_table_pil(draw, W, y, rows_div, cw_d, cx_d,
+                              ["DIVISIÓN", "BULTOS", "HL"],
+                              row_h=DIV_ROW_H, hdr_h=DIV_HDR_H)
+    y += GAP
+
+    # ── Footer ──
+    footer = (f"Fuente: ANR.xlsx — Hoja BASE  ·  "
+              f"Picking Orchestrator v{APP_VERSION} · {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    draw.text((M, y + 8), footer, font=_pil_font(15), fill=GRAY)
+
+    buf = _io.BytesIO()
+    img.save(buf, format="JPEG", quality=92, optimize=True)
+    return buf.getvalue()
+
+
+def build_top_clientes_anr_jpeg(df_top, fecha_str="") -> bytes:
+    """JPEG directo (sin PDF): Top Clientes. Mismo diseño que el PDF."""
+    from PIL import Image, ImageDraw
+    import io as _io
+
+    W     = 1240
+    M     = 48
+    DARK  = "#1a3a6b"
+    GOLD  = "#f8d772"
+    GRAY  = "#555555"
+
+    table_w = W - 2 * M
+    cw = [int(table_w * r) for r in [0.06, 0.72, 0.13, 0.09]]
+    cx = [M]
+    for w in cw[:-1]:
+        cx.append(cx[-1] + w)
+
+    HDR_H  = 90
+    ROW_H  = 38
+    THDR_H = 42
+    FOOT_H = 40
+    GAP    = 24
+
+    n = len(df_top)
+    total_h = HDR_H + GAP + THDR_H + n * ROW_H + GAP + FOOT_H + 20
+
+    img  = Image.new("RGB", (W, total_h), "white")
+    draw = ImageDraw.Draw(img)
+
+    # ── Header ──
+    draw.rectangle([0, 0, W, HDR_H], fill=DARK)
+    draw.text((M, 12), "TOP CLIENTES — Venta del Día (ANR)",
+              font=_pil_font(32, True), fill=GOLD)
+    draw.text((M, 52), "Beccacece Hnos SA · DPO 2.1 — Pilar Almacén",
+              font=_pil_font(20), fill="white")
+    fecha_txt = f"Fecha: {fecha_str}"
+    bb = draw.textbbox((0, 0), fecha_txt, font=_pil_font(22, True))
+    draw.text((W - M - (bb[2] - bb[0]), 14), fecha_txt,
+              font=_pil_font(22, True), fill="white")
+
+    y = HDR_H + GAP
+
+    rows = []
+    for i, row in df_top.reset_index(drop=True).iterrows():
+        cli    = str(row["CLIENTE"])[:80]
+        bultos = _fmt_num(row["BULTOS"], 0)
+        hl     = _fmt_num(row.get("HL", 0))
+        rows.append([
+            (str(i + 1), "center", True),
+            (cli,        "left",   False),
+            (bultos,     "right",  True),
+            (hl,         "right",  False),
+        ])
+
+    y = _draw_tops_table_pil(draw, W, y, rows, cw, cx,
+                              ["#", "CLIENTE", "BULTOS", "HL"],
+                              row_h=ROW_H, hdr_h=THDR_H)
+    y += GAP
+
+    footer = (f"Fuente: ANR.xlsx — Hoja CLIENTES  ·  "
+              f"Picking Orchestrator v{APP_VERSION} · {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    draw.text((M, y + 8), footer, font=_pil_font(15), fill=GRAY)
+
+    buf = _io.BytesIO()
+    img.save(buf, format="JPEG", quality=92, optimize=True)
+    return buf.getvalue()
+
 def render_tab_top_skus():
     st.subheader("🏆 Tops del Día — ANR (Análisis de Rechazos / Venta)")
     st.caption(
@@ -5094,7 +5334,7 @@ def render_tab_top_skus():
                     )
                 with col_jpg_s:
                     try:
-                        jpg_skus = _pdf_to_jpeg(pdf_skus)
+                        jpg_skus = build_top_skus_anr_jpeg(df_top_skus, df_div, fecha_str=fecha_hoy)
                         st.download_button(
                             "🖼️ JPEG — Venta total + Top 10 SKUs",
                             data=jpg_skus,
@@ -5151,7 +5391,7 @@ def render_tab_top_skus():
                 )
             with col_jpg_c:
                 try:
-                    jpg_cli = _pdf_to_jpeg(pdf_cli)
+                    jpg_cli = build_top_clientes_anr_jpeg(df_top_cli, fecha_str=fecha_hoy)
                     st.download_button(
                         "🖼️ JPEG — Top 10 Clientes",
                         data=jpg_cli,
