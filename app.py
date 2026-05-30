@@ -1,6 +1,17 @@
 """
-Picking Orchestrator v4.27 — Beccacece Hnos SA
+Picking Orchestrator v4.28 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
+
+CAMBIOS v4.28 (Tab 4 — Proyección Picking):
+  - 🔁 Fuente: ANR.xlsx + Frescura DDM (reemplaza CAR como input principal).
+    ANR.H=SKU, K=Bultos, S=Fecha, AP=Transporte. Cruce BXP/Cancha via DDM.
+  - 🧮 Lógica corregida: UP = bultos/BXP; pall_ae = FLOOR(UP) estricto;
+    paletas enteras → AE (omitidas del picking); fracción → picking.
+  - 🔀 Reasignación entre canchas: SOLO mueve UP picking (AE queda fijo).
+  - 📄 PDF: nueva página final con tabla resumen de reasignaciones
+    (Cam | DESDE→A | bultos | Δ tiempo) + impacto neto por cancha.
+  - 🔧 Fix _t4_norm_cancha: reconoce variantes (CAN I, C-I, C1, etc).
+  - 🔧 Fix AE descompuesto por cancha (antes solo total por camión).
 
 CAMBIOS v4.27:
   - 🔧 Fix CRÍTICO Boletas: el ANR subido en Archivos no llegaba a la tab Boletas.
@@ -2120,7 +2131,21 @@ def render_tab_t2():
             unsafe_allow_html=True,
         )
 
-# ── TAB 4 — Proyección Picking ×4 — v4.6 ──────────────────────────────────
+# ── TAB 4 — Proyección Picking ×4 — v4.28 ─────────────────────────────────
+#
+#  CAMBIOS v4.28 (Lucas — 30/05/2026):
+#  - Fuente: **ANR.xlsx + Frescura 3.0** (reemplaza CAR como fuente principal).
+#    ANR.H=SKU, ANR.K=Bultos, ANR.S=Fecha, ANR.AP=Transporte (camión).
+#  - Cruce: BXP y Cancha tomados de **Frescura DDM** (col G=BXP, col O=CAN) —
+#    maestro estable, prevalece sobre ANR.AZ.
+#  - Split AE/Pick estricto: UP = bultos/BXP; pall_ae = FLOOR(UP) (sin ceil 0.97);
+#    bult_ae = pall_ae × BXP (paletas enteras → omitidas del picking);
+#    bult_pick = bultos − bult_ae; up_pick = UP − pall_ae (fracción a pickear).
+#  - Reasignación: SOLO mueve UP picking; AE queda fijo donde corresponde
+#    por SKU/cancha. AE descompuesto por cancha (no solo total).
+#  - PDF: marca ±cancha por camión + **nueva página final con tabla resumen**
+#    de reasignaciones (Cam | DESDE → A | bultos | Δ tiempo).
+#  - Bug fix: _t4_norm_cancha ahora reconoce variantes 'CAN I', 'C-I', 'CI', etc.
 #
 #  CAMBIOS v4.7:
 #  - Fix: hora estimada de fin calculada sobre BULTOS REALES por cancha
@@ -2189,12 +2214,27 @@ def _t4_safe(v, default=0.0):
 
 
 def _t4_norm_cancha(val) -> str:
+    """v4.28 — Normaliza variantes: 'CANCHA I', 'CAN I', 'C-I', 'CI', 'CANCHAI'."""
     if val is None:
         return "SIN CANCHA"
     s = str(val).strip().upper()
     s = ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
     if any(k in s for k in ("MKPL", "MARKETPLACE", "MERCH")):
         return "MKPL"
+    # Quitar separadores y prefijo CANCHA para comparar sufijo romano
+    s_compact = s.replace("-", " ").replace("_", " ").replace(".", " ")
+    s_compact = " ".join(s_compact.split())  # collapse spaces
+    for c, romans in [
+        ("CANCHA I",   ["CANCHA I", "CAN I", "CANCHAI", "C I", "C1", "CANCHA 1"]),
+        ("CANCHA II",  ["CANCHA II", "CAN II", "CANCHAII", "C II", "C2", "CANCHA 2"]),
+        ("CANCHA III", ["CANCHA III", "CAN III", "CANCHAIII", "C III", "C3", "CANCHA 3"]),
+        ("CANCHA IV",  ["CANCHA IV", "CAN IV", "CANCHAIV", "C IV", "C4", "CANCHA 4"]),
+        ("CANCHA V",   ["CANCHA V", "CAN V", "CANCHAV", "C V", "C5", "CANCHA 5"]),
+    ]:
+        for r in romans:
+            if s_compact == r or s_compact.startswith(r + " ") or s_compact.endswith(" " + r):
+                return c
+    # Fallback: original logic
     for c in ["CANCHA I", "CANCHA II", "CANCHA III", "CANCHA IV", "CANCHA V"]:
         if s == c or s.startswith(c):
             return c
@@ -2226,6 +2266,257 @@ def _t4_extract_cv(cell_val):
         except Exception:
             return m2.group(1)
     return cell_val
+
+
+def _t4_load_anr_proyeccion(anr_bytes: bytes, fr_bytes: bytes) -> dict:
+    """
+    v4.28 — Proyección desde ANR + Frescura DDM (reemplaza CAR).
+
+    Fuente:
+      ANR:  H=Artículo(SKU), K=Bultos, S=Fecha productividades, AP=Transporte(camión)
+      DDM:  C(idx 2)=Artículo, G(idx 6)=BXP, O(idx 14)=Cancha
+
+    Lógica:
+      Para cada (camión, SKU) del día:
+        tot      = Σ ANR.K
+        bxp      = DDM.bxp[sku]  (fallback ANR.BA si DDM no tiene)
+        cancha   = DDM.cancha[sku]  (maestro estable; ANR.AZ ignorado)
+        up_total = tot / bxp
+        pall_ae  = FLOOR(up_total)                  # paletas enteras → AE (omitidas)
+        bult_ae  = pall_ae * bxp
+        bult_pick= tot - bult_ae                    # SOLO esto se pickea
+        up_pick  = up_total - pall_ae               # fracción residual
+
+    AE se distribuye también por cancha (cada SKU lleva su cancha aunque sea AE).
+    Reasignaciones operan SOLO sobre bult_pick / up_pick (AE queda fijo).
+    """
+    import datetime as _dt
+    import math as _math
+
+    # ── 1. Leer DDM (Frescura) — BXP y CANCHA por SKU ─────────────────────────
+    try:
+        wb_fr = openpyxl.load_workbook(io.BytesIO(fr_bytes), read_only=True)
+        ws_ddm = wb_fr["DDM"]
+        ddm_rows = []
+        for row in ws_ddm.iter_rows(min_row=2, values_only=True):
+            sku_raw = _t4_extract_cv(row[2])
+            bxp_raw = _t4_extract_cv(row[6])
+            can_raw = _t4_extract_cv(row[14])
+            if sku_raw is None:
+                continue
+            try:
+                sku_int = int(float(str(sku_raw)))
+                bxp_val = float(bxp_raw) if bxp_raw not in (None, "", "None") else 0.0
+                can_str = str(can_raw).strip() if can_raw not in (None, "", "None") else "SIN CANCHA"
+                ddm_rows.append({"sku": sku_int, "bxp": bxp_val, "can": can_str})
+            except (ValueError, TypeError):
+                pass
+        wb_fr.close()
+        df_ddm = pd.DataFrame(ddm_rows).drop_duplicates("sku")
+    except Exception:
+        df_ddm = pd.DataFrame(columns=["sku", "bxp", "can"])
+
+    # ── 2. Leer ANR — usar openpyxl read_only por tamaño ──────────────────────
+    wb_anr = openpyxl.load_workbook(io.BytesIO(anr_bytes), read_only=True, data_only=True)
+    # Hoja ANR principal — buscar por nombre o tomar la primera
+    sheet_name = None
+    for cand in ("ANR", "Hoja1", "Sheet1"):
+        if cand in wb_anr.sheetnames:
+            sheet_name = cand
+            break
+    if sheet_name is None:
+        sheet_name = wb_anr.sheetnames[0]
+    ws = wb_anr[sheet_name]
+
+    # Indices 0-based: H=7, K=10, S=18, AP=41, BA=52, AZ=51
+    IDX_SKU, IDX_BULT, IDX_FECHA, IDX_TRANSP, IDX_BXP_ANR = 7, 10, 18, 41, 52
+
+    rows_raw = []
+    fechas_set = set()
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if len(row) <= IDX_TRANSP:
+            continue
+        sku    = row[IDX_SKU]
+        bultos = row[IDX_BULT]
+        fecha  = row[IDX_FECHA]
+        transp = row[IDX_TRANSP]
+        bxp_a  = row[IDX_BXP_ANR] if len(row) > IDX_BXP_ANR else None
+        if sku is None or bultos in (None, 0, "") or transp is None:
+            continue
+        try:
+            sku_i   = int(float(str(sku)))
+            bult_f  = float(bultos)
+            transp_i= int(float(str(transp)))
+        except (ValueError, TypeError):
+            continue
+        if bult_f <= 0:
+            continue
+        if isinstance(fecha, _dt.datetime):
+            fecha_d = fecha.date()
+        elif isinstance(fecha, _dt.date):
+            fecha_d = fecha
+        else:
+            try:
+                fecha_d = pd.to_datetime(fecha).date()
+            except Exception:
+                fecha_d = None
+        if fecha_d is not None:
+            fechas_set.add(fecha_d)
+        try:
+            bxp_anr_f = float(bxp_a) if bxp_a not in (None, "", 0) else 0.0
+        except (ValueError, TypeError):
+            bxp_anr_f = 0.0
+        rows_raw.append({
+            "cam": transp_i, "sku": sku_i, "blt_raw": bult_f,
+            "fecha": fecha_d, "bxp_anr": bxp_anr_f,
+        })
+    wb_anr.close()
+
+    if not rows_raw:
+        raise ValueError("ANR sin filas válidas (revisar cols H/K/S/AP)")
+
+    df_raw = pd.DataFrame(rows_raw)
+
+    # Quedarse con la fecha más reciente (el "día de hoy" del ANR)
+    fecha_use = max(fechas_set) if fechas_set else _dt.date.today()
+    df_raw = df_raw[df_raw["fecha"] == fecha_use].copy() if fechas_set else df_raw
+
+    # ── 3. Excluir envases por SKU ────────────────────────────────────────────
+    if "is_envase" in globals():
+        # is_envase(sku, desc) — no tenemos desc desde ANR aquí, pasar str vacío
+        df_raw = df_raw[~df_raw["sku"].apply(lambda s: is_envase(int(s), ""))]
+
+    # ── 4. Agregar por (Camión, SKU) ──────────────────────────────────────────
+    grp = (df_raw.groupby(["cam", "sku"], as_index=False)
+                 .agg(blt_raw=("blt_raw", "sum"),
+                      bxp_anr=("bxp_anr", "max")))
+
+    # ── 5. Merge con DDM (BXP y cancha maestros) ──────────────────────────────
+    grp = grp.merge(df_ddm[["sku", "bxp", "can"]], on="sku", how="left")
+    # Fallback: si DDM no trae BXP, usar el de ANR
+    grp["bxp"] = grp.apply(
+        lambda r: float(r["bxp"]) if pd.notna(r["bxp"]) and r["bxp"] > 0
+                  else float(r["bxp_anr"]) if r["bxp_anr"] > 0 else 0.0,
+        axis=1,
+    )
+    grp["can"] = grp["can"].fillna("SIN CANCHA")
+
+    # ── 6. Split AE vs Pick (FLOOR estricto, sin ceil ≥0.97) ──────────────────
+    def _split_row(row):
+        tot  = float(row["blt_raw"])
+        bxp_ = float(row["bxp"])
+        if bxp_ > 0:
+            up_total = tot / bxp_
+            pall_ae  = int(_math.floor(up_total))
+            bult_ae  = float(pall_ae) * bxp_
+            bult_ae  = min(bult_ae, tot)
+            bult_pick= max(0.0, tot - bult_ae)
+            up_pick  = max(0.0, up_total - pall_ae)
+        else:
+            pall_ae, bult_ae, bult_pick, up_pick = 0, 0.0, tot, 0.0
+        return pd.Series({
+            "pall_ae":   float(pall_ae),
+            "bult_ae":   bult_ae,
+            "bult_pick": bult_pick,
+            "up_pick":   up_pick,
+        })
+
+    split = grp.apply(_split_row, axis=1)
+    grp = pd.concat([grp, split], axis=1)
+    grp["cancha_norm"] = grp["can"].apply(_t4_norm_cancha)
+
+    # ── 7. Pivotar — bultos pick y UP pick por (cam × cancha) ────────────────
+    pick_grp = grp.groupby(["cam", "cancha_norm"], as_index=False).agg(
+        bult_pick=("bult_pick", "sum"),
+        up_pick  =("up_pick",   "sum"),
+    )
+    # AE TAMBIÉN por cancha (Lucas: "AE queda donde corresponde por SKU")
+    ae_grp_cancha = grp.groupby(["cam", "cancha_norm"], as_index=False).agg(
+        bult_ae=("bult_ae", "sum"),
+        pall_ae=("pall_ae", "sum"),
+    )
+    # AE total por camión (compat con UI existente)
+    ae_tot = grp.groupby("cam", as_index=False).agg(
+        bult_ae_tot=("bult_ae", "sum"),
+        up_ae_tot  =("pall_ae", "sum"),
+    )
+
+    pivot_bult = pick_grp.pivot_table(
+        index="cam", columns="cancha_norm",
+        values="bult_pick", aggfunc="sum", fill_value=0.0,
+    ).reset_index()
+    pivot_bult.columns.name = None
+
+    pivot_up = pick_grp.pivot_table(
+        index="cam", columns="cancha_norm",
+        values="up_pick", aggfunc="sum", fill_value=0.0,
+    ).reset_index()
+    pivot_up.columns.name = None
+    pivot_up = pivot_up.rename(
+        columns={c: f"_up_{c}" for c in _T4_CANCHAS + ["SIN CANCHA"] if c in pivot_up.columns}
+    )
+
+    # AE por cancha (para mostrar en PDF)
+    pivot_ae_cancha = ae_grp_cancha.pivot_table(
+        index="cam", columns="cancha_norm",
+        values="bult_ae", aggfunc="sum", fill_value=0.0,
+    ).reset_index()
+    pivot_ae_cancha.columns.name = None
+    pivot_ae_cancha = pivot_ae_cancha.rename(
+        columns={c: f"_ae_bult_{c}" for c in _T4_CANCHAS + ["SIN CANCHA"] if c in pivot_ae_cancha.columns}
+    )
+
+    pivot_ae_pall_c = ae_grp_cancha.pivot_table(
+        index="cam", columns="cancha_norm",
+        values="pall_ae", aggfunc="sum", fill_value=0.0,
+    ).reset_index()
+    pivot_ae_pall_c.columns.name = None
+    pivot_ae_pall_c = pivot_ae_pall_c.rename(
+        columns={c: f"_ae_pall_{c}" for c in _T4_CANCHAS + ["SIN CANCHA"] if c in pivot_ae_pall_c.columns}
+    )
+
+    # Merge todo
+    cam_df = pivot_bult.merge(ae_tot, on="cam", how="left") \
+                       .merge(pivot_up, on="cam", how="left") \
+                       .merge(pivot_ae_cancha, on="cam", how="left") \
+                       .merge(pivot_ae_pall_c, on="cam", how="left")
+
+    for c in _T4_CANCHAS:
+        if c not in cam_df.columns:
+            cam_df[c] = 0.0
+        for prefix in ("_up_", "_ae_bult_", "_ae_pall_"):
+            col = f"{prefix}{c}"
+            if col not in cam_df.columns:
+                cam_df[col] = 0.0
+        cam_df[f"_hl_{c}"] = 0.0
+
+    cam_df["bult_ae"] = cam_df["bult_ae_tot"].fillna(0.0)
+    cam_df["up_ae"]   = cam_df["up_ae_tot"].fillna(0.0)
+    cam_df["hl_ae"]   = 0.0
+    cam_df["kg"]      = 0.0
+    cam_df = cam_df.drop(columns=["bult_ae_tot", "up_ae_tot"], errors="ignore")
+
+    cam_df["TOTAL_PICK"] = cam_df[[c for c in _T4_CANCHAS if c in cam_df.columns]].sum(axis=1)
+    cam_df["TOTAL_AE"]   = cam_df["bult_ae"]
+    cam_df["TOTAL_BULT"] = cam_df["TOTAL_PICK"] + cam_df["TOTAL_AE"]
+    cam_df["TOTAL_PALL"] = cam_df[[f"_up_{c}" for c in _T4_CANCHAS]].sum(axis=1) + cam_df["up_ae"]
+    cam_df["AE_PALL"]    = cam_df["up_ae"]
+
+    cam_df = cam_df.rename(columns={"cam": "Camión"})
+    cam_df = cam_df.sort_values("Camión").reset_index(drop=True)
+
+    tot_pick = float(cam_df["TOTAL_PICK"].sum())
+    tot_ae   = float(cam_df["TOTAL_AE"].sum())
+    mix = (tot_pick / (tot_pick + tot_ae)) if (tot_pick + tot_ae) > 0 else 0.0
+
+    return {
+        "df":          cam_df,
+        "fecha":       fecha_use,
+        "fuente":      "ANR + Frescura DDM (UP = bultos/BXP, FLOOR estricto)",
+        "mix_picking": mix,
+        "tot_pick":    tot_pick,
+        "tot_ae":      tot_ae,
+    }
 
 
 def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
@@ -2776,6 +3067,201 @@ def _t4_generar_pdf_x4(
     for cancha in _T4_CANCHAS_PDF:
         _draw_page(cancha)
 
+    # ── PÁGINA FINAL: TABLA RESUMEN DE REASIGNACIONES (v4.28) ───────────────
+    if asign_detail:
+        y = ph - M
+
+        # Header
+        hdr_h = 22
+        c_pdf.setFillColor(HDR_BG_PDF)
+        c_pdf.rect(M, y - hdr_h, inner_w, hdr_h, fill=1, stroke=0)
+        c_pdf.setFillColor(WHITE)
+        c_pdf.setFont(FONT_B, 10)
+        c_pdf.drawCentredString(
+            M + inner_w / 2, y - hdr_h + 8,
+            "🔁 RESUMEN DE REASIGNACIONES ENTRE CANCHAS",
+        )
+        c_pdf.setFont(FONT_N, 7)
+        c_pdf.drawCentredString(
+            M + inner_w / 2, y - hdr_h + 2,
+            f"{fecha_s}  ·  {len(asign_detail)} movimiento(s)",
+        )
+        y -= hdr_h + 6
+
+        # Tabla: CAM | DESDE | → | A | Bultos UP | Δ tiempo origen | Δ tiempo destino
+        col_lbls2 = ["CAM", "DESDE", "→", "HACIA", "BULTOS", "UP", "Δ ORIGEN", "Δ DESTINO"]
+        cw2 = [32, 60, 18, 60, 50, 38, 60, 60]
+        cw2_total = sum(cw2)
+        if cw2_total < inner_w:
+            cw2[-1] += (inner_w - cw2_total)
+
+        # Header tabla
+        th = 14
+        c_pdf.setFillColor(colors.HexColor("#E8EAF6"))
+        c_pdf.rect(M, y - th, inner_w, th, fill=1, stroke=0)
+        c_pdf.setFillColor(colors.black)
+        c_pdf.setFont(FONT_B, 7)
+        x = M
+        for i, lbl in enumerate(col_lbls2):
+            c_pdf.drawCentredString(x + cw2[i] / 2, y - th + 5, lbl)
+            x += cw2[i]
+        y -= th
+
+        # Filas — calcular Δ tiempo por movimiento
+        rh = 13
+        # Mapa rápido cam → fila del df_display
+        df_idx_map = {int(r["Camión"]): r for _, r in df.iterrows()}
+        # Productividad y personas (estos venían como parámetros del PDF, los reuso)
+        prod_map = productividad
+        pers_map = personas
+
+        # Orden: por cancha origen, luego cancha destino, luego camión
+        movs_sorted = sorted(
+            asign_detail.items(),
+            key=lambda kv: (kv[0][1], kv[1], kv[0][0]),
+        )
+
+        for ri, ((cam_m, c_orig), c_dest) in enumerate(movs_sorted):
+            row = df_idx_map.get(cam_m)
+            if row is None:
+                continue
+            bult_mov = float(row.get(c_orig, 0.0))
+            up_mov   = float(row.get(f"_up_{c_orig}", 0.0))
+
+            # Δ tiempo origen = - bult_mov / (vel_o * pers_o)   (gana tiempo)
+            # Δ tiempo destino = + bult_mov / (vel_d * pers_d)  (pierde tiempo)
+            vo, po = prod_map.get(c_orig, 1), pers_map.get(c_orig, 1)
+            vd, pd_ = prod_map.get(c_dest, 1), pers_map.get(c_dest, 1)
+            min_orig = (bult_mov / max(1, vo * po)) * 60.0
+            min_dest = (bult_mov / max(1, vd * pd_)) * 60.0
+
+            bg = ALT_ROW if ri % 2 == 0 else WHITE
+            c_pdf.setFillColor(bg)
+            c_pdf.rect(M, y - rh, inner_w, rh, fill=1, stroke=0)
+
+            c_short_o = c_orig.replace("CANCHA ", "C")
+            c_short_d = c_dest.replace("CANCHA ", "C")
+            vals2 = [
+                str(cam_m),
+                c_short_o,
+                "→",
+                c_short_d,
+                f"{bult_mov:.0f}",
+                f"{up_mov:.2f}",
+                f"−{min_orig:.1f} min",
+                f"+{min_dest:.1f} min",
+            ]
+            x = M
+            for i, v in enumerate(vals2):
+                c_pdf.setFillColor(colors.black)
+                if i == 1:  # DESDE — rojo claro
+                    c_pdf.setFillColor(colors.HexColor("#FFEBEE"))
+                    c_pdf.rect(x, y - rh, cw2[i], rh, fill=1, stroke=0)
+                if i == 3:  # HACIA — azul claro
+                    c_pdf.setFillColor(ASIGN_BG)
+                    c_pdf.rect(x, y - rh, cw2[i], rh, fill=1, stroke=0)
+                if i == 6:  # Δ origen — verde (gana tiempo)
+                    c_pdf.setFillColor(colors.HexColor("#E8F5E9"))
+                    c_pdf.rect(x, y - rh, cw2[i], rh, fill=1, stroke=0)
+                if i == 7:  # Δ destino — naranja (pierde tiempo)
+                    c_pdf.setFillColor(colors.HexColor("#FFF3E0"))
+                    c_pdf.rect(x, y - rh, cw2[i], rh, fill=1, stroke=0)
+                c_pdf.setFillColor(colors.black)
+                c_pdf.setFont(FONT_B if i in (0, 1, 3) else FONT_N, 7)
+                c_pdf.drawCentredString(x + cw2[i] / 2, y - rh + 4, v)
+                x += cw2[i]
+            c_pdf.setStrokeColor(colors.HexColor("#DDDDDD"))
+            c_pdf.line(M, y - rh, M + inner_w, y - rh)
+            y -= rh
+
+            # Salto de página si nos quedamos sin espacio
+            if y < M + 80:
+                c_pdf.showPage()
+                y = ph - M
+
+        # ── Bloque resumen agregado por cancha ──────────────────────────────
+        y -= 8
+        c_pdf.setFillColor(SUB_BG_PDF)
+        c_pdf.rect(M, y - 14, inner_w, 14, fill=1, stroke=0)
+        c_pdf.setFillColor(WHITE)
+        c_pdf.setFont(FONT_B, 8)
+        c_pdf.drawCentredString(M + inner_w / 2, y - 14 + 4, "IMPACTO NETO POR CANCHA")
+        y -= 18
+
+        # Calcular ganancia/pérdida neta de tiempo por cancha
+        impacto = {c: {"recibe_bult": 0.0, "cede_bult": 0.0,
+                       "recibe_min": 0.0, "cede_min": 0.0} for c in _T4_CANCHAS}
+        for (cam_m, c_orig), c_dest in asign_detail.items():
+            row = df_idx_map.get(cam_m)
+            if row is None:
+                continue
+            bult_mov = float(row.get(c_orig, 0.0))
+            vo, po = prod_map.get(c_orig, 1), pers_map.get(c_orig, 1)
+            vd, pd_ = prod_map.get(c_dest, 1), pers_map.get(c_dest, 1)
+            impacto[c_orig]["cede_bult"]  += bult_mov
+            impacto[c_orig]["cede_min"]   += (bult_mov / max(1, vo * po)) * 60.0
+            impacto[c_dest]["recibe_bult"] += bult_mov
+            impacto[c_dest]["recibe_min"]  += (bult_mov / max(1, vd * pd_)) * 60.0
+
+        cw3 = [60, 70, 70, 70, 80]
+        cw3_total = sum(cw3)
+        if cw3_total < inner_w:
+            cw3[-1] += (inner_w - cw3_total)
+        lbls3 = ["CANCHA", "CEDE bult", "RECIBE bult", "Δ NETO bult", "Δ NETO tiempo"]
+
+        c_pdf.setFillColor(colors.HexColor("#E8EAF6"))
+        c_pdf.rect(M, y - 13, inner_w, 13, fill=1, stroke=0)
+        c_pdf.setFillColor(colors.black)
+        c_pdf.setFont(FONT_B, 7)
+        x = M
+        for i, lbl in enumerate(lbls3):
+            c_pdf.drawCentredString(x + cw3[i] / 2, y - 13 + 4, lbl)
+            x += cw3[i]
+        y -= 13
+
+        for ri, c in enumerate(_T4_CANCHAS):
+            d = impacto[c]
+            neto_bult = d["recibe_bult"] - d["cede_bult"]
+            neto_min  = d["recibe_min"]  - d["cede_min"]
+            if d["recibe_bult"] == 0 and d["cede_bult"] == 0:
+                continue
+            bg = ALT_ROW if ri % 2 == 0 else WHITE
+            c_pdf.setFillColor(bg)
+            c_pdf.rect(M, y - rh, inner_w, rh, fill=1, stroke=0)
+            c_pdf.setFillColor(colors.black)
+            sign_b = "+" if neto_bult >= 0 else ""
+            sign_m = "+" if neto_min  >= 0 else ""
+            vals3 = [
+                c.replace("CANCHA ", "C"),
+                f"{d['cede_bult']:.0f}",
+                f"{d['recibe_bult']:.0f}",
+                f"{sign_b}{neto_bult:.0f}",
+                f"{sign_m}{neto_min:.1f} min",
+            ]
+            x = M
+            for i, v in enumerate(vals3):
+                c_pdf.setFont(FONT_B if i in (0, 3, 4) else FONT_N, 7)
+                # Color condicional neto bultos / neto min
+                if i == 3:
+                    c_pdf.setFillColor(colors.HexColor("#E8F5E9") if neto_bult <= 0
+                                       else colors.HexColor("#FFF3E0"))
+                    c_pdf.rect(x, y - rh, cw3[i], rh, fill=1, stroke=0)
+                if i == 4:
+                    c_pdf.setFillColor(colors.HexColor("#E8F5E9") if neto_min <= 0
+                                       else colors.HexColor("#FFF3E0"))
+                    c_pdf.rect(x, y - rh, cw3[i], rh, fill=1, stroke=0)
+                c_pdf.setFillColor(colors.black)
+                c_pdf.drawCentredString(x + cw3[i] / 2, y - rh + 4, v)
+                x += cw3[i]
+            y -= rh
+
+        c_pdf.setFont(FONT_N, 6)
+        c_pdf.setFillColor(colors.HexColor("#666666"))
+        c_pdf.drawString(M, y - 8,
+            "Verde = la cancha gana tiempo (cede carga).  Naranja = la cancha pierde tiempo (recibe carga).")
+
+        c_pdf.showPage()
+
     c_pdf.save()
     buf.seek(0)
     return buf.read()
@@ -2786,31 +3272,31 @@ def render_tab_proyeccion():
 
     st.subheader("📊 Proyección Picking ×4")
     st.caption(
-        "Fuente: **CAR.xlsx + Frescura 3.0** — Calcula PICK vs AE por "
-        "**UNIDAD PKT** (col R DDM) y cancha, sin necesitar el MASTER."
+        "Fuente: **ANR.xlsx + Frescura 3.0 (DDM)** — Calcula PICK vs AE por "
+        "**UP = bultos/BXP** (FLOOR estricto: paletas enteras → AE, fracción → picking)."
     )
 
     # ── Reutilizar uploads de Archivos / Tab 1 ───────────────────────────────
-    car_use = st.session_state.get("t1_car") or st.session_state.get("t4_car")
+    anr_use = st.session_state.get("tc_anr") or st.session_state.get("t4_anr")
     fr_use  = st.session_state.get("t1_fr")  or st.session_state.get("t4_fr")
 
-    if not (car_use and fr_use):
-        st.info("⬅️ Subí **CAR.xlsx** y **Frescura 3.0** en la pestaña **📁 Archivos** para activar la proyección.")
+    if not (anr_use and fr_use):
+        st.info("⬅️ Subí **ANR.xlsx** y **Frescura 3.0** en la pestaña **📁 Archivos** para activar la proyección.")
         return
 
     # ── Cargar datos ──────────────────────────────────────────────────────────
     pdata = None
     try:
-        with st.spinner("Calculando proyección de picking desde CAR…"):
-            pdata = _t4_load_car_proyeccion(
-                car_bytes=car_use.getvalue(),
+        with st.spinner("Calculando proyección de picking desde ANR…"):
+            pdata = _t4_load_anr_proyeccion(
+                anr_bytes=anr_use.getvalue(),
                 fr_bytes=fr_use.getvalue(),
             )
         st.success(
             f"✓ Proyección lista — {len(pdata['df'])} camiones | "
             f"Fecha: {pdata['fecha']} | Fuente: {pdata['fuente']}"
         )
-        log_event("info", f"Tab4 proyección v4.6: {len(pdata['df'])} camiones, {pdata['fecha']}")
+        log_event("info", f"Tab4 proyección v4.28 (ANR): {len(pdata['df'])} camiones, {pdata['fecha']}")
     except Exception as e:
         st.error(f"❌ Error calculando proyección: {e}")
         with st.expander("Stack trace"):
@@ -2869,9 +3355,10 @@ def render_tab_proyeccion():
     st.divider()
     st.subheader("📦 Pallets UP por camión")
     st.caption(
-        "**UP** = fracción de paleta (bultos / BXP col G DDM). "
-        "Paletas enteras → AE. Fracción restante → picking. "
-        "Columnas **ASIGN.** editables: escribí la cancha destino (CI/CII/CIII/CIV/MKPL) para reasignar."
+        "**UP** = bultos/BXP (col G DDM Frescura). "
+        "Paletas enteras (FLOOR) → AE, **omitidas del picking**. Fracción restante → picking. "
+        "Columnas **ASIGN.** editables: escribí la cancha destino (CI/CII/CIII/CIV/MKPL) para reasignar "
+        "(SOLO mueve UP picking, el AE queda fijo)."
     )
 
     cam_list = sorted(df_display["Camión"].tolist())
