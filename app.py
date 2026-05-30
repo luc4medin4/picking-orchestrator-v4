@@ -49,7 +49,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.20.0"
+APP_VERSION = "4.21.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -1843,7 +1843,7 @@ def render_tab_resumen():
 
 # URL del Apps Script Web App. Pegar la URL /exec del deploy aquí.
 # Formato: https://script.google.com/macros/s/AKfycb.../exec
-_T2_WEB_APP_URL = "PEGAR_URL_DEL_WEB_APP_ACA"
+_T2_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwcFO8gby7kZvEhiWoUg_lBOL8Xhsqzph7YdycJkNcZoZsvCxqg1BoBeVe6CIFae2Gt/exec"
 
 _T2_REQUEST_TIMEOUT = 120  # segundos (makeCopy + export tarda ~15-30s)
 
