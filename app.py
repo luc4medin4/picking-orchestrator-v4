@@ -2,6 +2,23 @@
 Picking Orchestrator v4.33.1 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
 
+CAMBIOS v4.35.0 (Proyección Picking — Tab 4):
+  - 🛠️ Fix CRÍTICO: HL y KG dejaron de estar hardcodeados en 0. Ahora se
+    leen del DDM Frescura (col P = VALOR HL/bulto, col Q = PESO KG/bulto)
+    y se calculan por SKU → se suman por cancha y por camión.
+  - 🛠️ Nueva fn `_t4_calcular_metricas_por_cancha` devuelve bultos+HL+KG
+    post-reasignación en una sola pasada. Reemplaza la fn vieja que solo
+    calculaba bultos.
+  - 🛠️ Tiempo estimado de fin se calcula sobre BULTOS REALES picking
+    (post-asignación), no sobre UP. UP solo define el espacio en cancha.
+  - 🛠️ Reasignación: ahora arrastra UP + bultos reales + HL + KG en
+    proporción (todo del bloque cancha-camión se mueve junto, igual que
+    en el Excel master).
+  - ➕ Tabla resumen agrega filas TOTAL BULTOS, TOTAL HL, TOTAL KG y
+    HORA EST FIN al pie (debajo de TOTAL PALL X CANCHA), igual layout
+    que el Excel master v8.
+  - Inicios escalonados +5 min por cancha (CI→CII→CIII→CIV→MKPL).
+
 CAMBIOS v4.33.1 (Proyección Picking — Tab 4):
   - 🛠️ FIX CRÍTICO: _t4_norm_cancha() reescrita. El bug raíz era que
     `s.startswith("CANCHA I")` matchea también "CANCHA II/III/IV" por
@@ -2481,15 +2498,25 @@ def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
         idx_can  = _t4_find_ddm_col(headers_ddm, "CAN", "CANCHA")
         if idx_can < 0:
             idx_can = 14  # fallback col O
+        # v4.35: HL/bulto (col P, idx 15) y KG/bulto (col Q, idx 16)
+        idx_hl   = _t4_find_ddm_col(headers_ddm, "VALOR HL", "HL")
+        if idx_hl < 0:
+            idx_hl = 15  # fallback col P
+        idx_kg   = _t4_find_ddm_col(headers_ddm, "PESO KG", "PESO", "KG")
+        if idx_kg < 0:
+            idx_kg = 16  # fallback col Q
 
         ddm_rows = []
+        max_idx = max(idx_sku, idx_bxp, idx_un, idx_can, idx_hl, idx_kg)
         for row in rows_iter:
-            if row is None or len(row) <= max(idx_sku, idx_bxp, idx_un, idx_can):
+            if row is None or len(row) <= max_idx:
                 continue
             sku_raw = _t4_extract_cv(row[idx_sku])
             bxp_raw = _t4_extract_cv(row[idx_bxp])
             un_raw  = _t4_extract_cv(row[idx_un])
             can_raw = _t4_extract_cv(row[idx_can])
+            hl_raw  = _t4_extract_cv(row[idx_hl])
+            kg_raw  = _t4_extract_cv(row[idx_kg])
             if sku_raw is None:
                 continue
             try:
@@ -2497,6 +2524,8 @@ def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
                 bxp_val = float(bxp_raw) if bxp_raw not in (None, "", "None") else 0.0
                 un_val  = float(un_raw)  if un_raw  not in (None, "", "None") else 0.0
                 can_str = str(can_raw).strip() if can_raw not in (None, "", "None") else "SIN CANCHA"
+                hl_val  = float(hl_raw)  if hl_raw  not in (None, "", "None") else 0.0
+                kg_val  = float(kg_raw)  if kg_raw  not in (None, "", "None") else 0.0
                 upkt_val = (1.0 / bxp_val) if bxp_val > 0 else 0.0
                 ddm_rows.append({
                     "sku":      sku_int,
@@ -2504,13 +2533,15 @@ def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
                     "un_bulto": un_val,
                     "can":      can_str,
                     "upkt":     upkt_val,
+                    "hl_unit":  hl_val,   # HL por bulto
+                    "kg_unit":  kg_val,   # KG por bulto
                 })
             except (ValueError, TypeError):
                 pass
         wb_fr.close()
         df_ddm = pd.DataFrame(ddm_rows).drop_duplicates("sku")
     except Exception:
-        df_ddm = pd.DataFrame(columns=["sku", "bxp", "un_bulto", "can", "upkt"])
+        df_ddm = pd.DataFrame(columns=["sku", "bxp", "un_bulto", "can", "upkt", "hl_unit", "kg_unit"])
 
     # ── 2. CAR Hoja1 — detección dinámica VE / CHESS ─────────────────────────
     raw = pd.read_excel(io.BytesIO(car_bytes), sheet_name=0, header=None)
@@ -2569,15 +2600,21 @@ def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
     grp = grp[(grp["blt_raw"] > 0) | (grp["unids"] > 0)]
     grp.rename(columns={"Transporte": "cam", "Artículo": "sku"}, inplace=True)
 
-    # ── 5. Merge DDM (bxp, un_bulto, can) ────────────────────────────────────
+    # ── 5. Merge DDM (bxp, un_bulto, can, hl_unit, kg_unit) ──────────────────
     if not df_ddm.empty:
-        grp = grp.merge(df_ddm[["sku", "bxp", "un_bulto", "can", "upkt"]], on="sku", how="left")
+        grp = grp.merge(
+            df_ddm[["sku", "bxp", "un_bulto", "can", "upkt", "hl_unit", "kg_unit"]],
+            on="sku", how="left",
+        )
     else:
-        grp["bxp"] = 0.0; grp["un_bulto"] = 0.0; grp["can"] = "SIN CANCHA"; grp["upkt"] = 0.0
+        grp["bxp"] = 0.0; grp["un_bulto"] = 0.0; grp["can"] = "SIN CANCHA"
+        grp["upkt"] = 0.0; grp["hl_unit"] = 0.0; grp["kg_unit"] = 0.0
 
     grp["bxp"]      = grp["bxp"].fillna(0.0)
     grp["un_bulto"] = grp["un_bulto"].fillna(0.0)
     grp["upkt"]     = grp["upkt"].fillna(0.0)
+    grp["hl_unit"]  = grp["hl_unit"].fillna(0.0)
+    grp["kg_unit"]  = grp["kg_unit"].fillna(0.0)
     grp["can"]      = grp["can"].fillna("SIN CANCHA")
 
     # ── 6. Conversión sueltas → bultos_eq, luego split AE/Picking FLOOR ──────
@@ -2586,19 +2623,20 @@ def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
         sueltas   = float(row["unids"])
         bxp_      = float(row["bxp"])
         un_bulto_ = float(row["un_bulto"])
+        hl_u_     = float(row["hl_unit"])
+        kg_u_     = float(row["kg_unit"])
 
         # 6a. Convertir sueltas a bultos equivalentes
         if un_bulto_ > 0:
             bultos_eq = bultos + (sueltas / un_bulto_)
         else:
-            # Sin un/bulto en DDM → sueltas se ignoran (no se puede convertir)
             bultos_eq = bultos
 
         # 6b. UP total y split FLOOR estricto
         if bxp_ > 0:
             up_total = bultos_eq / bxp_
-            pall_ae  = _math.floor(up_total)              # paletas enteras
-            up_pick  = max(0.0, up_total - pall_ae)       # fracción → picking
+            pall_ae  = _math.floor(up_total)
+            up_pick  = max(0.0, up_total - pall_ae)
             bult_ae  = float(pall_ae) * bxp_
             bult_ae  = min(bult_ae, bultos_eq)
             bult_pick = max(0.0, bultos_eq - bult_ae)
@@ -2608,12 +2646,22 @@ def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
             bult_pick = bultos_eq
             up_pick   = 0.0
 
+        # 6c. HL y KG por bulto (DDM col P y Q)
+        hl_pick = bult_pick * hl_u_
+        kg_pick = bult_pick * kg_u_
+        hl_ae_v = bult_ae   * hl_u_
+        kg_ae_v = bult_ae   * kg_u_
+
         return pd.Series({
             "bultos_eq": bultos_eq,
             "pall_ae":   float(pall_ae),
             "bult_ae":   bult_ae,
             "bult_pick": bult_pick,
             "up_pick":   up_pick,
+            "hl_pick":   hl_pick,
+            "kg_pick":   kg_pick,
+            "hl_ae":     hl_ae_v,
+            "kg_ae":     kg_ae_v,
         })
 
     split = grp.apply(_split_row, axis=1)
@@ -2626,10 +2674,14 @@ def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
     pick_grp = grp.groupby(["cam", "cancha_norm"], as_index=False).agg(
         bult_pick=("bult_pick", "sum"),
         up_pick  =("up_pick",   "sum"),
+        hl_pick  =("hl_pick",   "sum"),
+        kg_pick  =("kg_pick",   "sum"),
     )
     ae_grp = grp.groupby("cam", as_index=False).agg(
         bult_ae=("bult_ae", "sum"),
         up_ae  =("pall_ae", "sum"),
+        hl_ae  =("hl_ae",   "sum"),
+        kg_ae  =("kg_ae",   "sum"),
     )
 
     pivot_bult = pick_grp.pivot_table(
@@ -2646,20 +2698,48 @@ def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
     up_rename = {c: f"_up_{c}" for c in _T4_CANCHAS + ["SIN CANCHA"] if c in pivot_up.columns}
     pivot_up = pivot_up.rename(columns=up_rename)
 
+    pivot_hl = pick_grp.pivot_table(
+        index="cam", columns="cancha_norm",
+        values="hl_pick", aggfunc="sum", fill_value=0.0,
+    ).reset_index()
+    pivot_hl.columns.name = None
+    hl_rename = {c: f"_hl_{c}" for c in _T4_CANCHAS + ["SIN CANCHA"] if c in pivot_hl.columns}
+    pivot_hl = pivot_hl.rename(columns=hl_rename)
+
+    pivot_kg = pick_grp.pivot_table(
+        index="cam", columns="cancha_norm",
+        values="kg_pick", aggfunc="sum", fill_value=0.0,
+    ).reset_index()
+    pivot_kg.columns.name = None
+    kg_rename = {c: f"_kg_{c}" for c in _T4_CANCHAS + ["SIN CANCHA"] if c in pivot_kg.columns}
+    pivot_kg = pivot_kg.rename(columns=kg_rename)
+
     cam_df = pivot_bult.merge(ae_grp, on="cam", how="left")
     cam_df = cam_df.merge(pivot_up, on="cam", how="left")
+    cam_df = cam_df.merge(pivot_hl, on="cam", how="left")
+    cam_df = cam_df.merge(pivot_kg, on="cam", how="left")
 
     for c in _T4_CANCHAS:
         if c not in cam_df.columns:
             cam_df[c] = 0.0
         if f"_up_{c}" not in cam_df.columns:
             cam_df[f"_up_{c}"] = 0.0
-        cam_df[f"_hl_{c}"] = 0.0
+        if f"_hl_{c}" not in cam_df.columns:
+            cam_df[f"_hl_{c}"] = 0.0
+        if f"_kg_{c}" not in cam_df.columns:
+            cam_df[f"_kg_{c}"] = 0.0
+        # Fill NaN producto del merge
+        cam_df[c]          = cam_df[c].fillna(0.0)
+        cam_df[f"_up_{c}"] = cam_df[f"_up_{c}"].fillna(0.0)
+        cam_df[f"_hl_{c}"] = cam_df[f"_hl_{c}"].fillna(0.0)
+        cam_df[f"_kg_{c}"] = cam_df[f"_kg_{c}"].fillna(0.0)
 
     cam_df["bult_ae"] = cam_df["bult_ae"].fillna(0.0)
     cam_df["up_ae"]   = cam_df["up_ae"].fillna(0.0)
-    cam_df["hl_ae"]   = 0.0
-    cam_df["kg"]      = 0.0
+    cam_df["hl_ae"]   = cam_df["hl_ae"].fillna(0.0)
+    cam_df["kg_ae"]   = cam_df["kg_ae"].fillna(0.0)
+    # Compatibilidad legacy con código que esperaba "kg" simple
+    cam_df["kg"]      = cam_df["kg_ae"] + sum(cam_df[f"_kg_{c}"] for c in _T4_CANCHAS)
 
     cam_df["TOTAL_PICK"] = cam_df[[c for c in _T4_CANCHAS if c in cam_df.columns]].sum(axis=1)
     cam_df["TOTAL_AE"]   = cam_df["bult_ae"]
@@ -2743,36 +2823,62 @@ def _t4_hora_fin(bultos: float, vel: int, personas: int, inicio) -> object:
     return inicio_dt + _dt.timedelta(hours=bultos / (vel * personas))
 
 
-def _t4_calcular_bultos_por_cancha(df: pd.DataFrame, asign_state: dict) -> dict:
+def _t4_calcular_metricas_por_cancha(df: pd.DataFrame, asign_state: dict) -> dict:
     """
-    Calcula los BULTOS REALES de picking por cancha aplicando reasignaciones (ASIGN).
+    v4.35 — Calcula BULTOS, HL y KG reales de picking por cancha aplicando
+    reasignaciones (ASIGN). La reasignación mueve el bloque cancha-camión
+    completo (UP + bultos + HL + KG) a la cancha destino.
 
-    La reasignación mueve los bultos de la cancha origen a la cancha destino.
-    La proporción de bultos a mover se calcula como:
-        bult_reasign = bult_cancha_origen * (up_origen_asignado / up_origen_total)
-    Si up_origen_total == 0, se mueven todos los bultos de esa cancha.
-
-    Retorna: {cancha: bultos_totales_con_asign}
+    Retorna:
+        {
+            "bultos": {cancha: float},   # bultos reales picking post-asign
+            "hl":     {cancha: float},   # HL post-asign
+            "kg":     {cancha: float},   # KG post-asign
+        }
     """
-    sub_bult   = {c: 0.0 for c in _T4_CANCHAS}
-    delta_bult = {c: 0.0 for c in _T4_CANCHAS}
+    sub = {
+        "bultos": {c: 0.0 for c in _T4_CANCHAS},
+        "hl":     {c: 0.0 for c in _T4_CANCHAS},
+        "kg":     {c: 0.0 for c in _T4_CANCHAS},
+    }
+    delta = {
+        "bultos": {c: 0.0 for c in _T4_CANCHAS},
+        "hl":     {c: 0.0 for c in _T4_CANCHAS},
+        "kg":     {c: 0.0 for c in _T4_CANCHAS},
+    }
 
     for _, row in df.iterrows():
         cam = int(row["Camión"])
         for c in _T4_CANCHAS:
-            bult_val = float(row.get(c, 0.0))   # bultos de picking en esta cancha
-            up_val   = float(row.get(f"_up_{c}", 0.0))  # fracción pallet de esta cancha
-            sub_bult[c] += bult_val
+            b_val  = float(row.get(c,           0.0))
+            hl_val = float(row.get(f"_hl_{c}",  0.0))
+            kg_val = float(row.get(f"_kg_{c}",  0.0))
+
+            sub["bultos"][c] += b_val
+            sub["hl"][c]     += hl_val
+            sub["kg"][c]     += kg_val
 
             asign_val = asign_state.get((cam, c))
             if asign_val and isinstance(asign_val, str) and asign_val.strip():
                 dest = _t4_norm_cancha(asign_val)
                 if dest in _T4_CANCHAS and dest != c:
-                    # Mover todos los bultos de esta cancha al destino
-                    delta_bult[dest] += bult_val
-                    delta_bult[c]    -= bult_val
+                    delta["bultos"][dest] += b_val
+                    delta["bultos"][c]    -= b_val
+                    delta["hl"][dest]     += hl_val
+                    delta["hl"][c]        -= hl_val
+                    delta["kg"][dest]     += kg_val
+                    delta["kg"][c]        -= kg_val
 
-    return {c: max(0.0, sub_bult[c] + delta_bult[c]) for c in _T4_CANCHAS}
+    return {
+        "bultos": {c: max(0.0, sub["bultos"][c] + delta["bultos"][c]) for c in _T4_CANCHAS},
+        "hl":     {c: max(0.0, sub["hl"][c]     + delta["hl"][c])     for c in _T4_CANCHAS},
+        "kg":     {c: max(0.0, sub["kg"][c]     + delta["kg"][c])     for c in _T4_CANCHAS},
+    }
+
+
+def _t4_calcular_bultos_por_cancha(df: pd.DataFrame, asign_state: dict) -> dict:
+    """v4.35 — Wrapper de compatibilidad. Retorna {cancha: bultos_post_asign}."""
+    return _t4_calcular_metricas_por_cancha(df, asign_state)["bultos"]
 
 
 def _t4_generar_pdf_x4(
@@ -3306,12 +3412,35 @@ def render_tab_proyeccion():
     # Recalcular con ASIGN actualizado (para totales_pall_c abajo)
     totales_pall_c = totales_calc["total"]
 
-    # ── Totales bultos por cancha (base, sin asignaciones) ───────────────────
+    # ── Totales bultos/HL/KG por cancha (base sin asignaciones, vs CON asign) ─
     totales_bult_base = {cn: float(df_display[cn].sum()) if cn in df_display.columns else 0.0 for cn in _T4_CANCHAS}
-    # Totales bultos por cancha CON asignaciones aplicadas (para tiempo de fin)
-    totales_bult = _t4_calcular_bultos_por_cancha(df_display, st.session_state["t4_asign"])
-    totales_hl   = {cn: 0.0 for cn in _T4_CANCHAS}
-    totales_kg   = {cn: 0.0 for cn in _T4_CANCHAS}
+    # v4.35: una sola pasada calcula bultos+HL+KG post-asign
+    _met_post = _t4_calcular_metricas_por_cancha(df_display, st.session_state["t4_asign"])
+    totales_bult = _met_post["bultos"]
+    totales_hl   = _met_post["hl"]
+    totales_kg   = _met_post["kg"]
+
+    # ── Hora estimada de fin POR CANCHA (sobre bultos reales post-asign) ──────
+    fin_por_cancha = {}
+    for cn in _T4_CANCHAS:
+        bult   = totales_bult[cn]
+        fin_dt = _t4_hora_fin(bult, vel_custom[cn], pers_custom[cn], inicio_custom[cn])
+        fin_por_cancha[cn] = {"bultos": bult, "fin_dt": fin_dt, "inicio": inicio_custom[cn]}
+
+    # ── Fila resumen estilo Excel master: TOTAL BULTOS / HL / KG / HORA FIN ──
+    resumen_extra = pd.DataFrame({
+        "Concepto": ["TOTAL BULTOS", "TOTAL HL", "TOTAL KG", "HORA EST. FIN"],
+        **{cn.replace("CANCHA ", "C"): [
+            round(totales_bult[cn], 2),
+            round(totales_hl[cn],   2),
+            round(totales_kg[cn],   0),
+            fin_por_cancha[cn]["fin_dt"].strftime("%H:%M") if totales_bult[cn] > 0 else "—",
+        ] for cn in _T4_CANCHAS}
+    })
+    st.dataframe(
+        resumen_extra,
+        use_container_width=True, hide_index=True,
+    )
 
     with st.expander("📊 Totales por cancha", expanded=True):
         cols_met = st.columns(len(_T4_CANCHAS) + 1)
@@ -3328,12 +3457,7 @@ def render_tab_proyeccion():
             cols_met2[i].metric(f"PALL {short}", f"{totales_calc['total'].get(cn, 0):.2f}")
         cols_met2[-1].metric("TOT AE bult", f"{pdata['tot_ae']:.0f}")
 
-    # ── Hora estimada de fin por cancha (sobre bultos con asignaciones) ───────
-    fin_por_cancha = {}
-    for cn in _T4_CANCHAS:
-        bult  = totales_bult[cn]   # ya incluye reasignaciones
-        fin_dt = _t4_hora_fin(bult, vel_custom[cn], pers_custom[cn], inicio_custom[cn])
-        fin_por_cancha[cn] = {"bultos": bult, "fin_dt": fin_dt, "inicio": inicio_custom[cn]}
+    # ── fin_global_dt (ya calculado fin_por_cancha arriba en v4.35) ───────────
     fin_global_dt = max(v["fin_dt"] for v in fin_por_cancha.values())
     fin_calc_dict = {"por_cancha": fin_por_cancha, "fin_global_dt": fin_global_dt}
 
