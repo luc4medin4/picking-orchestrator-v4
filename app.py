@@ -1,6 +1,18 @@
 """
-Picking Orchestrator v4.40.0 — Beccacece Hnos SA
+Picking Orchestrator v4.41.0 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
+
+CAMBIOS v4.41.0:
+  - 🎨 PDF Proyección — Reasignaciones más visibles: celda de la cancha origen
+    muestra fondo NARANJA con flecha "→CDEST" en grande (10pt, bold); celda de
+    la cancha destino muestra fondo VERDE AGUA con "+CORIG" en grande.
+    Se eliminan los estilos pequeños previos (6pt azul).
+  - 📋 PDF Controlador integrado: el resumen del Controlador se agrega como
+    ÚLTIMA PÁGINA del PDF ×5 (ya no se genera por separado). El botón
+    "📄 PDF Controlador" sigue disponible para descarga individual.
+  - 📐 PDF Controlador — primera columna ampliada para evitar superposición
+    de texto. Se eliminó el ícono emoji del encabezado de sección (incompatible
+    con ReportLab). Proporciones de columnas ajustadas (col1=55%, col2=41%).
 
 CAMBIOS v4.40.0:
   - 🔢 Formateo decimales tabla SUB Total PALL / DESIGNADOS / TOTAL PALL x CANCHA:
@@ -295,7 +307,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.40.0"
+APP_VERSION = "4.41.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -2960,14 +2972,223 @@ def _t4_calcular_bultos_por_cancha(df: pd.DataFrame, asign_state: dict) -> dict:
     return _t4_calcular_metricas_por_cancha(df, asign_state)["bultos"]
 
 
+# ── HELPER: dibuja la página Resumen Controlador en un canvas existente ───────
+
+def _draw_controlador_page(
+    c, PW, PH, M, fin_global_dt,
+    ctrl_params, mix_picking, fecha,
+    DARK_BLUE, MED_BLUE, LIGHT, ALT, GREEN_OK, RED_WARN, WHITE, YELLOW_HL,
+    FONT_B, FONT_N,
+):
+    """
+    v4.41 — Dibuja la página Resumen Controlador sobre el canvas `c`.
+    Llamado desde _t4_generar_pdf_x4 (última página del PDF ×5).
+    También es usado por _t4_generar_pdf_controlador para el PDF standalone.
+    """
+    import datetime as _dt
+
+    fin_por_cancha  = ctrl_params.get("fin_por_cancha", {})
+    totales_bult    = ctrl_params.get("totales_bult", {})
+    totales_pall_c  = ctrl_params.get("totales_pall_c", {})
+    totales_hl      = ctrl_params.get("totales_hl", {})
+    totales_kg      = ctrl_params.get("totales_kg", {})
+    n_camiones      = ctrl_params.get("n_camiones", 0)
+    tot_pick        = ctrl_params.get("tot_pick", 0)
+    top_skus_lines  = ctrl_params.get("top_skus_lines", "")
+    alertas         = ctrl_params.get("alertas", [])
+
+    fecha_s = fecha.strftime("%d/%m/%Y") if hasattr(fecha, "strftime") else str(fecha)
+    fin_g_s = fin_global_dt.strftime("%H:%M") if fin_global_dt else "—"
+
+    usable = PW - 2 * M
+    y = PH - M
+
+    # ── HEADER ────────────────────────────────────────────────────────────────
+    hdr_h = 40
+    c.setFillColor(DARK_BLUE)
+    c.rect(M, y - hdr_h, usable, hdr_h, fill=1, stroke=0)
+    c.setFillColor(WHITE)
+    c.setFont(FONT_B, 16)
+    c.drawString(M + 10, y - 22, f"RESUMEN CONTROLADOR — PICKING  {fecha_s}")
+    c.setFont(FONT_N, 10)
+    c.drawString(M + 10, y - 36, f"Beccacece Hnos SA  ·  Fin estimado global: {fin_g_s}  ·  Mix picking: {mix_picking*100:.1f}%")
+    y -= hdr_h + 8
+
+    # ── TABLA HORARIOS POR CANCHA ─────────────────────────────────────────────
+    c.setFont(FONT_B, 11)
+    c.setFillColor(DARK_BLUE)
+    # v4.41: sin emoji (incompatible con ReportLab)
+    c.drawString(M, y - 2, "Horarios de finalizacion por cancha")
+    y -= 16
+
+    cn_labels = [cn.replace("CANCHA ", "C") for cn in _T4_CANCHAS]
+    # v4.41: primera columna del bloque horarios más ancha para evitar superposición
+    # La tabla de horarios no tiene col-label izquierdo — usamos todo el ancho
+    col_w_cn  = usable / len(_T4_CANCHAS)
+
+    # Header cancha
+    c.setFillColor(MED_BLUE)
+    c.rect(M, y - 18, usable, 18, fill=1, stroke=0)
+    c.setFillColor(WHITE)
+    c.setFont(FONT_B, 10)
+    for i, lbl in enumerate(cn_labels):
+        c.drawCentredString(M + col_w_cn * i + col_w_cn / 2, y - 13, lbl)
+    y -= 18
+
+    # Fila INICIO — v4.41: columna etiqueta ampliada, no choca con valores
+    lbl_w = 55   # ancho de la celda etiqueta en la tabla de filas
+    data_w = (usable - lbl_w) / len(_T4_CANCHAS)   # ancho por columna de datos
+
+    def _draw_fila_cancha(y_pos, row_h, label, font_label, font_val, fsize_val,
+                          bg_color, get_val_fn, hl_focus=False):
+        c.setFillColor(bg_color)
+        c.rect(M, y_pos - row_h, usable, row_h, fill=1, stroke=0)
+        c.setFillColor(DARK_BLUE)
+        c.setFont(font_label, 8)
+        c.drawString(M + 3, y_pos - row_h + (row_h - 8) // 2 + 2, label)
+        for i2, cn in enumerate(_T4_CANCHAS):
+            val = get_val_fn(cn)
+            is_f = hl_focus  # para HORA FIN resaltar toda la fila
+            x_val = M + lbl_w + data_w * i2
+            if is_f:
+                c.setFillColor(YELLOW_HL)
+                c.rect(x_val, y_pos - row_h, data_w, row_h, fill=1, stroke=0)
+                c.setFillColor(DARK_BLUE)
+            c.setFont(font_val, fsize_val)
+            c.drawCentredString(x_val + data_w / 2, y_pos - row_h + (row_h - fsize_val) // 2 + 1, val)
+        return y_pos - row_h
+
+    y = _draw_fila_cancha(
+        y, 16, "INICIO", FONT_B, FONT_N, 9, LIGHT,
+        lambda cn: fin_por_cancha[cn]["inicio"].strftime("%H:%M") if fin_por_cancha[cn]["bultos"] > 0 else "—",
+    )
+
+    # Fila HORA FIN — resaltada
+    y = _draw_fila_cancha(
+        y, 18, "HORA FIN EST.", FONT_B, FONT_B, 11, YELLOW_HL,
+        lambda cn: fin_por_cancha[cn]["fin_dt"].strftime("%H:%M") if fin_por_cancha[cn]["bultos"] > 0 else "—",
+        hl_focus=True,
+    )
+
+    y = _draw_fila_cancha(
+        y, 14, "BULTOS", FONT_B, FONT_N, 9, ALT,
+        lambda cn: f"{totales_bult.get(cn, 0.0):.0f}" if totales_bult.get(cn, 0.0) > 0 else "—",
+    )
+
+    y = _draw_fila_cancha(
+        y, 14, "PALLETS UP", FONT_B, FONT_N, 9, LIGHT,
+        lambda cn: f"{totales_pall_c.get(cn, 0.0):.2f}" if totales_pall_c.get(cn, 0.0) > 0 else "—",
+    )
+
+    # Borde exterior tabla canchas
+    tabla_cn_h = 18 + 16 + 18 + 14 + 14
+    c.setStrokeColor(DARK_BLUE)
+    c.setLineWidth(0.8)
+    c.rect(M, y, usable, tabla_cn_h, fill=0, stroke=1)
+    y -= 12
+
+    # ── TOTALES OPERATIVOS + ALERTAS (dos columnas) ────────────────────────────
+    # v4.41: primera columna más ancha (55%) para evitar superposición de texto
+    col_left_w  = usable * 0.55
+    col_right_w = usable * 0.41
+    col_gap     = usable * 0.04
+
+    y_sec = y
+
+    # columna izquierda: totales
+    c.setFont(FONT_B, 11)
+    c.setFillColor(DARK_BLUE)
+    c.drawString(M, y_sec - 2, "Totales operativos")
+    y_sec -= 14
+
+    tot_rows = [
+        ("Camiones con picking",  f"{n_camiones}"),
+        ("Bultos totales picking", f"{tot_pick:.0f}"),
+        ("Bultos MKPL",           f"{totales_bult.get('MKPL', 0.0):.0f}"),
+        ("HL total picking",      f"{sum(totales_hl.values()):.1f}"),
+        ("KG total picking",      f"{sum(totales_kg.values()):.0f}"),
+        ("Mix picking",           f"{mix_picking*100:.1f}%"),
+    ]
+    for ti, (label, valor) in enumerate(tot_rows):
+        bg_r = ALT if ti % 2 == 0 else LIGHT
+        c.setFillColor(bg_r)
+        c.rect(M, y_sec - 13, col_left_w, 13, fill=1, stroke=0)
+        c.setFillColor(DARK_BLUE)
+        c.setFont(FONT_N, 9)
+        c.drawString(M + 4, y_sec - 9, label)
+        c.setFont(FONT_B, 9)
+        c.drawRightString(M + col_left_w - 4, y_sec - 9, valor)
+        y_sec -= 13
+
+    # columna derecha: alertas y top SKUs
+    y_r = y
+    c.setFont(FONT_B, 11)
+    c.setFillColor(DARK_BLUE)
+    c.drawString(M + col_left_w + col_gap, y_r - 2, "Alertas de cancha")
+    y_r -= 14
+
+    if alertas:
+        for alerta in alertas:
+            c.setFillColor(colors.HexColor("#FFEBEE"))
+            c.rect(M + col_left_w + col_gap, y_r - 13, col_right_w, 13, fill=1, stroke=0)
+            c.setFillColor(RED_WARN)
+            c.setFont(FONT_N, 9)
+            alerta_clean = alerta.replace("🔴 ", "").replace("⚠️ ", "")
+            c.drawString(M + col_left_w + col_gap + 4, y_r - 9, alerta_clean)
+            y_r -= 13
+    else:
+        c.setFillColor(colors.HexColor("#E8F5E9"))
+        c.rect(M + col_left_w + col_gap, y_r - 13, col_right_w, 13, fill=1, stroke=0)
+        c.setFillColor(GREEN_OK)
+        c.setFont(FONT_N, 9)
+        c.drawString(M + col_left_w + col_gap + 4, y_r - 9, "Sin alertas — todas las canchas en tiempo")
+        y_r -= 13
+
+    y_r -= 8
+    c.setFont(FONT_B, 11)
+    c.setFillColor(DARK_BLUE)
+    c.drawString(M + col_left_w + col_gap, y_r - 2, "Top 3 SKUs del dia")
+    y_r -= 14
+
+    if top_skus_lines:
+        lines = [l.strip().lstrip("•").strip() for l in top_skus_lines.split("\n") if l.strip()]
+        for ti2, line in enumerate(lines[:3]):
+            bg_r2 = ALT if ti2 % 2 == 0 else LIGHT
+            line_clean = line.replace("**", "")
+            c.setFillColor(bg_r2)
+            c.rect(M + col_left_w + col_gap, y_r - 14, col_right_w, 14, fill=1, stroke=0)
+            c.setFillColor(DARK_BLUE)
+            c.setFont(FONT_N, 8)
+            c.drawString(M + col_left_w + col_gap + 4, y_r - 10, line_clean[:60])
+            y_r -= 14
+    else:
+        c.setFont(FONT_N, 9)
+        c.setFillColor(DARK_BLUE)
+        c.drawString(M + col_left_w + col_gap + 4, y_r - 9, "(no disponible)")
+
+    # ── FOOTER ────────────────────────────────────────────────────────────────
+    c.setFillColor(DARK_BLUE)
+    c.rect(M, M, usable, 12, fill=1, stroke=0)
+    c.setFillColor(WHITE)
+    c.setFont(FONT_N, 7)
+    from datetime import datetime as _dtm
+    c.drawString(M + 4, M + 3, f"Picking Orchestrator v{APP_VERSION}  ·  {_dtm.now().strftime('%d/%m/%Y %H:%M')}")
+    c.drawRightString(M + usable - 4, M + 3, "Beccacece Hnos SA — DPO 2.1 Pilar Almacen")
+
+    c.showPage()
+
+
 def _t4_generar_pdf_x4(
     df, totales_bult, totales_pall, totales_hl, totales_kg,
     productividad, personas, inicio, fecha, mix_picking, fin_calc,
     asign_detail=None,
+    # v4.41: parámetros opcionales para incluir hoja Controlador
+    ctrl_params=None,
 ):
     """
     Genera PDF A4 LANDSCAPE con una página por cancha (CI/CII/CIII/CIV/MKPL).
-    v4.37: modo horizontal — mejor uso del espacio, columnas balanceadas, STS proporcional.
+    v4.41: modo horizontal — mejor uso del espacio, columnas balanceadas, STS proporcional.
+    Si se provee ctrl_params, agrega una página extra con el Resumen del Controlador.
     Muestra:
       - Bultos UP (fracción de paleta) a pickear por cancha y camión
       - Paletas puras (AE) en rojo
@@ -2999,7 +3220,12 @@ def _t4_generar_pdf_x4(
     GREEN_PICK   = colors.HexColor("#66BB6A")   # verde = bultos a pickear
     RED_AE       = colors.HexColor("#EF9A9A")   # rojo  = paletas puras AE
     YELLOW_FOCUS = colors.HexColor("#FFE57F")   # v4.37: amarillo más vibrante para cancha foco
-    ASIGN_BG     = colors.HexColor("#E3F2FD")   # azul claro = carga recibida
+    ASIGN_BG     = colors.HexColor("#E3F2FD")   # azul claro = carga recibida (leyenda)
+    # v4.41: colores diferenciados para reasignaciones
+    ASIGN_RECIBE = colors.HexColor("#B2DFDB")   # verde agua = esta cancha RECIBE carga
+    ASIGN_ENVIA  = colors.HexColor("#FFE0B2")   # naranja claro = esta cancha ENVÍA carga
+    ASIGN_RECIBE_TEXT = colors.HexColor("#00695C")   # verde oscuro para texto "+CX"
+    ASIGN_ENVIA_TEXT  = colors.HexColor("#BF360C")   # naranja oscuro para texto "→CX"
 
     FONT_B = "Helvetica-Bold"
     FONT_N = "Helvetica"
@@ -3145,9 +3371,15 @@ def _t4_generar_pdf_x4(
 
                 # Color de celda
                 if is_focus:
-                    cell_bg = YELLOW_FOCUS
-                    if rd["recibe_de"]:
-                        cell_bg = ASIGN_BG
+                    # v4.41: color diferenciado según si la cancha ENVÍA o RECIBE
+                    if rd["envia_a"] and rd["recibe_de"]:
+                        cell_bg = ASIGN_RECIBE  # mixto: priorizar recibe (verde agua)
+                    elif rd["envia_a"]:
+                        cell_bg = ASIGN_ENVIA   # naranja claro
+                    elif rd["recibe_de"]:
+                        cell_bg = ASIGN_RECIBE  # verde agua
+                    else:
+                        cell_bg = YELLOW_FOCUS
                     c_pdf.setFillColor(cell_bg)
                     c_pdf.rect(x, y - rh, cw[i], rh, fill=1, stroke=0)
                 if is_ae and rd["ae"] > 0:
@@ -3161,20 +3393,35 @@ def _t4_generar_pdf_x4(
                 fs = 9 if i == 0 else 8
                 c_pdf.setFont(FONT_B if i == 0 else FONT_N, fs)
 
-                # v4.39: nota de asignación inline en la celda foco (1ra línea + nota pequeña)
+                # v4.41: nota de asignación inline en la celda foco — más visible
                 if is_focus and (rd["recibe_de"] or rd["envia_a"]):
+                    # Líneas separadas para RECIBE (+CX) y ENVÍA (→CX), fuente grande bold
                     nota_parts = []
                     if rd["recibe_de"]:
-                        nota_parts.append(f"+{','.join(rd['recibe_de'])}")
+                        nota_parts.append((f"+{','.join(rd['recibe_de'])}", ASIGN_RECIBE_TEXT))
                     if rd["envia_a"]:
-                        nota_parts.append(f"→{','.join(rd['envia_a'])}")
-                    nota_inline = " ".join(nota_parts)
-                    # Valor principal arriba, nota inline abajo
-                    c_pdf.drawCentredString(x + cw[i] / 2, y - rh + 8, v)
-                    c_pdf.setFont(FONT_B, 6)
-                    c_pdf.setFillColor(colors.HexColor("#1565C0"))
-                    c_pdf.drawCentredString(x + cw[i] / 2, y - rh + 2, nota_inline)
-                    c_pdf.setFillColor(colors.black)
+                        nota_parts.append((f"\u2192{','.join(rd['envia_a'])}", ASIGN_ENVIA_TEXT))
+
+                    if len(nota_parts) == 1:
+                        # Solo un tipo: valor arriba, nota abajo
+                        c_pdf.setFillColor(colors.black)
+                        c_pdf.setFont(FONT_B, 8)
+                        c_pdf.drawCentredString(x + cw[i] / 2, y - rh + 9, v)
+                        c_pdf.setFont(FONT_B, 8)
+                        c_pdf.setFillColor(nota_parts[0][1])
+                        c_pdf.drawCentredString(x + cw[i] / 2, y - rh + 2, nota_parts[0][0])
+                        c_pdf.setFillColor(colors.black)
+                    else:
+                        # Dos tipos: valor pequeño + dos notas
+                        c_pdf.setFillColor(colors.black)
+                        c_pdf.setFont(FONT_N, 7)
+                        c_pdf.drawCentredString(x + cw[i] / 2, y - rh + 12, v)
+                        c_pdf.setFont(FONT_B, 7)
+                        c_pdf.setFillColor(nota_parts[0][1])
+                        c_pdf.drawCentredString(x + cw[i] / 2, y - rh + 6, nota_parts[0][0])
+                        c_pdf.setFillColor(nota_parts[1][1])
+                        c_pdf.drawCentredString(x + cw[i] / 2, y - rh + 1, nota_parts[1][0])
+                        c_pdf.setFillColor(colors.black)
                 else:
                     c_pdf.drawCentredString(x + cw[i] / 2, y - rh + 5, v)
                 x += cw[i]
@@ -3243,10 +3490,18 @@ def _t4_generar_pdf_x4(
         c_pdf.setFillColor(colors.black)
         c_pdf.drawString(M + 132, y - ley_h + 2, "= Paletas puras (AE)")
 
-        c_pdf.setFillColor(ASIGN_BG)
+        # v4.41: leyenda diferenciada para reasignaciones
+        c_pdf.setFillColor(ASIGN_RECIBE)
         c_pdf.rect(M + 215, y - ley_h, 8, ley_h, fill=1, stroke=0)
+        c_pdf.setFillColor(ASIGN_RECIBE_TEXT)
+        c_pdf.setFont(FONT_B, 7)
+        c_pdf.drawString(M + 227, y - ley_h + 2, "+CX = Recibe carga de CX")
+        c_pdf.setFillColor(ASIGN_ENVIA)
+        c_pdf.rect(M + 370, y - ley_h, 8, ley_h, fill=1, stroke=0)
+        c_pdf.setFillColor(ASIGN_ENVIA_TEXT)
+        c_pdf.drawString(M + 382, y - ley_h + 2, "\u2192CX = Envia carga a CX")
         c_pdf.setFillColor(colors.black)
-        c_pdf.drawString(M + 227, y - ley_h + 2, "= Carga asignada recibida")
+        c_pdf.setFont(FONT_N, 7)
         y -= ley_h + 3
 
         # ── Pie: personas y hora fin ───────────────────────────────────────
@@ -3274,6 +3529,23 @@ def _t4_generar_pdf_x4(
 
     for cancha in _T4_CANCHAS_PDF:
         _draw_page(cancha)
+
+    # v4.41: agregar página Resumen Controlador si se proveen parámetros
+    if ctrl_params:
+        _draw_controlador_page(
+            c_pdf, pw, ph, M, fin_global,
+            ctrl_params, mix_picking, fecha,
+            DARK_BLUE=HDR_BG_PDF,
+            MED_BLUE=SUB_BG_PDF,
+            LIGHT=colors.HexColor("#F0F4FA"),
+            ALT=colors.HexColor("#E8EEF8"),
+            GREEN_OK=colors.HexColor("#1a7a4a"),
+            RED_WARN=colors.HexColor("#b91c1c"),
+            WHITE=WHITE,
+            YELLOW_HL=colors.HexColor("#FFF176"),
+            FONT_B=FONT_B,
+            FONT_N=FONT_N,
+        )
 
     c_pdf.save()
     buf.seek(0)
@@ -3791,6 +4063,48 @@ def render_tab_proyeccion():
     # ── Generar PDF ×5 + Excel ────────────────────────────────────────────────
     st.divider()
     st.subheader("📄 Generar PDF ×5 (una copia por cancha, incluye MKPL)")
+
+    # v4.41: calcular ctrl_params ANTES de los columns, para pasarlo al PDF ×5
+    import datetime as _dt_res
+    _top_skus_lines = ""
+    try:
+        _car_b = st.session_state.get("t1_car") or st.session_state.get("t4_car")
+        _fr_b  = st.session_state.get("t1_fr")
+        if _car_b and _fr_b:
+            _df_top = _build_top10_skus(_car_b.getvalue(), _fr_b.getvalue())
+            if not _df_top.empty:
+                _top3 = _df_top.nlargest(3, "BULTOS")
+                _lines = []
+                for _, _sk in _top3.iterrows():
+                    _cod  = int(_sk["CODIGO"]) if not pd.isna(_sk["CODIGO"]) else "—"
+                    _desc = str(_sk.get("DESCRIPCION", "")).strip()[:30] or "—"
+                    _blt  = int(_sk["BULTOS"])
+                    _lines.append(f"  • **{_cod}** {_desc} — {_blt} bult")
+                _top_skus_lines = "\n".join(_lines)
+    except Exception:
+        _top_skus_lines = "  *(no disponible)*"
+
+    _alertas = []
+    for _cn in _T4_CANCHAS:
+        _fp = fin_por_cancha[_cn]
+        if _fp["bultos"] > 0:
+            _delta = (fin_global_dt - _fp["fin_dt"]).total_seconds() / 60.0
+            if _delta < -15:
+                _short_cn = _cn.replace("CANCHA ", "C")
+                _alertas.append(f"🔴 {_short_cn} atrasada {abs(_delta):.0f}' vs global")
+
+    _ctrl_params_for_pdf = {
+        "fin_por_cancha":  fin_por_cancha,
+        "totales_bult":    totales_bult,
+        "totales_pall_c":  totales_pall_c,
+        "totales_hl":      totales_hl,
+        "totales_kg":      totales_kg,
+        "n_camiones":      len(df_display[df_display["TOTAL_PICK"] > 0]),
+        "tot_pick":        pdata["tot_pick"],
+        "top_skus_lines":  _top_skus_lines,
+        "alertas":         _alertas,
+    }
+
     cp1, cp2 = st.columns([1, 2])
     with cp1:
         if st.button("📄 Generar PDF ×5", type="primary",
@@ -3810,16 +4124,17 @@ def render_tab_proyeccion():
                         mix_picking=pdata["mix_picking"],
                         fin_calc=fin_calc_dict,
                         asign_detail=totales_calc.get("asign_detail", {}),
+                        ctrl_params=_ctrl_params_for_pdf,  # v4.41: incluye hoja Controlador
                     )
                     fname = f"proyeccion_picking_{pdata['fecha']}.pdf"
                     st.download_button(
-                        "⬇ Descargar PDF (5 páginas — LANDSCAPE)",
+                        "⬇ Descargar PDF (6 páginas — LANDSCAPE)",
                         data=pdf_bytes, file_name=fname,
                         mime="application/pdf", use_container_width=True,
                         key="t4_pdf_dl",
                     )
                     st.success(f"✓ PDF generado: {fname}")
-                    log_event("info", f"PDF Proyección v4.37 generado: {fname}")
+                    log_event("info", f"PDF Proyección v4.41 generado: {fname}")
                 except Exception as e:
                     st.error(f"❌ Error generando PDF: {e}")
                     with st.expander("Stack trace"):
@@ -3894,38 +4209,7 @@ def render_tab_proyeccion():
 
     with cp2:
         # ── v4.37: Resumen para el Controlador ───────────────────────────────
-        import datetime as _dt_res
-
-        # Top 3 SKUs por bultos de picking del día (desde pdata si disponible)
-        _top_skus_lines = ""
-        try:
-            # pdata["df_sku"] puede no existir; usamos df_display col TOTAL_PICK agrupado por SKU si disponible
-            # Intentar desde la fuente raw del CAR si está en session_state
-            _car_b = st.session_state.get("t1_car") or st.session_state.get("t4_car")
-            _fr_b  = st.session_state.get("t1_fr")
-            if _car_b and _fr_b:
-                _df_top = _build_top10_skus(_car_b.getvalue(), _fr_b.getvalue())
-                if not _df_top.empty:
-                    _top3 = _df_top.nlargest(3, "BULTOS")
-                    _lines = []
-                    for _, _sk in _top3.iterrows():
-                        _cod  = int(_sk["CODIGO"]) if not pd.isna(_sk["CODIGO"]) else "—"
-                        _desc = str(_sk.get("DESCRIPCION", "")).strip()[:30] or "—"
-                        _blt  = int(_sk["BULTOS"])
-                        _lines.append(f"  • **{_cod}** {_desc} — {_blt} bult")
-                    _top_skus_lines = "\n".join(_lines)
-        except Exception:
-            _top_skus_lines = "  *(no disponible)*"
-
-        # Detectar canchas con atraso (>15 min tarde)
-        _alertas = []
-        for _cn in _T4_CANCHAS:
-            _fp = fin_por_cancha[_cn]
-            if _fp["bultos"] > 0:
-                _delta = (fin_global_dt - _fp["fin_dt"]).total_seconds() / 60.0
-                if _delta < -15:
-                    _short_cn = _cn.replace("CANCHA ", "C")
-                    _alertas.append(f"🔴 {_short_cn} atrasada {abs(_delta):.0f}' vs global")
+        # v4.41: _top_skus_lines y _alertas ya computados antes del bloque columns
 
         # Construir horarios por cancha
         _horas_lines = []
@@ -4006,12 +4290,10 @@ def _t4_generar_pdf_controlador(
     top_skus_lines="", alertas=None,
 ) -> bytes:
     """
-    v4.39 — Genera PDF landscape A4 con el Resumen para el Controlador de Depósito.
+    v4.41 — Genera PDF landscape A4 con el Resumen para el Controlador de Depósito.
     Una sola página, lista para imprimir junto a las 5 copias de canchas.
-    Incluye: horarios de finalización por cancha, totales operativos, top SKUs,
-    alertas de canchas atrasadas.
+    Reutiliza _draw_controlador_page (el mismo helper que usa el PDF ×5).
     """
-    import datetime as _dt
     if alertas is None:
         alertas = []
 
@@ -4021,200 +4303,32 @@ def _t4_generar_pdf_controlador(
     PW, PH = LS        # ~841 × 595 pt
     M     = 14 * mm
 
-    DARK_BLUE = colors.HexColor("#1a3a6b")
-    MED_BLUE  = colors.HexColor("#2e5fa3")
-    GOLD      = colors.HexColor("#FF8C00")
-    LIGHT     = colors.HexColor("#F0F4FA")
-    ALT       = colors.HexColor("#E8EEF8")
-    GREEN_OK  = colors.HexColor("#1a7a4a")
-    RED_WARN  = colors.HexColor("#b91c1c")
-    WHITE     = colors.white
-    YELLOW_HL = colors.HexColor("#FFF176")
-    FB = "Helvetica-Bold"
-    FN = "Helvetica"
+    ctrl_params = {
+        "fin_por_cancha":  fin_por_cancha,
+        "totales_bult":    totales_bult,
+        "totales_pall_c":  totales_pall_c,
+        "totales_hl":      totales_hl,
+        "totales_kg":      totales_kg,
+        "n_camiones":      n_camiones,
+        "tot_pick":        tot_pick,
+        "top_skus_lines":  top_skus_lines,
+        "alertas":         alertas,
+    }
 
-    fecha_s = fecha.strftime("%d/%m/%Y") if hasattr(fecha, "strftime") else str(fecha)
-    fin_g_s = fin_global_dt.strftime("%H:%M") if fin_global_dt else "—"
-
-    usable = PW - 2 * M
-    y = PH - M
-
-    # ── HEADER ────────────────────────────────────────────────────────────────
-    hdr_h = 40
-    c.setFillColor(DARK_BLUE)
-    c.rect(M, y - hdr_h, usable, hdr_h, fill=1, stroke=0)
-    c.setFillColor(WHITE)
-    c.setFont(FB, 16)
-    c.drawString(M + 10, y - 22, f"RESUMEN CONTROLADOR — PICKING  {fecha_s}")
-    c.setFont(FN, 10)
-    c.drawString(M + 10, y - 36, f"Beccacece Hnos SA  ·  Fin estimado global: {fin_g_s}  ·  Mix picking: {mix_picking*100:.1f}%")
-    y -= hdr_h + 8
-
-    # ── TABLA HORARIOS POR CANCHA ─────────────────────────────────────────────
-    c.setFont(FB, 11)
-    c.setFillColor(DARK_BLUE)
-    c.drawString(M, y - 2, "🏁 Horarios de finalización por cancha")
-    y -= 16
-
-    cn_labels = [cn.replace("CANCHA ", "C") for cn in _T4_CANCHAS]
-    col_w_cn  = usable / len(_T4_CANCHAS)
-
-    # Header cancha
-    c.setFillColor(MED_BLUE)
-    c.rect(M, y - 18, usable, 18, fill=1, stroke=0)
-    c.setFillColor(WHITE)
-    c.setFont(FB, 10)
-    for i, lbl in enumerate(cn_labels):
-        c.drawCentredString(M + col_w_cn * i + col_w_cn / 2, y - 13, lbl)
-    y -= 18
-
-    # Fila INICIO
-    c.setFillColor(LIGHT)
-    c.rect(M, y - 16, usable, 16, fill=1, stroke=0)
-    c.setFillColor(DARK_BLUE)
-    c.setFont(FB, 8)
-    c.drawString(M + 3, y - 11, "INICIO")
-    c.setFont(FN, 9)
-    for i, cn in enumerate(_T4_CANCHAS):
-        ini_s = fin_por_cancha[cn]["inicio"].strftime("%H:%M") if fin_por_cancha[cn]["bultos"] > 0 else "—"
-        c.drawCentredString(M + col_w_cn * i + col_w_cn / 2, y - 11, ini_s)
-    y -= 16
-
-    # Fila HORA FIN (resaltada con fondo amarillo claro)
-    c.setFillColor(YELLOW_HL)
-    c.rect(M, y - 18, usable, 18, fill=1, stroke=0)
-    c.setFillColor(DARK_BLUE)
-    c.setFont(FB, 9)
-    c.drawString(M + 3, y - 13, "HORA FIN EST.")
-    for i, cn in enumerate(_T4_CANCHAS):
-        fp = fin_por_cancha[cn]
-        fin_s = fp["fin_dt"].strftime("%H:%M") if fp["bultos"] > 0 else "—"
-        c.setFont(FB, 11)
-        c.drawCentredString(M + col_w_cn * i + col_w_cn / 2, y - 13, fin_s)
-    y -= 18
-
-    # Fila BULTOS
-    c.setFillColor(ALT)
-    c.rect(M, y - 14, usable, 14, fill=1, stroke=0)
-    c.setFillColor(DARK_BLUE)
-    c.setFont(FB, 8)
-    c.drawString(M + 3, y - 10, "BULTOS")
-    c.setFont(FN, 9)
-    for i, cn in enumerate(_T4_CANCHAS):
-        blt = totales_bult.get(cn, 0.0)
-        c.drawCentredString(M + col_w_cn * i + col_w_cn / 2, y - 10,
-                             f"{blt:.0f}" if blt > 0 else "—")
-    y -= 14
-
-    # Fila PALLETS
-    c.setFillColor(LIGHT)
-    c.rect(M, y - 14, usable, 14, fill=1, stroke=0)
-    c.setFillColor(DARK_BLUE)
-    c.setFont(FB, 8)
-    c.drawString(M + 3, y - 10, "PALLETS UP")
-    c.setFont(FN, 9)
-    for i, cn in enumerate(_T4_CANCHAS):
-        pall = totales_pall_c.get(cn, 0.0)
-        c.drawCentredString(M + col_w_cn * i + col_w_cn / 2, y - 10,
-                             f"{pall:.2f}" if pall > 0 else "—")
-    y -= 14
-
-    # Borde exterior tabla canchas
-    c.setStrokeColor(DARK_BLUE)
-    c.setLineWidth(0.8)
-    tabla_cn_h = 18 + 16 + 18 + 14 + 14
-    c.rect(M, y, usable, tabla_cn_h, fill=0, stroke=1)
-    y -= 12
-
-    # ── TOTALES OPERATIVOS + ALERTAS (dos columnas) ────────────────────────────
-    col_left_w  = usable * 0.52
-    col_right_w = usable * 0.44
-    col_gap     = usable * 0.04
-
-    y_sec = y
-
-    # columna izquierda: totales
-    c.setFont(FB, 11)
-    c.setFillColor(DARK_BLUE)
-    c.drawString(M, y_sec - 2, "📦 Totales operativos")
-    y_sec -= 14
-
-    tot_rows = [
-        ("Camiones con picking",  f"{n_camiones}"),
-        ("Bultos totales picking", f"{tot_pick:.0f}"),
-        ("Bultos MKPL",           f"{totales_bult.get('MKPL', 0.0):.0f}"),
-        ("HL total picking",      f"{sum(totales_hl.values()):.1f}"),
-        ("KG total picking",      f"{sum(totales_kg.values()):.0f}"),
-        ("Mix picking",           f"{mix_picking*100:.1f}%"),
-    ]
-    for ti, (label, valor) in enumerate(tot_rows):
-        bg_r = ALT if ti % 2 == 0 else LIGHT
-        c.setFillColor(bg_r)
-        c.rect(M, y_sec - 13, col_left_w, 13, fill=1, stroke=0)
-        c.setFillColor(DARK_BLUE)
-        c.setFont(FN, 9)
-        c.drawString(M + 4, y_sec - 9, label)
-        c.setFont(FB, 9)
-        c.drawRightString(M + col_left_w - 4, y_sec - 9, valor)
-        y_sec -= 13
-
-    # columna derecha: alertas y top SKUs
-    y_r = y
-    c.setFont(FB, 11)
-    c.setFillColor(DARK_BLUE)
-    c.drawString(M + col_left_w + col_gap, y_r - 2, "⚠️ Alertas de cancha")
-    y_r -= 14
-
-    if alertas:
-        for alerta in alertas:
-            c.setFillColor(colors.HexColor("#FFEBEE"))
-            c.rect(M + col_left_w + col_gap, y_r - 13, col_right_w, 13, fill=1, stroke=0)
-            c.setFillColor(RED_WARN)
-            c.setFont(FN, 9)
-            # Limpiar emojis para reportlab
-            alerta_clean = alerta.replace("🔴 ", "").replace("⚠️ ", "")
-            c.drawString(M + col_left_w + col_gap + 4, y_r - 9, alerta_clean)
-            y_r -= 13
-    else:
-        c.setFillColor(colors.HexColor("#E8F5E9"))
-        c.rect(M + col_left_w + col_gap, y_r - 13, col_right_w, 13, fill=1, stroke=0)
-        c.setFillColor(GREEN_OK)
-        c.setFont(FN, 9)
-        c.drawString(M + col_left_w + col_gap + 4, y_r - 9, "Sin alertas — todas las canchas en tiempo")
-        y_r -= 13
-
-    y_r -= 8
-    c.setFont(FB, 11)
-    c.setFillColor(DARK_BLUE)
-    c.drawString(M + col_left_w + col_gap, y_r - 2, "🏆 Top 3 SKUs del día")
-    y_r -= 14
-
-    if top_skus_lines:
-        # top_skus_lines es un string markdown; parsear líneas
-        lines = [l.strip().lstrip("•").strip() for l in top_skus_lines.split("\n") if l.strip()]
-        for ti2, line in enumerate(lines[:3]):
-            bg_r2 = ALT if ti2 % 2 == 0 else LIGHT
-            # Limpiar markdown bold
-            line_clean = line.replace("**", "")
-            c.setFillColor(bg_r2)
-            c.rect(M + col_left_w + col_gap, y_r - 14, col_right_w, 14, fill=1, stroke=0)
-            c.setFillColor(DARK_BLUE)
-            c.setFont(FN, 8)
-            c.drawString(M + col_left_w + col_gap + 4, y_r - 10, line_clean[:55])
-            y_r -= 14
-    else:
-        c.setFont(FN, 9)
-        c.setFillColor(DARK_BLUE)
-        c.drawString(M + col_left_w + col_gap + 4, y_r - 9, "(no disponible)")
-
-    # ── FOOTER ────────────────────────────────────────────────────────────────
-    c.setFillColor(DARK_BLUE)
-    c.rect(M, M, usable, 12, fill=1, stroke=0)
-    c.setFillColor(WHITE)
-    c.setFont(FN, 7)
-    c.drawString(M + 4, M + 3, f"Picking Orchestrator v{APP_VERSION}  ·  {datetime.now().strftime('%d/%m/%Y %H:%M')}")
-    c.setFont(FN, 7)
-    c.drawRightString(M + usable - 4, M + 3, "Beccacece Hnos SA — DPO 2.1 Pilar Almacén")
+    _draw_controlador_page(
+        c, PW, PH, M, fin_global_dt,
+        ctrl_params, mix_picking, fecha,
+        DARK_BLUE=colors.HexColor("#1a3a6b"),
+        MED_BLUE=colors.HexColor("#2e5fa3"),
+        LIGHT=colors.HexColor("#F0F4FA"),
+        ALT=colors.HexColor("#E8EEF8"),
+        GREEN_OK=colors.HexColor("#1a7a4a"),
+        RED_WARN=colors.HexColor("#b91c1c"),
+        WHITE=colors.white,
+        YELLOW_HL=colors.HexColor("#FFF176"),
+        FONT_B="Helvetica-Bold",
+        FONT_N="Helvetica",
+    )
 
     c.save()
     buf.seek(0)
