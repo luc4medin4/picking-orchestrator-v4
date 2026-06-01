@@ -3,172 +3,33 @@ Picking Orchestrator v4.33.0 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
 
 CAMBIOS v4.33.0:
-  - 🛠️ Fix CRÍTICO Proyección Picking (Tab 4) — reescritura completa de
-    _t4_load_car_proyeccion() para corregir 3 bugs estructurales:
-
-    1) Detección dinámica VE/CHESS:
-       El código v4.32 usaba `raw.iloc[41:]` hardcoded, perdiendo toda la
-       sección Ventas Especiales y rompiéndose cuando el corte no caía en
-       fila 41. v4.33 detecta la primera fila completamente vacía como
-       separador y procesa AMBAS secciones, etiquetando cada linea con
-       columna 'fuente' = 'VE' o 'CHESS' para trazabilidad.
-
-    2) Conversión correcta de sueltas a bultos equivalentes:
-       v4.32 ignoraba la columna 'Unids' (sueltas) → de ahí el bug visible
-       de "4380 bultos en Cancha I camión 101" cuando el real era 1.42 UP.
-       v4.33 aplica:
-           bultos_eq = Bultos + Unids / unidades_por_bulto
-       leyendo unidades_por_bulto de DDM (col 'UNIDADES'/'UN BULTO'/etc.
-       buscado por header, no por índice ciego).
-
-    3) Split AE/Picking con FLOOR estricto:
-       v4.32 aplicaba `≥0.97 → ceil` redondeando hacia arriba pallets casi
-       completos hacia AE. Esto es INCORRECTO según regla operativa:
-           pall_ae   = floor(UP_total)        ← solo paletas enteras
-           pall_pick = UP_total - floor(UP_total)  ← fracción real
-       Se mantiene 1/BXP como UPKT cuando el cacheado no es confiable.
-
-    Lectura DDM ahora busca columnas por nombre de header
-    ('BULTOS X PAL'/'BXP', 'UNIDADES', 'CAN') con fallback a índices
-    F=5, M=12 o N=13, O=14 para tolerar reordenamientos menores.
-
-    El resto del Tab 4 (UI, reasignación entre canchas, cálculo de tiempos,
-    PDF) no se modifica — recibe el mismo schema de dataframe que v4.32.
-
-CAMBIOS v4.32.0:
-  - 🖼️ Fix JPEG Top SKUs: reescritura completa de build_top_skus_anr_jpeg()
-    para fidelidad pixel-perfect con el PDF. Problemas corregidos:
-    • DPI aumentado de 150 → 200 (A4 real = 1654 × auto px vs 1240px anterior).
-    • Fuentes escaladas con factor correcto DPI/72 en lugar de valores absolutos
-      arbitrarios (título ~47px, subtítulo ~28px, celdas ~25px).
-    • Márgenes convertidos de mm → px con la fórmula mm × DPI/25.4 (igual al PDF).
-    • Alturas de filas y header ahora derivan de las mismas dimensiones mm del PDF
-      (HDR_H=22mm, ROW_H=8mm, THDR_H=8mm, DHDR_H=7mm, DROW_H=7mm).
-    • Helper draw_table() centralizado con alineación vertical real (v-center)
-      idéntica al PDF (drawCentredString vertical del reportlab).
-    • Padding interno corregido (8px ≈ 1.5mm, igual al PDF).
-    • Footer con texto izquierdo y derecho alineados (igual que PDF).
-    • quality JPEG subido a 94 para mejor legibilidad del texto.
-
-CAMBIOS v4.31.0:
-  - 🔧 Fix JPEG Tops: reemplazada la conversión PDF→JPEG (que requería
-    pdf2image+poppler o PyMuPDF, no disponibles en Streamlit Cloud) por
-    renderizado directo con Pillow. Nuevas funciones build_top_skus_anr_jpeg()
-    y build_top_clientes_anr_jpeg() generan el JPEG nativo con el mismo
-    diseño que el PDF (header azul/dorado, tabla con bandas, footer), sin
-    ninguna dependencia externa más allá de Pillow (ya incluido en Streamlit).
-    El botón JPEG ya no muestra el warning de dependencias faltantes.
-
-CAMBIOS v4.30.0:
-  - 🧹 Top SKUs PDF + Top Clientes PDF: eliminada la línea "Bultos: X · HL: Y"
-    del header. Esos datos correspondían solo al top 10, no a la venta total
-    del día, generando confusión. La fecha queda como único dato en el header
-    derecho. Los totales reales siguen visibles en la sección 1 de la UI.
-
-CAMBIOS v4.29.0:
-  - 🖼️ Top SKUs + Top Clientes: nuevos botones JPEG al lado de cada PDF.
-    La misma imagen que arrojaría el PDF se descarga en .jpg listo para
-    compartir por mensaje/WhatsApp. Conversión en cascada sin dependencias
-    obligatorias: pdf2image+poppler → PyMuPDF/fitz. Si ninguno está
-    disponible, el botón muestra un warning sin romper la app.
-    Nueva función helper _pdf_to_jpeg() reutilizable.
-
-CAMBIOS v4.28.0:
-  - 🔧 Fix Camiones T2: impresión horizontal real.
-    Rotar un PDF portrait 90° con pypdf/pikepdf no produce un PDF landscape
-    real: el contenido se distorsiona y queda mal aprovechado en la página.
-    La solución correcta es exportar landscape DESDE el Apps Script usando
-    el parámetro `fitw=true&size=7` en la URL de export de Google Sheets.
-    En el app.py se eliminó el llamado a _t2_rotate_to_landscape() en el
-    flujo de render_tab_t2() (la función se conserva pero ya no se invoca).
-    ⚠️  REQUIERE también actualizar el Apps Script (ver nota en código).
-
-CAMBIOS v4.27.1:
-  - 🔧 Fix Camiones T2: ModuleNotFoundError al generar PDF landscape.
-    _t2_rotate_to_landscape() reimportaba pypdf localmente sin verificar
-    _PYPDF_AVAILABLE, crasheando si pypdf no estaba instalado en el entorno.
-    Ahora: intenta pypdf → fallback a pikepdf → fallback sin rotación.
-    La tab T2 nunca crashea por este motivo.
-
-CAMBIOS v4.27:
-  - 🔧 Fix CRÍTICO Boletas: el ANR subido en Archivos no llegaba a la tab Boletas.
-    La key usada en Boletas era "anr_df" (DataFrame) pero Archivos solo guardaba
-    el file object bajo "tc_anr". Ahora al cargar ANR.xlsx en Archivos se parsea
-    inmediatamente y se guarda también como DataFrame en "anr_df" (hoja BASE,
-    header=0 raw para que _build_anr_lookup encuentre las cols DESCRIPCIÓN CLIENTE
-    y DESCRIPCIÓN TRANSPORTE). Fix sin romper el Cierre (que usa _cierre_load_anr
-    con header=1 independientemente).
-
-CAMBIOS v4.26:
-  - ✅ Fix Venta Especial: ahora SUMA al total (antes restaba incorrectamente).
-    Fórmula corregida: Neto = TotVal - CtaCte + VtaEsp - Rechazos
-  - 📋 Cierre D+1 — "Cierre Actualizado con Rechazos Reales":
-    • Nuevo uploader SR Actualizado en pestaña Archivos (key: cierre_sr_d1)
-    • Sección nueva dentro de la tab Cierre: carga el SR del día siguiente,
-      toma TotVal real por camión, recalcula CTA CTE del ANR original y
-      muestra el Cierre real con la plata que efectivamente trajeron los choferes.
-    • Exporta a PDF landscape y Excel igual que el Cierre del día.
-
-CAMBIOS v4.25:
-  - Fix CRÍTICO: .applymap() → .map() (pandas >= 2.1) en tabla Cierre → resuelve AttributeError
-  - Eliminado "Cobro anticipado" de UI, PDF y Excel del Cierre (no aplica al flujo operativo)
-  - cobro_anticipado fijado en 0.0 (sin input, sin efecto en cálculos)
-  - Fórmulas resumen actualizadas: D - E - F (sin C)
-
-CAMBIOS v4.24:
-  - 🔧 Fix _cierre_load_sr: TotVal toma col [2] 'A) TotVal Chess' (fuente limpia),
-    no col [5] que es derivada. Robusto ante variantes de nombre de columna.
-  - 🔧 Fix _cierre_load_anr: ANR BASE tiene headers reales en fila 1 del Excel
-    (header=1). Con header=0 todas las columnas quedaban 'Unnamed' → crash.
-    El parser ahora usa header=1 y busca por nombre exacto, sin fallbacks por
-    índice que generaban mapeos erróneos.
-  - 🗑️ Eliminado "Cobro por otros medios" de la tabla y del resumen: columna
-    quitada de la UI, del Excel y del PDF. La lógica de neto se simplifica a
-    TotVal - CtaCte - VtaEsp - Rechazos.
-  - 📄 PDF Cierre en LANDSCAPE (A4 horizontal): mejor aprovechamiento del
-    espacio, tabla más ancha, columnas de importes más legibles para gerencia.
-
-CAMBIOS v4.23:
-  - 💰 Nueva sección "Cierre" (tab independiente): dashboard financiero diario
-    para gerencia. Fuente: SR.xlsx (cols A/B/F) + ANR.xlsx.
-    • Tabla por camión: Total Chess, CTA CTE descontado por camión, Cobro
-      anticipado, Venta especial, Neto a ingresar, Rechazos.
-    • Resumen global: Total reparto, % Rechazo, Neto final.
-    • Lista editable de clientes CTA CTE (agregar/quitar con código+nombre).
-    • MUTUAL: fila de monitoreo separada (no es CTA CTE, se muestra aparte).
-    • Exportar a Excel (.xlsx) y PDF (reportlab) listo para gerencia.
-  - 📁 Archivos: nuevo uploader SR.xlsx (fuente Chess para Cierre).
-
-CAMBIOS v4.22:
-  - 🔄 Camiones T2: impresión horizontal (landscape). El PDF descargado del
-    Apps Script ahora se rota 90° (portrait → landscape) antes de mostrarse
-    y descargarse, aprovechando mejor el espacio en la hoja al imprimir.
-
-CAMBIOS v4.18:
-  - 📁 Nueva pestaña "Archivos" (primera tab): carga centralizada de CAR.xlsx,
-    Frescura 3.0.xlsx y ANR.xlsx. Todas las demás secciones toman de session_state.
-  - 🏆 Top SKUs PDF: columna IMPORTE eliminada de la tabla (solo BULTOS y HL).
-  - 📊 División PDF: columna IMPORTE eliminada (solo BULTOS y HL).
-  - 👥 Top Clientes PDF: columna IMPORTE eliminada.
-  - ❌ Filas TOTAL eliminadas de todos los tops y división en PDF y UI.
-  - 🖼️ Logo Beccacece Hnos incorporado sutilmente en el header.
-
-CAMBIOS v4.17:
-  - 🏷️ Clasificación: ahora es el uploader primario de **ANR.xlsx** (key `tc_anr`).
-    La Frescura se toma EXCLUSIVAMENTE desde 📦 Planilla de Carga (`t1_fr`).
-    Se removieron los uploaders locales de Frescura y los fallbacks (`t4_fr`, `tc_fr`).
-  - 🏆 Top SKUs: ya no tiene uploader propio de ANR. Reusa el ANR cargado en
-    🏷️ Clasificación (`tc_anr`).
-  - Columna **IMPORTE eliminada** de toda la UI y de todos los PDFs:
-    Top SKUs (tabla + métrica "Importe total vendido"), División, Top Clientes.
-    Quedan solo BULTOS y HL.
-
-CAMBIOS v4.16 (previos):
-  - Tema OSCURO restaurado.
-  - 🏷️ Clasificación reenfocada POR CAMIÓN (Camión|Bultos|Pallets).
-  - 🏆 Top SKUs con 3 secciones explícitas.
-  - 🚛 Camiones T2: PDF único combinado server-side.
+  - 🗺️ Nueva Tab "Tablero Ruteador" (entre Boletas y Cierre):
+    • Inputs: ANR/CAR (venta Chess, bloque azul) + Tablero Ruteador .xlsx (venta especial)
+    • Selector de hoja numérica del día (1-31) para la venta especial
+    • KPIs del día desde hoja "Tablero Ruteador ALL": hora entrega, tiempo ruteo,
+      ocupación bodega, fuera de zona, camiones, PDV, bultos UP, paletas, drop size
+    • Tabla de camiones: chofer / PDV / Bultos UP / Paletas / Patente / Validación
+    • Venta Especial: resumen por camión + detalle por cliente (hoja numérica)
+    • Venta Chess: bloque azul del CAR (primeras 42 filas) cruzado con Frescura/DDM
+    • Consolidado Total = Chess + Especial (siempre se suman) con exportación TSV/CSV/XLSX
+    • Regla operativa clave: las dos formas de facturación SIEMPRE se suman
 """
+
+# Historial de versiones anteriores (v4.16–v4.32):
+# v4.32: Fix JPEG Top SKUs (DPI, fuentes, márgenes, alineación).
+# v4.31: Fix JPEG Tops — renderizado directo con Pillow.
+# v4.30: Top SKUs/Clientes PDF — eliminada línea Bultos/HL del header.
+# v4.29: Top SKUs + Clientes — nuevos botones JPEG.
+# v4.28: Fix Camiones T2 — landscape nativo desde Apps Script.
+# v4.27: Fix CRÍTICO Boletas — ANR desde Archivos llega a tab Boletas.
+# v4.26: Fix Venta Especial suma al total. Nuevo Cierre D+1.
+# v4.25: Fix applymap→map (pandas>=2.1). Eliminado cobro anticipado.
+# v4.24: Fix _cierre_load_sr/anr. PDF Cierre landscape.
+# v4.23: Nueva tab Cierre — dashboard financiero para gerencia.
+# v4.22: Camiones T2 impresion horizontal.
+# v4.18: Nueva pestana Archivos carga centralizada. Logo.
+# v4.17: Clasificacion uploader primario ANR. Top SKUs reutiliza ANR.
+# v4.16: Tema oscuro. Clasificacion por camion. T2 PDF combinado.
 import io, math, hashlib, unicodedata, os, shutil, json
 from datetime import datetime
 from pathlib import Path
@@ -191,7 +52,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.32.0"
+APP_VERSION = "4.33.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -2343,203 +2204,109 @@ def _t4_extract_cv(cell_val):
     return cell_val
 
 
-def _t4_find_ddm_col(headers: list, *candidates) -> int:
-    """
-    v4.33 — Busca columna en headers DDM por nombre (normalizado, case/acentos
-    insensitive). Devuelve índice 0-based o -1.
-    """
-    def _nm(s):
-        if s is None:
-            return ""
-        s = str(s).strip().upper()
-        return ''.join(c for c in unicodedata.normalize('NFD', s)
-                       if unicodedata.category(c) != 'Mn')
-    norm_h = [_nm(h) for h in headers]
-    for cand in candidates:
-        c = _nm(cand)
-        for i, h in enumerate(norm_h):
-            if h == c:
-                return i
-        for i, h in enumerate(norm_h):
-            if c in h:
-                return i
-    return -1
-
-
 def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
     """
-    v4.33 — Proyección Picking corregida.
+    v4.8 — Proyección corregida: parsea COMPUTED_VALUE de IMPORTRANGE en Frescura.
 
-    Lógica de UP por SKU × camión:
-        bultos_eq = Bultos + Unids / unidades_por_bulto    (sueltas → bultos)
-        UP_total  = bultos_eq / BXP                        (BXP = bultos por pallet)
-        AE_SKU    = floor(UP_total)                        ← paletas enteras
-        PICK_SKU  = UP_total - floor(UP_total)             ← fracción a cancha
-
-    Lecturas:
-      - CAR Hoja1: K=Transporte (camión), R=Artículo (SKU),
-                   T=Bultos, V=Unids (sueltas).
-                   Detección dinámica de fila vacía separadora →
-                   VE (antes) + CHESS (después), ambas procesadas con flag 'fuente'.
-      - DDM (hoja Frescura): columnas buscadas por NOMBRE de header
-          BXP        ← 'BULTOS X PAL' / 'BXP'           (fallback col F = idx 5)
-          un_bulto   ← 'UNIDADES' / 'UN BULTO' / 'UN'    (fallback col M = idx 12)
-          can        ← 'CAN' / 'CANCHA'                 (fallback col O = idx 14)
-
-    Retorna mismo schema que v4.32 para compatibilidad con UI/PDF:
-      {df, fecha, fuente, mix_picking, tot_pick, tot_ae}
+    Lógica paletas enteras por camión × SKU (basada en BXP real):
+      bxp       = col G DDM (BULTOS X PALLET) — leído con parser COMPUTED_VALUE
+      can       = col O DDM (CAN/CANCHA) — ídem
+      upkt      = 1 / bxp  (fracción de pallet por bulto; NO usar col R cacheada = 1.0 incorrecto)
+      pall_raw  = bultos_total / bxp
+      REDONDEO: si frac >= 0.97 → ceil (pallet casi completo → AE)
+      pall_ae   = floor_inteligente(pall_raw)
+      up_pick   = pall_raw - pall_ae  (fracción restante → picking, asignada a su cancha)
+      bult_pick = up_pick * bxp
     """
     import datetime as _dt
     import math as _math
 
-    # ── 1. DDM desde Frescura — búsqueda por header ──────────────────────────
+    # ── 1. Leer DDM desde Frescura con openpyxl (read_only, sin data_only)
+    #       para acceder al COMPUTED_VALUE de las fórmulas IMPORTRANGE ─────────
     try:
         wb_fr = openpyxl.load_workbook(io.BytesIO(fr_bytes), read_only=True)
         ws_ddm = wb_fr["DDM"]
-        rows_iter = ws_ddm.iter_rows(values_only=True)
-        headers_ddm = list(next(rows_iter))
-
-        idx_sku  = _t4_find_ddm_col(headers_ddm, "ARTICULO", "ARTÍCULO", "SKU", "CODIGO", "CÓDIGO")
-        if idx_sku < 0:
-            idx_sku = 2  # fallback col C
-        idx_bxp  = _t4_find_ddm_col(headers_ddm, "BULTOS X PAL", "BULTOS X PALLET", "BXP", "BULTOS/PAL")
-        if idx_bxp < 0:
-            idx_bxp = 5  # fallback col F
-        idx_un   = _t4_find_ddm_col(headers_ddm, "UNIDADES", "UN BULTO", "UN/BULTO", "UN X BULTO", "UN")
-        if idx_un < 0:
-            idx_un = 12  # fallback col M
-        idx_can  = _t4_find_ddm_col(headers_ddm, "CAN", "CANCHA")
-        if idx_can < 0:
-            idx_can = 14  # fallback col O
-
+        # Cols 0-indexed: A=0(almacen), B=1(orden), C=2(articulo),
+        #   G=6(bxp), O=14(can), R=17(upkt_cached — NO USAR)
         ddm_rows = []
-        for row in rows_iter:
-            if row is None or len(row) <= max(idx_sku, idx_bxp, idx_un, idx_can):
-                continue
-            sku_raw = _t4_extract_cv(row[idx_sku])
-            bxp_raw = _t4_extract_cv(row[idx_bxp])
-            un_raw  = _t4_extract_cv(row[idx_un])
-            can_raw = _t4_extract_cv(row[idx_can])
+        for row in ws_ddm.iter_rows(min_row=2, values_only=True):
+            sku_raw = _t4_extract_cv(row[2])
+            bxp_raw = _t4_extract_cv(row[6])
+            can_raw = _t4_extract_cv(row[14])
             if sku_raw is None:
                 continue
             try:
                 sku_int = int(float(str(sku_raw)))
                 bxp_val = float(bxp_raw) if bxp_raw not in (None, "", "None") else 0.0
-                un_val  = float(un_raw)  if un_raw  not in (None, "", "None") else 0.0
                 can_str = str(can_raw).strip() if can_raw not in (None, "", "None") else "SIN CANCHA"
+                # UPKT correcto = 1/BXP (el valor cacheado col R = 1.0 es incorrecto)
                 upkt_val = (1.0 / bxp_val) if bxp_val > 0 else 0.0
-                ddm_rows.append({
-                    "sku":      sku_int,
-                    "bxp":      bxp_val,
-                    "un_bulto": un_val,
-                    "can":      can_str,
-                    "upkt":     upkt_val,
-                })
+                ddm_rows.append({"sku": sku_int, "bxp": bxp_val, "can": can_str, "upkt": upkt_val})
             except (ValueError, TypeError):
                 pass
         wb_fr.close()
         df_ddm = pd.DataFrame(ddm_rows).drop_duplicates("sku")
     except Exception:
-        df_ddm = pd.DataFrame(columns=["sku", "bxp", "un_bulto", "can", "upkt"])
+        df_ddm = pd.DataFrame(columns=["sku", "bxp", "can", "upkt"])
 
-    # ── 2. CAR Hoja1 — detección dinámica VE / CHESS ─────────────────────────
+    # ── 2. Leer Hoja1 del CAR ────────────────────────────────────────────────
     raw = pd.read_excel(io.BytesIO(car_bytes), sheet_name=0, header=None)
-    if len(raw) < 2:
-        raise ValueError("CAR vacío o sin filas")
     header = raw.iloc[0].tolist()
+    normal = raw.iloc[41:].copy()
+    normal.columns = header
 
-    # Localizar primera fila completamente vacía (separador VE/CHESS).
-    split_idx = None
-    for i in range(1, len(raw)):
-        row_vals = raw.iloc[i].tolist()
-        if all(v is None or (isinstance(v, float) and pd.isna(v))
-               or (isinstance(v, str) and v.strip() == "")
-               for v in row_vals):
-            split_idx = i
-            break
+    normal["Artículo"]   = pd.to_numeric(normal["Artículo"],   errors="coerce")
+    normal["Transporte"] = pd.to_numeric(normal["Transporte"], errors="coerce")
+    normal["Bultos"]     = pd.to_numeric(normal["Bultos"],     errors="coerce").fillna(0)
+    normal["Unids"]      = pd.to_numeric(normal["Unids"],      errors="coerce").fillna(0)
+    normal = normal.dropna(subset=["Artículo", "Transporte"])
+    normal = normal[normal["Artículo"] > 0]
+    normal["Artículo"]   = normal["Artículo"].astype(int)
+    normal["Transporte"] = normal["Transporte"].apply(lambda x: int(float(x)) if pd.notna(x) else x)
 
-    body = raw.iloc[1:].copy()
-    body.columns = header
-    if split_idx is not None:
-        # offset por header eliminado
-        sep_local = split_idx - 1
-        body = body.reset_index(drop=True)
-        body["fuente"] = ""
-        body.loc[:sep_local - 1, "fuente"] = "VE"
-        body.loc[sep_local + 1:, "fuente"] = "CHESS"
-        body = body.drop(index=sep_local)
-    else:
-        body["fuente"] = "CHESS"
-    body = body.reset_index(drop=True)
-
-    # Normalizar tipos y filtrar (mismas reglas que v4.32 + ambas fuentes)
-    body["Artículo"]   = pd.to_numeric(body["Artículo"],   errors="coerce")
-    body["Transporte"] = pd.to_numeric(body["Transporte"], errors="coerce")
-    body["Bultos"]     = pd.to_numeric(body["Bultos"],     errors="coerce").fillna(0)
-    body["Unids"]      = pd.to_numeric(body["Unids"],      errors="coerce").fillna(0)
-    body = body.dropna(subset=["Artículo", "Transporte"])
-    body = body[body["Artículo"] > 0]
-    body["Artículo"]   = body["Artículo"].astype(int)
-    body["Transporte"] = body["Transporte"].apply(lambda x: int(float(x)) if pd.notna(x) else x)
-
-    # Fecha
+    # Fecha desde columna Fecha Mvto
     try:
-        fecha = pd.to_datetime(body["Fecha Mvto"].dropna().iloc[0]).date()
+        fecha = pd.to_datetime(normal["Fecha Mvto"].dropna().iloc[0]).date()
     except Exception:
         fecha = _dt.date.today()
 
     # ── 3. Excluir envases ───────────────────────────────────────────────────
-    body = body[~body.apply(
+    normal = normal[~normal.apply(
         lambda r: is_envase(int(r["Artículo"]), str(r.get("Descripción Artículo", ""))), axis=1
     )]
 
-    # ── 4. Agregar por (Transporte, Artículo) — sumando bultos Y sueltas ─────
-    grp = (body.groupby(["Transporte", "Artículo", "Descripción Artículo"], as_index=False)
+    # ── 4. Agregar por (Transporte, Artículo) ────────────────────────────────
+    grp = (normal.groupby(["Transporte", "Artículo", "Descripción Artículo"], as_index=False)
            .agg(blt_raw=("Bultos", "sum"), unids=("Unids", "sum")))
-    grp = grp[(grp["blt_raw"] > 0) | (grp["unids"] > 0)]
+    grp = grp[grp["blt_raw"] > 0]
     grp.rename(columns={"Transporte": "cam", "Artículo": "sku"}, inplace=True)
 
-    # ── 5. Merge DDM (bxp, un_bulto, can) ────────────────────────────────────
-    if not df_ddm.empty:
-        grp = grp.merge(df_ddm[["sku", "bxp", "un_bulto", "can", "upkt"]], on="sku", how="left")
-    else:
-        grp["bxp"] = 0.0; grp["un_bulto"] = 0.0; grp["can"] = "SIN CANCHA"; grp["upkt"] = 0.0
+    # ── 5. Merge DDM (bxp, can, upkt) ────────────────────────────────────────
+    grp = grp.merge(df_ddm[["sku", "bxp", "can", "upkt"]], on="sku", how="left")
+    grp["bxp"]  = grp["bxp"].fillna(0.0)
+    grp["upkt"] = grp["upkt"].fillna(0.0)
+    grp["can"]  = grp["can"].fillna("SIN CANCHA")
 
-    grp["bxp"]      = grp["bxp"].fillna(0.0)
-    grp["un_bulto"] = grp["un_bulto"].fillna(0.0)
-    grp["upkt"]     = grp["upkt"].fillna(0.0)
-    grp["can"]      = grp["can"].fillna("SIN CANCHA")
-
-    # ── 6. Conversión sueltas → bultos_eq, luego split AE/Picking FLOOR ──────
+    # ── 6. Calcular picking vs AE usando BXP/UPKT correcto ───────────────────
     def _split_row(row):
-        bultos    = float(row["blt_raw"])
-        sueltas   = float(row["unids"])
-        bxp_      = float(row["bxp"])
-        un_bulto_ = float(row["un_bulto"])
+        tot  = float(row["blt_raw"])
+        bxp_ = float(row["bxp"])
 
-        # 6a. Convertir sueltas a bultos equivalentes
-        if un_bulto_ > 0:
-            bultos_eq = bultos + (sueltas / un_bulto_)
-        else:
-            # Sin un/bulto en DDM → sueltas se ignoran (no se puede convertir)
-            bultos_eq = bultos
-
-        # 6b. UP total y split FLOOR estricto
         if bxp_ > 0:
-            up_total = bultos_eq / bxp_
-            pall_ae  = _math.floor(up_total)              # paletas enteras
-            up_pick  = max(0.0, up_total - pall_ae)       # fracción → picking
-            bult_ae  = float(pall_ae) * bxp_
-            bult_ae  = min(bult_ae, bultos_eq)
-            bult_pick = max(0.0, bultos_eq - bult_ae)
+            pall_raw = tot / bxp_
+            frac = pall_raw - _math.floor(pall_raw)
+            pall_ae = _math.ceil(pall_raw) if frac >= 0.97 else _math.floor(pall_raw)
+            up_pick = max(0.0, pall_raw - pall_ae)   # fracción de pallet → picking
+            bult_ae   = float(pall_ae) * bxp_
+            bult_ae   = min(bult_ae, tot)
+            bult_pick = max(0.0, tot - bult_ae)
         else:
             pall_ae   = 0
             bult_ae   = 0.0
-            bult_pick = bultos_eq
+            bult_pick = tot
             up_pick   = 0.0
 
         return pd.Series({
-            "bultos_eq": bultos_eq,
             "pall_ae":   float(pall_ae),
             "bult_ae":   bult_ae,
             "bult_pick": bult_pick,
@@ -2552,11 +2319,12 @@ def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
     # ── 7. Normalizar cancha ─────────────────────────────────────────────────
     grp["cancha_norm"] = grp["can"].apply(_t4_norm_cancha)
 
-    # ── 8. Pivotar por camión × cancha (igual que v4.32) ─────────────────────
+    # ── 8. Pivotar por camión × cancha ───────────────────────────────────────
     pick_grp = grp.groupby(["cam", "cancha_norm"], as_index=False).agg(
         bult_pick=("bult_pick", "sum"),
         up_pick  =("up_pick",   "sum"),
     )
+
     ae_grp = grp.groupby("cam", as_index=False).agg(
         bult_ae=("bult_ae", "sum"),
         up_ae  =("pall_ae", "sum"),
@@ -2604,13 +2372,10 @@ def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
     tot_ae   = float(cam_df["TOTAL_AE"].sum())
     mix = (tot_pick / (tot_pick + tot_ae)) if (tot_pick + tot_ae) > 0 else 0.0
 
-    # Stats VE/CHESS para auditoría
-    fuentes = body["fuente"].value_counts().to_dict() if "fuente" in body.columns else {}
-
     return {
         "df":          cam_df,
         "fecha":       fecha,
-        "fuente":      f"CAR + Frescura DDM · v4.33 · VE={fuentes.get('VE',0)} líneas · CHESS={fuentes.get('CHESS',0)} líneas",
+        "fuente":      "CAR + Frescura (UP = 1/BXP col G DDM)",
         "mix_picking": mix,
         "tot_pick":    tot_pick,
         "tot_ae":      tot_ae,
@@ -2997,8 +2762,8 @@ def render_tab_proyeccion():
 
     st.subheader("📊 Proyección Picking ×4")
     st.caption(
-        "Fuente: **CAR.xlsx (VE + CHESS) + Frescura 3.0 (DDM)** — Calcula PICK vs AE por "
-        "**UP** (`bultos_eq / BXP`) por cancha, sumando sueltas con UNIDADES x BULTO. v4.33"
+        "Fuente: **CAR.xlsx + Frescura 3.0** — Calcula PICK vs AE por "
+        "**UNIDAD PKT** (col R DDM) y cancha, sin necesitar el MASTER."
     )
 
     # ── Reutilizar uploads de Archivos / Tab 1 ───────────────────────────────
@@ -3080,8 +2845,8 @@ def render_tab_proyeccion():
     st.divider()
     st.subheader("📦 Pallets UP por camión")
     st.caption(
-        "**UP** = `(bultos + sueltas / un_bulto) / BXP`. "
-        "AE = `floor(UP)` (paletas enteras). Picking = fracción restante por cancha (DDM col O). "
+        "**UP** = fracción de paleta (bultos / BXP col G DDM). "
+        "Paletas enteras → AE. Fracción restante → picking. "
         "Columnas **ASIGN.** editables: escribí la cancha destino (CI/CII/CIII/CIV/MKPL) para reasignar."
     )
 
@@ -6083,6 +5848,684 @@ def render_tab_boletas():
         )
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# TAB TABLERO RUTEADOR — v4.33.0
+#
+# Inputs:
+#   1. ANR.xlsx  → venta Chess (ya cargado en session_state["tc_anr"])
+#   2. CAR.xlsx  → filas azules (primeras 42 filas, bloque agregados Chess)
+#                  se cruzan con Frescura/DDM para descripción de SKU
+#   3. Tablero Ruteador .xlsx → hoja numérica del día (ej "16") = Venta Especial
+#                               hoja "Tablero Ruteador ALL" = KPIs del día
+#
+# Regla principal: Venta Total = Venta Chess (ANR/CAR) + Venta Especial (Ruteador)
+# Siempre se suman ambas fuentes.
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def _load_car_blue(car_file) -> pd.DataFrame:
+    """
+    Lee las primeras 42 filas del CAR (bloque azul = agregados Chess).
+    Retorna DF con: camion | sku | descripcion | bultos_chess
+    """
+    car_file.seek(0)
+    raw = pd.read_excel(car_file, sheet_name=0, header=None)
+    header = raw.iloc[0].tolist()
+    blue_raw = raw.iloc[1:41].copy()
+    blue_raw.columns = header
+
+    blue_raw["Artículo"]   = pd.to_numeric(blue_raw["Artículo"], errors="coerce")
+    blue_raw["Transporte"] = pd.to_numeric(blue_raw["Transporte"], errors="coerce")
+    # Columna T (índice 19) = bultos del bloque azul
+    blue_raw["_bultos"] = pd.to_numeric(blue_raw.iloc[:, 19], errors="coerce").fillna(0)
+    blue_raw = blue_raw.dropna(subset=["Artículo", "Transporte"])
+    blue_raw = blue_raw[blue_raw["Artículo"] > 0]
+    blue_raw = blue_raw[blue_raw["_bultos"] > 0]
+    blue_raw["Artículo"]   = blue_raw["Artículo"].astype(int)
+    blue_raw["Transporte"] = blue_raw["Transporte"].apply(lambda x: int(float(x)) if pd.notna(x) else x)
+    blue_raw = blue_raw[~blue_raw.apply(
+        lambda r: is_envase(int(r["Artículo"]), str(r.get("Descripción Artículo", ""))), axis=1
+    )]
+
+    agg = (blue_raw.groupby(["Transporte", "Artículo"], as_index=False)
+           .agg(_bultos=("_bultos", "sum")))
+    # Tomar descripción del primer registro
+    desc_map = (blue_raw.drop_duplicates(subset=["Artículo"], keep="first")
+                .set_index("Artículo")["Descripción Artículo"].to_dict())
+    agg["descripcion"] = agg["Artículo"].map(desc_map).fillna("").astype(str).str.strip()
+    agg = agg.rename(columns={"Transporte": "camion", "Artículo": "sku", "_bultos": "bultos_chess"})
+    return agg[["camion", "sku", "descripcion", "bultos_chess"]]
+
+
+def _load_ruteador_especial(ruteador_file, sheet_name: str) -> pd.DataFrame:
+    """
+    Lee la hoja numérica del día del Tablero Ruteador (ej "16").
+    Estructura de la hoja: fila 2 = headers, fila 3+ = datos.
+    Columnas clave (por posición):
+      A=0: Razón social (puede ser código numérico del cliente si la col es código)
+      B=1: Código cliente
+      C=2: Descripción SKU
+      D=3: Cantidad (bultos)
+      E=4: Importe por bulto
+      F=5: Importe total
+      G=6: Camión
+      H=7: Planilla / Reparto
+      I=8: Se incluye en recaudación de reparto?
+      J=9: Observaciones
+      K=10: Total clientes (UP)
+      L=11: UP
+    Retorna DF: camion | sku_desc | cantidad | importe_bulto | importe_total | up | cliente
+    Filtra filas donde cantidad == 0 o camion == 0.
+    """
+    ruteador_file.seek(0)
+    df = pd.read_excel(ruteador_file, sheet_name=sheet_name, header=1)  # fila 2 = header (índice 1)
+    df.columns = [str(c).strip() for c in df.columns]
+
+    # Mapeo tolerante por posición si los nombres varían
+    cols = list(df.columns)
+    def _get_col(names, fallback_idx=None):
+        for n in names:
+            for c in cols:
+                if _norm(n) == _norm(c):
+                    return c
+        if fallback_idx is not None and fallback_idx < len(cols):
+            return cols[fallback_idx]
+        return None
+
+    col_razon    = _get_col(["Razon social", "Razón social"], 0)
+    col_codigo   = _get_col(["Código", "Codigo"], 1)
+    col_desc     = _get_col(["DESCRIPCION", "Descripcion", "Descripción"], 2)
+    col_cant     = _get_col(["CANTIDAD", "Cantidad"], 3)
+    col_imp_blt  = _get_col(["IMPORTE POR BULTO", "Importe por bulto"], 4)
+    col_imp_tot  = _get_col(["IMPORTE TOTAL", "Importe total"], 5)
+    col_camion   = _get_col(["CAMION", "Camión", "Camion"], 6)
+    col_up       = _get_col(["UP"], 11)
+
+    needed = {"camion": col_camion, "cantidad": col_cant, "descripcion": col_desc}
+    missing = [k for k, v in needed.items() if v is None]
+    if missing:
+        raise ValueError(f"Hoja '{sheet_name}' — columnas no encontradas: {missing}. "
+                         f"Columnas disponibles: {cols[:15]}")
+
+    keep = [c for c in [col_razon, col_codigo, col_desc, col_cant,
+                         col_imp_blt, col_imp_tot, col_camion, col_up] if c is not None]
+    df = df[keep].copy()
+    df = df.rename(columns={
+        col_razon:   "razon_social",
+        col_codigo:  "codigo_cliente",
+        col_desc:    "sku_desc",
+        col_cant:    "cantidad",
+        col_imp_blt: "importe_por_bulto",
+        col_imp_tot: "importe_total",
+        col_camion:  "camion",
+        **({"up": col_up} if col_up else {}),
+    } if col_razon else {
+        col_desc:    "sku_desc",
+        col_cant:    "cantidad",
+        col_imp_blt: "importe_por_bulto",
+        col_imp_tot: "importe_total",
+        col_camion:  "camion",
+        **({"up": col_up} if col_up else {}),
+    })
+
+    df["camion"]   = pd.to_numeric(df.get("camion", pd.Series(dtype=float)), errors="coerce")
+    df["cantidad"] = pd.to_numeric(df.get("cantidad", pd.Series(dtype=float)), errors="coerce").fillna(0)
+    if "importe_total" in df.columns:
+        df["importe_total"] = pd.to_numeric(df["importe_total"], errors="coerce").fillna(0)
+    if "importe_por_bulto" in df.columns:
+        df["importe_por_bulto"] = pd.to_numeric(df["importe_por_bulto"], errors="coerce").fillna(0)
+    if "up" in df.columns:
+        df["up"] = pd.to_numeric(df["up"], errors="coerce").fillna(0)
+
+    # Filtrar ceros y nulos
+    df = df.dropna(subset=["camion"])
+    df = df[df["camion"] > 0]
+    df = df[df["cantidad"] > 0]
+    df["camion"] = df["camion"].astype(int)
+    return df.reset_index(drop=True)
+
+
+def _load_ruteador_kpis(ruteador_file) -> dict:
+    """
+    Lee la hoja 'Tablero Ruteador ALL' y extrae los KPIs del día.
+    Retorna dict con: fecha, hora_entrega_target, hora_entrega_real, status_hora,
+    tiempo_ruteo_target, tiempo_ruteo_real, status_tiempo,
+    camiones_necesarios, camiones_totales, camiones_reparto,
+    pendientes, utilizacion, visitas, pedidos_ruteados, bultos_up,
+    drop_size, prom_paletas, tabla_camiones (lista de dicts por camion)
+    """
+    ruteador_file.seek(0)
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(ruteador_file.read()), data_only=True)
+
+    kpis = {}
+    # ── Hoja "Tablero Ruteador ALL" ──────────────────────────────────────────
+    if "Tablero Ruteador ALL" not in wb.sheetnames:
+        return kpis
+
+    ws = wb["Tablero Ruteador ALL"]
+    data = {}
+    for row in ws.iter_rows(values_only=True):
+        data[row] = row  # guardamos como lista de filas
+
+    # Extraer por número de fila (1-indexed)
+    def fval(r, c):  # r=fila (1-based), c=col (0-based)
+        try:
+            for i, row in enumerate(ws.iter_rows(min_row=r, max_row=r, values_only=True)):
+                return row[c] if len(row) > c else None
+        except Exception:
+            return None
+
+    kpis["fecha"]               = fval(6, 3)
+    kpis["hora_target"]         = fval(9, 4)
+    kpis["hora_real"]           = fval(9, 5)
+    kpis["status_hora"]         = fval(9, 6)
+    kpis["tiempo_target"]       = fval(10, 4)
+    kpis["tiempo_real"]         = fval(10, 5)
+    kpis["status_tiempo"]       = fval(10, 6)
+    kpis["ocup_target"]         = fval(11, 4)
+    kpis["ocup_real"]           = fval(11, 5)
+    kpis["status_ocup"]         = fval(11, 6)
+    kpis["fuera_zona_target"]   = fval(12, 4)
+    kpis["fuera_zona_real"]     = fval(12, 5)
+    kpis["status_fz"]           = fval(12, 6)
+    kpis["camiones_necesarios"] = fval(8, 10)
+    kpis["camiones_totales"]    = fval(9, 10)
+    kpis["camiones_reparto"]    = fval(10, 10)
+    kpis["pendientes"]          = fval(11, 10)
+    kpis["utilizacion"]         = fval(12, 10)
+    kpis["visitas"]             = fval(16, 4)
+    kpis["pedidos_ruteados"]    = fval(18, 4)
+    kpis["bultos_up"]           = fval(19, 4)
+    kpis["drop_size"]           = fval(21, 4)
+    kpis["prom_paletas"]        = fval(23, 4)
+
+    # Tabla de camiones: desde fila 29 en adelante (col B=1 → N° camion, C=2 → Chofer, D=3 → PDV, E=4 → Bultos UP, F=5 → Paletas, I=8 → Camion/patente, J=9 → kg, K=10 → Peso total, L=11 → Venc licencia, M=12 → Validación)
+    camiones_tabla = []
+    for row in ws.iter_rows(min_row=29, values_only=True):
+        num_cam = row[1] if len(row) > 1 else None
+        if num_cam is None or not isinstance(num_cam, (int, float)):
+            continue
+        num_cam_int = int(float(num_cam))
+        if num_cam_int <= 0:
+            continue
+        camiones_tabla.append({
+            "camion":       num_cam_int,
+            "chofer":       str(row[2]).strip() if len(row) > 2 and row[2] else "—",
+            "pdv":          int(row[3]) if len(row) > 3 and isinstance(row[3], (int, float)) else 0,
+            "bultos_up":    float(row[4]) if len(row) > 4 and isinstance(row[4], (int, float)) else 0.0,
+            "paletas":      float(row[5]) if len(row) > 5 and isinstance(row[5], (int, float)) else 0.0,
+            "patente":      str(row[7]).strip() if len(row) > 7 and row[7] else "—",
+            "cap_kg":       int(row[8]) if len(row) > 8 and isinstance(row[8], (int, float)) else 0,
+            "peso_real_kg": float(row[9]) if len(row) > 9 and isinstance(row[9], (int, float)) else 0.0,
+            "venc_lic":     row[10] if len(row) > 10 else None,
+            "validacion":   str(row[11]).strip() if len(row) > 11 and row[11] else "—",
+        })
+    kpis["tabla_camiones"] = camiones_tabla
+
+    # También leer hoja "Main" para datos mensuales si existe
+    if "Main" in wb.sheetnames:
+        ws_main = wb["Main"]
+        # Hoja Main: fila 21 en adelante tiene (N° camión, Chofer)
+        chofer_map = {}
+        for row in ws_main.iter_rows(min_row=21, values_only=True):
+            if row[0] and isinstance(row[0], (int, float)) and row[0] > 0:
+                cam = int(row[0])
+                if row[1]:
+                    chofer_map[cam] = str(row[1]).strip()
+        kpis["chofer_map_main"] = chofer_map
+
+    return kpis
+
+
+def _fmt_time(val) -> str:
+    """Formatea un timedelta o time a 'HH:MM'."""
+    import datetime as _dt
+    if val is None:
+        return "—"
+    if isinstance(val, _dt.timedelta):
+        total = int(val.total_seconds())
+        h, m = divmod(abs(total), 3600)
+        m //= 60
+        return f"{h:02d}:{m:02d}"
+    if isinstance(val, _dt.time):
+        return val.strftime("%H:%M")
+    return str(val)
+
+
+def _status_icon(status) -> str:
+    if status is None:
+        return "—"
+    s = str(status).strip().upper()
+    return "✅" if s == "OK" else "⚠️" if s in ("NO", "NO CUMPLE") else s
+
+
+def render_tab_ruteador():
+    """
+    Tab 'Tablero Ruteador' — v4.33.0
+
+    Secciones:
+    1) Upload del Tablero Ruteador .xlsx + selección de hoja numérica del día
+    2) KPIs del día (desde hoja 'Tablero Ruteador ALL')
+    3) Tabla de camiones con pdv / bultos UP / paletas / patente / validación
+    4) Venta Especial (hoja numérica seleccionada)
+    5) Venta Chess (filas azules del CAR, cruzadas con DDM)
+    6) Consolidado Venta Total = Chess + Especial (por camión)
+    7) Detalle cliente por cliente (venta especial, agrupado por camión)
+    """
+    st.subheader("🗺️ Tablero Ruteador")
+    st.caption(
+        "v4.33.0 — Visualiza el ruteo del día: KPIs operativos, tabla de camiones, "
+        "Venta Especial (Tablero Ruteador) + Venta Chess (CAR/ANR). "
+        "**Ambas ventas siempre se suman para el Total.**"
+    )
+
+    # ── Upload del Tablero Ruteador ──────────────────────────────────────────
+    col_up, col_info = st.columns([2, 1])
+    with col_up:
+        rt_file = st.file_uploader(
+            "📂 Tablero Ruteador .xlsx",
+            type=["xlsx"],
+            key="rt_file",
+            help="Archivo del Tablero Ruteador mensual (ej. '05 - Tablero Ruteador Abril 2026 v3 fix.xlsx')",
+        )
+        if rt_file:
+            st.session_state["ruteador_file"] = rt_file
+        elif st.session_state.get("ruteador_file"):
+            rt_file = st.session_state["ruteador_file"]
+
+    car_file = (st.session_state.get("t1_car")
+                or st.session_state.get("t2_car")
+                or st.session_state.get("tc_car"))
+
+    with col_info:
+        st.markdown("#### Archivos requeridos")
+        st.markdown(f"{'✅' if rt_file else '❌'} **Tablero Ruteador.xlsx**")
+        st.markdown(f"{'✅' if car_file else '⚠️'} **CAR.xlsx** *(para venta Chess — azul)*")
+
+    if not rt_file:
+        st.info("⬅️ Subí el **Tablero Ruteador.xlsx** para continuar. "
+                "El **CAR.xlsx** se toma desde 📁 Archivos (opcional para Chess).")
+        return
+
+    # ── Selección de hoja numérica del día ──────────────────────────────────
+    rt_file.seek(0)
+    try:
+        import openpyxl as _opxl
+        _wb_sh = _opxl.load_workbook(io.BytesIO(rt_file.read()), read_only=True)
+        rt_file.seek(0)
+        # Hojas numéricas = las que son números (1-31 = días del mes)
+        hojas_numericas = [s for s in _wb_sh.sheetnames if s.strip().isdigit()]
+        hojas_otras     = [s for s in _wb_sh.sheetnames if not s.strip().isdigit()]
+    except Exception as e:
+        st.error(f"❌ Error leyendo hojas del Tablero Ruteador: {e}")
+        return
+
+    if not hojas_numericas:
+        st.error("❌ No se encontraron hojas numéricas (días) en el Tablero Ruteador. "
+                 "Verificar que el archivo tenga hojas como '1', '2', ..., '30'.")
+        return
+
+    col_hoja, col_btn = st.columns([2, 1])
+    with col_hoja:
+        hoja_sel = st.selectbox(
+            "📅 Día del mes (hoja de Venta Especial):",
+            options=sorted(hojas_numericas, key=lambda x: int(x)),
+            key="rt_hoja_sel",
+            help="Seleccioná el número de día del mes que corresponde al reparto a analizar.",
+        )
+    with col_btn:
+        st.markdown("<br>", unsafe_allow_html=True)
+        procesar = st.button("🚀 Cargar Tablero", type="primary", key="rt_procesar", use_container_width=True)
+
+    if not procesar and "rt_data_cache" not in st.session_state:
+        st.info("Seleccioná el día y presioná **Cargar Tablero**.")
+        return
+
+    # ── Procesamiento ────────────────────────────────────────────────────────
+    cache_key = f"rt_data_{hoja_sel}"
+    if procesar or cache_key not in st.session_state:
+        with st.spinner("Cargando datos del Tablero Ruteador..."):
+            try:
+                # KPIs del día (hoja ALL)
+                rt_file.seek(0)
+                kpis = _load_ruteador_kpis(rt_file)
+
+                # Venta Especial (hoja numérica seleccionada)
+                rt_file.seek(0)
+                df_esp = _load_ruteador_especial(rt_file, hoja_sel)
+
+                # Venta Chess (filas azules del CAR)
+                df_chess_blue = pd.DataFrame()
+                if car_file:
+                    try:
+                        car_file.seek(0)
+                        df_chess_blue = _load_car_blue(car_file)
+                        car_file.seek(0)
+                    except Exception as e_chess:
+                        st.warning(f"⚠️ No se pudo leer bloque azul del CAR: {e_chess}")
+
+                st.session_state[cache_key] = {
+                    "kpis": kpis,
+                    "df_esp": df_esp,
+                    "df_chess_blue": df_chess_blue,
+                    "hoja_sel": hoja_sel,
+                }
+                st.session_state["rt_data_cache"] = cache_key
+
+            except Exception as e:
+                st.error(f"❌ Error cargando Tablero: {e}")
+                with st.expander("Stack trace"):
+                    import traceback
+                    st.code(traceback.format_exc())
+                return
+
+    cached = st.session_state.get(st.session_state.get("rt_data_cache", cache_key), {})
+    if not cached:
+        st.warning("Sin datos cacheados. Presioná **Cargar Tablero**.")
+        return
+
+    kpis           = cached["kpis"]
+    df_esp         = cached["df_esp"]
+    df_chess_blue  = cached["df_chess_blue"]
+
+    # ════════════════════════════════════════════════════════════════════════
+    # SECCIÓN 1 — KPIs DEL DÍA
+    # ════════════════════════════════════════════════════════════════════════
+    st.divider()
+    st.markdown("### 📊 KPIs del día")
+
+    # Métricas en 4 columnas
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    with m1:
+        st.metric("🚛 Camiones reparto",
+                  kpis.get("camiones_reparto", "—"),
+                  help="Camiones que salieron a repartir")
+    with m2:
+        st.metric("🚐 Camiones totales",
+                  kpis.get("camiones_totales", "—"))
+    with m3:
+        st.metric("📦 Pedidos ruteados",
+                  kpis.get("pedidos_ruteados", "—"))
+    with m4:
+        st.metric("📦 Bultos UP",
+                  f"{kpis.get('bultos_up', 0):.1f}" if isinstance(kpis.get('bultos_up'), float) else kpis.get('bultos_up', "—"))
+    with m5:
+        st.metric("🏪 Drop Size",
+                  f"{kpis.get('drop_size', 0):.1f}" if isinstance(kpis.get('drop_size'), float) else kpis.get('drop_size', "—"))
+    with m6:
+        st.metric("📐 Prom. Paletas",
+                  f"{kpis.get('prom_paletas', 0):.2f}" if isinstance(kpis.get('prom_paletas'), float) else kpis.get('prom_paletas', "—"))
+
+    # Tabla de SLAs
+    st.markdown("#### ⏱️ Cumplimiento de SLAs")
+    sla_data = []
+    if kpis.get("hora_target"):
+        sla_data.append({
+            "Indicador": "Hora entrega ventas (SLA)",
+            "Target":    _fmt_time(kpis.get("hora_target")),
+            "Real":      _fmt_time(kpis.get("hora_real")),
+            "Status":    _status_icon(kpis.get("status_hora")),
+        })
+    if kpis.get("tiempo_target"):
+        sla_data.append({
+            "Indicador": "Tiempo de ruteo",
+            "Target":    _fmt_time(kpis.get("tiempo_target")),
+            "Real":      _fmt_time(kpis.get("tiempo_real")),
+            "Status":    _status_icon(kpis.get("status_tiempo")),
+        })
+    if kpis.get("ocup_target"):
+        sla_data.append({
+            "Indicador": "Ocupación bodega (bultos UP)",
+            "Target":    str(kpis.get("ocup_target", "—")),
+            "Real":      f"{kpis.get('ocup_real', 0):.1f}" if isinstance(kpis.get("ocup_real"), float) else str(kpis.get("ocup_real", "—")),
+            "Status":    _status_icon(kpis.get("status_ocup")),
+        })
+    if kpis.get("fuera_zona_target") is not None:
+        fz_target = kpis.get("fuera_zona_target", 0)
+        fz_real   = kpis.get("fuera_zona_real", 0)
+        sla_data.append({
+            "Indicador": "% Fuera de zona",
+            "Target":    f"{fz_target:.0%}" if isinstance(fz_target, float) else str(fz_target),
+            "Real":      f"{fz_real:.2%}" if isinstance(fz_real, float) else str(fz_real),
+            "Status":    _status_icon(kpis.get("status_fz")),
+        })
+
+    if sla_data:
+        st.dataframe(pd.DataFrame(sla_data), hide_index=True, use_container_width=True)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # SECCIÓN 2 — TABLA DE CAMIONES (desde Tablero ALL)
+    # ════════════════════════════════════════════════════════════════════════
+    tabla_cam = kpis.get("tabla_camiones", [])
+    if tabla_cam:
+        st.divider()
+        st.markdown("### 🚛 Camiones del día")
+        df_cam = pd.DataFrame(tabla_cam)
+        # Solo mostrar camiones con PDV > 0 (los que salieron)
+        df_cam_activos = df_cam[df_cam["pdv"] > 0].copy()
+        df_cam_sin     = df_cam[df_cam["pdv"] == 0].copy()
+
+        st.caption(f"**{len(df_cam_activos)} camiones activos** | {len(df_cam_sin)} sin reparto")
+
+        if not df_cam_activos.empty:
+            # Formatear para display
+            df_disp = df_cam_activos.rename(columns={
+                "camion":       "N° Camión",
+                "chofer":       "Chofer",
+                "pdv":          "PDV",
+                "bultos_up":    "Bultos UP",
+                "paletas":      "Paletas",
+                "patente":      "Patente",
+                "cap_kg":       "Cap. kg",
+                "peso_real_kg": "Peso real kg",
+                "validacion":   "Validación",
+            })
+            cols_show = ["N° Camión", "Chofer", "PDV", "Bultos UP", "Paletas",
+                         "Patente", "Cap. kg", "Peso real kg", "Validación"]
+            cols_show = [c for c in cols_show if c in df_disp.columns]
+            st.dataframe(
+                df_disp[cols_show].sort_values("N° Camión"),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+            # Totales
+            tot_pdv  = int(df_cam_activos["pdv"].sum())
+            tot_bup  = df_cam_activos["bultos_up"].sum()
+            tot_pal  = df_cam_activos["paletas"].sum()
+            tot_kgr  = df_cam_activos["peso_real_kg"].sum()
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total PDV", tot_pdv)
+            c2.metric("Total Bultos UP", f"{tot_bup:.1f}")
+            c3.metric("Total Paletas", f"{tot_pal:.2f}")
+            c4.metric("Total Peso real (kg)", f"{tot_kgr:,.0f}")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # SECCIÓN 3 — VENTA ESPECIAL (hoja numérica del día)
+    # ════════════════════════════════════════════════════════════════════════
+    st.divider()
+    st.markdown(f"### 🟡 Venta Especial — Hoja {hoja_sel}")
+    st.caption("Datos cargados desde la hoja numérica del Tablero Ruteador. "
+               "Esta es la venta **fuera del sistema Chess** (venta especial/directa).")
+
+    if df_esp.empty:
+        st.info("No hay datos de Venta Especial en la hoja seleccionada.")
+    else:
+        # Resumen por camión
+        grp_esp = df_esp.groupby("camion", as_index=False).agg(
+            clientes=("razon_social" if "razon_social" in df_esp.columns else "sku_desc", "nunique"),
+            bultos=("cantidad", "sum"),
+            importe_total=("importe_total", "sum") if "importe_total" in df_esp.columns else ("cantidad", "sum"),
+        )
+        if "importe_total" not in df_esp.columns:
+            grp_esp = grp_esp.rename(columns={"cantidad": "bultos"})
+
+        grp_esp = grp_esp.sort_values("camion")
+
+        # Enriquecer con chofer si tenemos la tabla de camiones
+        if tabla_cam:
+            cam_chofer = {c["camion"]: c["chofer"] for c in tabla_cam}
+            grp_esp["chofer"] = grp_esp["camion"].map(cam_chofer).fillna("—")
+
+        tot_blt_esp  = df_esp["cantidad"].sum()
+        tot_imp_esp  = df_esp["importe_total"].sum() if "importe_total" in df_esp.columns else 0
+
+        me1, me2, me3 = st.columns(3)
+        me1.metric("Camiones con V. Especial", grp_esp["camion"].nunique())
+        me2.metric("Total bultos", int(tot_blt_esp))
+        if tot_imp_esp > 0:
+            me3.metric("Total importe", f"${tot_imp_esp:,.0f}")
+
+        with st.expander("📋 Resumen por camión — Venta Especial", expanded=True):
+            cols_grp = ["camion"] + (["chofer"] if "chofer" in grp_esp.columns else []) + \
+                       ["clientes", "bultos"] + \
+                       (["importe_total"] if "importe_total" in grp_esp.columns else [])
+            cols_grp = [c for c in cols_grp if c in grp_esp.columns]
+            st.dataframe(
+                grp_esp[cols_grp].rename(columns={
+                    "camion": "N° Camión", "chofer": "Chofer",
+                    "clientes": "Clientes", "bultos": "Bultos",
+                    "importe_total": "Importe Total ($)",
+                }),
+                hide_index=True, use_container_width=True,
+            )
+
+        with st.expander("📄 Detalle completo por cliente — Venta Especial"):
+            cols_detail = [c for c in ["camion", "razon_social", "codigo_cliente",
+                                        "sku_desc", "cantidad", "importe_por_bulto",
+                                        "importe_total"] if c in df_esp.columns]
+            st.dataframe(
+                df_esp[cols_detail].sort_values("camion").rename(columns={
+                    "camion": "N° Camión", "razon_social": "Cliente",
+                    "codigo_cliente": "Cód. Cliente", "sku_desc": "Descripción SKU",
+                    "cantidad": "Bultos", "importe_por_bulto": "Imp/Bulto ($)",
+                    "importe_total": "Importe Total ($)",
+                }),
+                hide_index=True, use_container_width=True,
+            )
+
+    # ════════════════════════════════════════════════════════════════════════
+    # SECCIÓN 4 — VENTA CHESS (bloque azul del CAR)
+    # ════════════════════════════════════════════════════════════════════════
+    st.divider()
+    st.markdown("### 🔵 Venta Chess — Bloque Azul (CAR.xlsx)")
+    st.caption("Filas azules (primeras 42 filas) del CAR: bultos agregados de Chess por camión/SKU.")
+
+    if df_chess_blue.empty:
+        st.info("Sin datos de Venta Chess. Subí el **CAR.xlsx** en 📁 Archivos.")
+    else:
+        grp_chess = df_chess_blue.groupby("camion", as_index=False).agg(
+            skus=("sku", "nunique"),
+            bultos_chess=("bultos_chess", "sum"),
+        )
+        if tabla_cam:
+            cam_chofer = {c["camion"]: c["chofer"] for c in tabla_cam}
+            grp_chess["chofer"] = grp_chess["camion"].map(cam_chofer).fillna("—")
+
+        tot_blt_chess = df_chess_blue["bultos_chess"].sum()
+        mc1, mc2 = st.columns(2)
+        mc1.metric("Camiones con V. Chess", grp_chess["camion"].nunique())
+        mc2.metric("Total bultos Chess", int(tot_blt_chess))
+
+        with st.expander("📋 Resumen por camión — Venta Chess (bloque azul CAR)", expanded=True):
+            cols_c = ["camion"] + (["chofer"] if "chofer" in grp_chess.columns else []) + ["skus", "bultos_chess"]
+            st.dataframe(
+                grp_chess[cols_c].sort_values("camion").rename(columns={
+                    "camion": "N° Camión", "chofer": "Chofer",
+                    "skus": "SKUs distintos", "bultos_chess": "Bultos Chess",
+                }),
+                hide_index=True, use_container_width=True,
+            )
+
+        with st.expander("📄 Detalle SKU por camión — Venta Chess"):
+            st.dataframe(
+                df_chess_blue.sort_values(["camion", "sku"]).rename(columns={
+                    "camion": "N° Camión", "sku": "SKU",
+                    "descripcion": "Descripción", "bultos_chess": "Bultos",
+                }),
+                hide_index=True, use_container_width=True,
+            )
+
+    # ════════════════════════════════════════════════════════════════════════
+    # SECCIÓN 5 — CONSOLIDADO TOTAL = CHESS + ESPECIAL
+    # ════════════════════════════════════════════════════════════════════════
+    st.divider()
+    st.markdown("### ✅ CONSOLIDADO — Venta Total (Chess + Especial)")
+    st.caption("⚡ **Regla operativa:** Ambas ventas se suman siempre. "
+               "La venta del día = Chess (ANR/CAR) + Especial (Tablero Ruteador).")
+
+    # Armar tabla consolidada por camión
+    consol_rows = {}
+
+    # Chess
+    if not df_chess_blue.empty:
+        for _, r in df_chess_blue.groupby("camion").agg(bultos_chess=("bultos_chess", "sum")).reset_index().iterrows():
+            cam = int(r["camion"])
+            consol_rows.setdefault(cam, {"bultos_chess": 0, "bultos_especial": 0, "importe_especial": 0})
+            consol_rows[cam]["bultos_chess"] += r["bultos_chess"]
+
+    # Especial
+    if not df_esp.empty:
+        for _, r in df_esp.groupby("camion").agg(
+            bultos_especial=("cantidad", "sum"),
+            importe_especial=("importe_total", "sum") if "importe_total" in df_esp.columns else ("cantidad", "sum"),
+        ).reset_index().iterrows():
+            cam = int(r["camion"])
+            consol_rows.setdefault(cam, {"bultos_chess": 0, "bultos_especial": 0, "importe_especial": 0})
+            consol_rows[cam]["bultos_especial"] += r["bultos_especial"]
+            if "importe_especial" in r:
+                consol_rows[cam]["importe_especial"] += r.get("importe_especial", 0)
+
+    if consol_rows:
+        df_consol = pd.DataFrame([
+            {
+                "camion": cam,
+                "bultos_chess": int(v["bultos_chess"]),
+                "bultos_especial": int(v["bultos_especial"]),
+                "bultos_total": int(v["bultos_chess"] + v["bultos_especial"]),
+                "importe_especial": v.get("importe_especial", 0),
+            }
+            for cam, v in sorted(consol_rows.items())
+        ])
+
+        # Enriquecer con chofer
+        if tabla_cam:
+            cam_chofer = {c["camion"]: c["chofer"] for c in tabla_cam}
+            df_consol["chofer"] = df_consol["camion"].map(cam_chofer).fillna("—")
+
+        cols_con = ["camion"] + (["chofer"] if "chofer" in df_consol.columns else []) + \
+                   ["bultos_chess", "bultos_especial", "bultos_total"] + \
+                   (["importe_especial"] if df_consol["importe_especial"].sum() > 0 else [])
+        st.dataframe(
+            df_consol[cols_con].rename(columns={
+                "camion": "N° Camión", "chofer": "Chofer",
+                "bultos_chess": "Bultos Chess", "bultos_especial": "Bultos Especial",
+                "bultos_total": "TOTAL BULTOS", "importe_especial": "Imp. Especial ($)",
+            }),
+            hide_index=True, use_container_width=True,
+        )
+
+        # Totales finales
+        tc1, tc2, tc3, tc4 = st.columns(4)
+        tc1.metric("Total Chess", int(df_consol["bultos_chess"].sum()))
+        tc2.metric("Total Especial", int(df_consol["bultos_especial"].sum()))
+        tc3.metric("TOTAL GENERAL", int(df_consol["bultos_total"].sum()))
+        if "importe_especial" in df_consol.columns and df_consol["importe_especial"].sum() > 0:
+            tc4.metric("Importe Especial Total", f"${df_consol['importe_especial'].sum():,.0f}")
+
+        # Exportar consolidado
+        st.divider()
+        _download_trio(
+            df_consol[cols_con],
+            "Tablero_Consolidado",
+            "Consolidado",
+            "rt_consol",
+        )
+    else:
+        st.info("Cargá al menos un archivo (CAR o Tablero) para ver el consolidado.")
+
+
 def main():
     st.set_page_config(
         page_title=f"Picking Orchestrator v{APP_VERSION}",
@@ -6134,6 +6577,7 @@ def main():
         "🏷️ Clasificación",
         "🏆 Top SKUs",
         "🖨️ Boletas",
+        "🗺️ Tablero Ruteador",
         "💰 Cierre",
         "📤 Extraíbles Sheets",
         "✅ Validación + Log",
@@ -6146,9 +6590,10 @@ def main():
     with tabs[5]: render_tab_clasificacion()
     with tabs[6]: render_tab_top_skus()
     with tabs[7]: render_tab_boletas()
-    with tabs[8]: render_tab_cierre()
-    with tabs[9]: render_tab_extraibles()
-    with tabs[10]: render_tab_validacion()
+    with tabs[8]: render_tab_ruteador()
+    with tabs[9]: render_tab_cierre()
+    with tabs[10]: render_tab_extraibles()
+    with tabs[11]: render_tab_validacion()
 
 
 # ════════════════════════════════════════════════════════════════════════════
