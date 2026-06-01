@@ -2720,6 +2720,17 @@ def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
         kg_ae  =("kg_ae",   "sum"),
     )
 
+    # Pivot pall_ae por cancha (paletas completas AE desglosadas por cancha)
+    pivot_pall_ae = grp.groupby(["cam", "cancha_norm"], as_index=False).agg(
+        pall_ae_c=("pall_ae", "sum"),
+    ).pivot_table(
+        index="cam", columns="cancha_norm",
+        values="pall_ae_c", aggfunc="sum", fill_value=0.0,
+    ).reset_index()
+    pivot_pall_ae.columns.name = None
+    pall_ae_rename = {c: f"_pall_ae_{c}" for c in _T4_CANCHAS if c in pivot_pall_ae.columns}
+    pivot_pall_ae = pivot_pall_ae.rename(columns=pall_ae_rename)
+
     pivot_bult = pick_grp.pivot_table(
         index="cam", columns="cancha_norm",
         values="bult_pick", aggfunc="sum", fill_value=0.0,
@@ -2754,10 +2765,14 @@ def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
     cam_df = cam_df.merge(pivot_up, on="cam", how="left")
     cam_df = cam_df.merge(pivot_hl, on="cam", how="left")
     cam_df = cam_df.merge(pivot_kg, on="cam", how="left")
+    cam_df = cam_df.merge(pivot_pall_ae, on="cam", how="left")
 
     for c in _T4_CANCHAS:
         if c not in cam_df.columns:
             cam_df[c] = 0.0
+        if f"_pall_ae_{c}" not in cam_df.columns:
+            cam_df[f"_pall_ae_{c}"] = 0.0
+        cam_df[f"_pall_ae_{c}"] = cam_df[f"_pall_ae_{c}"].fillna(0.0)
         if f"_up_{c}" not in cam_df.columns:
             cam_df[f"_up_{c}"] = 0.0
         if f"_hl_{c}" not in cam_df.columns:
@@ -3278,7 +3293,9 @@ def _push_matriz_pall_to_sheets(df_display, pdata, credentials_json: dict) -> in
         except (ValueError, TypeError):
             pass
 
-        # ── UP picking por cancha (fracción picking, no pall enteras AE) ──
+        import math as _math_push
+
+        # ── UP picking por cancha (fracción de pallet) ──
         up_ci   = round(float(row.get("_up_CANCHA I",   0.0)), 3)
         up_cii  = round(float(row.get("_up_CANCHA II",  0.0)), 3)
         up_ciii = round(float(row.get("_up_CANCHA III", 0.0)), 3)
@@ -3286,9 +3303,15 @@ def _push_matriz_pall_to_sheets(df_display, pdata, credentials_json: dict) -> in
         up_mkpl = round(float(row.get("_up_MKPL",       0.0)), 3)
         pick_matr_up = round(up_ci + up_cii + up_ciii + up_civ + up_mkpl, 3)
 
-        # ── Pall completas AE ──
+        # ── Pall completas AE por cancha (del pipeline upstream) ──
+        pall_ci   = int(row.get("_pall_ae_CANCHA I",   0))
+        pall_cii  = int(row.get("_pall_ae_CANCHA II",  0))
+        pall_ciii = int(row.get("_pall_ae_CANCHA III", 0))
+        pall_civ  = int(row.get("_pall_ae_CANCHA IV",  0))
+        pall_mkpl = int(row.get("_pall_ae_MKPL",       0))
+        # Col K: pall AE total (suma de todas las canchas activas)
         ae_pall      = round(float(row.get("AE_PALL", 0.0)), 2)
-        pall_matr_up = ae_pall  # total pall completas (col K)
+        pall_matr_up = pall_ci + pall_cii + pall_ciii + pall_civ + pall_mkpl
 
         # ── KG por cancha ──
         kg_ci   = round(float(row.get("_kg_CANCHA I",   0.0)), 1)
@@ -3302,41 +3325,54 @@ def _push_matriz_pall_to_sheets(df_display, pdata, credentials_json: dict) -> in
         # A  Fecha
         # B  Camión
         # C  REPA RTO → siempre "SI"
-        # D  PICK MATR IZ UP (suma UP picking canchas activas)
+        # D  PICK MATR IZ UP  (suma UP picking todas las canchas activas)
         # E  CANCHA I   UP picking
         # F  CANCHA II  UP picking
         # G  CANCHA III UP picking
         # H  CANCHA IV  UP picking
         # I  CANCHA V   (inactiva) → 0
         # J  MKPL       UP picking
-        # K  PALL MATR IZ UP (pall AE total)
-        # L  CANCHA I   pall AE → 0 (no disponible por cancha)
-        # M  CANCHA II  pall AE → 0
-        # N  CANCHA III pall AE → 0
-        # O  CANCHA IV  pall AE → 0
+        # K  PALL MATR IZ UP  (pall AE total = suma pall_ae por cancha)
+        # L  CANCHA I   pall AE completas (del pipeline _pall_ae_)
+        # M  CANCHA II  pall AE completas
+        # N  CANCHA III pall AE completas
+        # O  CANCHA IV  pall AE completas
         # P  CANCHA V   (inactiva) → 0
-        # Q  MKPL       pall AE → 0
-        # R..AS columnas intermedias del Sheet → vacías (32 cols)
-        # AT KG MATR IZ total
-        # AU CANCHA I   KG
-        # AV CANCHA II  KG
-        # AW CANCHA III KG
-        # AX CANCHA IV  KG
-        # AY CANCHA V   (inactiva) → 0
-        # AZ MKPL       KG
-        new_row = (
-            [fecha_str, camion, "SI",         # A B C
-             pick_matr_up,                    # D
-             up_ci, up_cii, up_ciii, up_civ,  # E F G H
-             0, up_mkpl,                      # I(inact) J
-             pall_matr_up,                    # K
-             0, 0, 0, 0,                      # L M N O
-             0, 0]                            # P(inact) Q
-            + [""] * 32                       # R..AS intermedias
-            + [kg_matr,                       # AT
-               kg_ci, kg_cii, kg_ciii, kg_civ,# AU AV AW AX
-               0, kg_mkpl]                    # AY(inact) AZ
-        )
+        # Q  MKPL       pall AE completas
+        # R  KG MATR IZ total (suma KG todas las canchas activas)
+        # S  CANCHA I   KG
+        # T  CANCHA II  KG
+        # U  CANCHA III KG
+        # V  CANCHA IV  KG
+        # W  CANCHA V   (inactiva) → 0
+        # X  MKPL       KG
+        # (nada después de X)
+        new_row = [
+            fecha_str,    # A
+            camion,       # B
+            "SI",         # C — REPA RTO siempre SI
+            pick_matr_up, # D — PICK MATR IZ UP
+            up_ci,        # E — CANCHA I   UP picking
+            up_cii,       # F — CANCHA II  UP picking
+            up_ciii,      # G — CANCHA III UP picking
+            up_civ,       # H — CANCHA IV  UP picking
+            0,            # I — CANCHA V   (inactiva)
+            up_mkpl,      # J — MKPL       UP picking
+            pall_matr_up, # K — PALL MATR IZ UP (AE total)
+            pall_ci,      # L — CANCHA I   pall completas
+            pall_cii,     # M — CANCHA II  pall completas
+            pall_ciii,    # N — CANCHA III pall completas
+            pall_civ,     # O — CANCHA IV  pall completas
+            0,            # P — CANCHA V   (inactiva)
+            pall_mkpl,    # Q — MKPL       pall completas
+            kg_matr,      # R — KG MATR IZ total
+            kg_ci,        # S — CANCHA I   KG
+            kg_cii,       # T — CANCHA II  KG
+            kg_ciii,      # U — CANCHA III KG
+            kg_civ,       # V — CANCHA IV  KG
+            0,            # W — CANCHA V   (inactiva)
+            kg_mkpl,      # X — MKPL       KG
+        ]
         rows_to_append.append(new_row)
 
     if not rows_to_append:
