@@ -267,7 +267,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.36.0"
+APP_VERSION = "4.37.1"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -3278,37 +3278,77 @@ def _push_matriz_pall_to_sheets(df_display, pdata, credentials_json: dict) -> in
         except (ValueError, TypeError):
             pass
 
-        # UP por cancha (picking) — mismo orden que columnas XLSX
-        up_vals = [round(float(row.get(f"_up_{c}", 0.0)), 3) for c in CANCHAS]
-        # KG por cancha
-        kg_vals = [round(float(row.get(f"_kg_{c}", 0.0)), 1) for c in CANCHAS]
-        # Bultos por cancha
-        bult_vals = [round(float(row.get(c, 0.0)), 1) for c in CANCHAS]
+        # ── UP picking por cancha (fracción picking, no pall enteras AE) ──
+        up_ci   = round(float(row.get("_up_CANCHA I",   0.0)), 3)
+        up_cii  = round(float(row.get("_up_CANCHA II",  0.0)), 3)
+        up_ciii = round(float(row.get("_up_CANCHA III", 0.0)), 3)
+        up_civ  = round(float(row.get("_up_CANCHA IV",  0.0)), 3)
+        up_mkpl = round(float(row.get("_up_MKPL",       0.0)), 3)
+        pick_matr_up = round(up_ci + up_cii + up_ciii + up_civ + up_mkpl, 3)
 
-        ae_pall    = round(float(row.get("AE_PALL",    0.0)), 2)
-        total_pall = round(float(row.get("TOTAL_PALL", 0.0)), 2)
-        total_pick = round(float(row.get("TOTAL_PICK", 0.0)), 1)
+        # ── Pall completas AE ──
+        ae_pall      = round(float(row.get("AE_PALL", 0.0)), 2)
+        pall_matr_up = ae_pall  # total pall completas (col K)
 
-        # Columnas: Fecha | Camión | UP×5 | AE Pall | TOT PALL | Bult Pick | KG×5
+        # ── KG por cancha ──
+        kg_ci   = round(float(row.get("_kg_CANCHA I",   0.0)), 1)
+        kg_cii  = round(float(row.get("_kg_CANCHA II",  0.0)), 1)
+        kg_ciii = round(float(row.get("_kg_CANCHA III", 0.0)), 1)
+        kg_civ  = round(float(row.get("_kg_CANCHA IV",  0.0)), 1)
+        kg_mkpl = round(float(row.get("_kg_MKPL",       0.0)), 1)
+        kg_matr = round(kg_ci + kg_cii + kg_ciii + kg_civ + kg_mkpl, 1)
+
+        # ── Armado de fila según estructura del Sheet ──
+        # A  Fecha
+        # B  Camión
+        # C  REPA RTO → siempre "SI"
+        # D  PICK MATR IZ UP (suma UP picking canchas activas)
+        # E  CANCHA I   UP picking
+        # F  CANCHA II  UP picking
+        # G  CANCHA III UP picking
+        # H  CANCHA IV  UP picking
+        # I  CANCHA V   (inactiva) → 0
+        # J  MKPL       UP picking
+        # K  PALL MATR IZ UP (pall AE total)
+        # L  CANCHA I   pall AE → 0 (no disponible por cancha)
+        # M  CANCHA II  pall AE → 0
+        # N  CANCHA III pall AE → 0
+        # O  CANCHA IV  pall AE → 0
+        # P  CANCHA V   (inactiva) → 0
+        # Q  MKPL       pall AE → 0
+        # R..AS columnas intermedias del Sheet → vacías (32 cols)
+        # AT KG MATR IZ total
+        # AU CANCHA I   KG
+        # AV CANCHA II  KG
+        # AW CANCHA III KG
+        # AX CANCHA IV  KG
+        # AY CANCHA V   (inactiva) → 0
+        # AZ MKPL       KG
         new_row = (
-            [fecha_str, camion]
-            + up_vals
-            + [ae_pall, total_pall, total_pick]
-            + kg_vals
+            [fecha_str, camion, "SI",         # A B C
+             pick_matr_up,                    # D
+             up_ci, up_cii, up_ciii, up_civ,  # E F G H
+             0, up_mkpl,                      # I(inact) J
+             pall_matr_up,                    # K
+             0, 0, 0, 0,                      # L M N O
+             0, 0]                            # P(inact) Q
+            + [""] * 32                       # R..AS intermedias
+            + [kg_matr,                       # AT
+               kg_ci, kg_cii, kg_ciii, kg_civ,# AU AV AW AX
+               0, kg_mkpl]                    # AY(inact) AZ
         )
         rows_to_append.append(new_row)
 
     if not rows_to_append:
         return 0
 
-    # Detectar última fila con datos y escribir debajo (sin sobreescribir)
-    existing = sheet.get_all_values()
-    next_row = len(existing) + 1  # 1-indexed, justo debajo del último dato
-
-    sheet.insert_rows(
+    # append_rows escribe al final del rango detectado por Sheets
+    # sin insertar ni desplazar filas → fórmulas en AT+ quedan intactas
+    sheet.append_rows(
         rows_to_append,
-        row=next_row,
         value_input_option="USER_ENTERED",
+        insert_data_option="INSERT_ROWS",
+        table_range="A1",
     )
     return len(rows_to_append)
 
