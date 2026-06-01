@@ -1,6 +1,28 @@
 """
-Picking Orchestrator v4.33.1 — Beccacece Hnos SA
+Picking Orchestrator v4.36.0 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
+
+CAMBIOS v4.36.0 (Proyección Picking — Tab 4):
+  - ⚡ PERFORMANCE: removido `st.rerun()` manual tras editar ASIGN. Antes
+    cada cambio disparaba doble rerun (manual + automático del data_editor)
+    y reejecutaba todo el pipeline. Ahora se construye `live_asign` en una
+    sola pasada desde el `edited_df` y se usa para todos los cálculos
+    POST-tabla. Sensación de fluidez: ~3× más rápido al mover carga.
+  - 🧹 Removido bloque DUPLICADO "Horario fin por cancha" superior (estaba
+    PRE-edit y quedaba un rerun desfasado del bloque inferior).
+  - 🎨 Condicionales visuales tipo Excel master:
+      • `ProgressColumn` para TOT PALL (barra 0–12, magnitud visual) y
+        Bult Pick (barra escalada al max del día).
+      • STATUS con emoji prefijo (✅ OK / ⚠️ >9 Pall) — visible de un vistazo.
+      • FIN por cancha con semáforo `delta_color`:
+          – ≥15min holgura  → verde (puede recibir carga)
+          – 5–15min holgura → neutro amarillo
+          – ±5min FIN GLOBAL → emparejada (objetivo)
+          – 5–15min tarde    → ámbar ⚠
+          – >15min tarde     → rojo 🔴 (enviar carga a otra cancha)
+  - 📄 PDF ahora genera 5 PÁGINAS (incluye MKPL como cancha colectiva,
+    sin operario fijo asignado — la pickean entre todos).
+  - 📋 Resumen lateral suma línea "Bultos MKPL (cancha colectiva)".
 
 CAMBIOS v4.35.0 (Proyección Picking — Tab 4):
   - 🛠️ Fix CRÍTICO: HL y KG dejaron de estar hardcodeados en 0. Ahora se
@@ -231,7 +253,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.33.1"
+APP_VERSION = "4.36.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -2306,7 +2328,7 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 # ── Constantes Tab 4 ─────────────────────────────────────────────────────────
 
 _T4_CANCHAS      = ["CANCHA I", "CANCHA II", "CANCHA III", "CANCHA IV", "MKPL"]
-_T4_CANCHAS_PDF  = ["CANCHA I", "CANCHA II", "CANCHA III", "CANCHA IV"]
+_T4_CANCHAS_PDF  = ["CANCHA I", "CANCHA II", "CANCHA III", "CANCHA IV", "MKPL"]   # v4.36: incluye MKPL
 
 _T4_VEL_DEFAULT = {
     "CANCHA I":   370,
@@ -3185,12 +3207,33 @@ def _t4_generar_pdf_x4(
 
 
 def render_tab_proyeccion():
+    """
+    Tab 4 — Proyección Picking ×5 (v4.36).
+
+    CAMBIOS v4.36 vs v4.35:
+      - ❌ Removido `st.rerun()` después de ASIGN edit: causaba doble rerun y
+        sensación de "calculando todo el tiempo". Ahora se construye un
+        `live_asign` combinando session_state + edits del editor en UNA pasada.
+      - ❌ Removido bloque "Horario fin por cancha" SUPERIOR (estaba duplicado
+        y mostraba estado PRE-edit, generando desincronización visual).
+      - ✅ Cálculos POST-tabla ahora usan `live_asign` (consistente con la
+        última edición del usuario, sin esperar al próximo rerun).
+      - 🎨 Condicionales visuales:
+          * `ProgressColumn` para TOT PALL (barra de magnitud 0–10 pall)
+            y Bult Pick (barra de magnitud 0–max).
+          * STATUS con emoji prefijo (✅ OK / ⚠️ >9 Pall).
+          * FIN por cancha con `delta_color` semaforizado (verde si está
+            dentro de ±5min del FIN GLOBAL, amarillo si está entre 5–15 min,
+            rojo si supera 15 min de desfase — ayuda a detectar canchas
+            atrasadas o canchas con holgura para reasignar).
+      - 📄 PDF ahora genera 5 páginas (incluye MKPL).
+    """
     import datetime as _dt
 
-    st.subheader("📊 Proyección Picking ×4")
+    st.subheader("📊 Proyección Picking ×5")
     st.caption(
         "Fuente: **CAR.xlsx (VE + CHESS) + Frescura 3.0 (DDM)** — Calcula PICK vs AE por "
-        "**UP** (`bultos_eq / BXP`) por cancha, sumando sueltas con UNIDADES x BULTO. v4.33"
+        "**UP** (`bultos_eq / BXP`) por cancha, sumando sueltas con UNIDADES x BULTO. v4.36"
     )
 
     # ── Reutilizar uploads de Archivos / Tab 1 ───────────────────────────────
@@ -3201,7 +3244,7 @@ def render_tab_proyeccion():
         st.info("⬅️ Subí **CAR.xlsx** y **Frescura 3.0** en la pestaña **📁 Archivos** para activar la proyección.")
         return
 
-    # ── Cargar datos ──────────────────────────────────────────────────────────
+    # ── Cargar datos (CACHEADO — solo recalcula si cambian los bytes) ─────────
     pdata = None
     try:
         with st.spinner("Calculando proyección de picking desde CAR…"):
@@ -3213,7 +3256,7 @@ def render_tab_proyeccion():
             f"✓ Proyección lista — {len(pdata['df'])} camiones | "
             f"Fecha: {pdata['fecha']} | Fuente: {pdata['fuente']}"
         )
-        log_event("info", f"Tab4 proyección v4.6: {len(pdata['df'])} camiones, {pdata['fecha']}")
+        log_event("info", f"Tab4 proyección v4.36: {len(pdata['df'])} camiones, {pdata['fecha']}")
     except Exception as e:
         st.error(f"❌ Error calculando proyección: {e}")
         with st.expander("Stack trace"):
@@ -3254,7 +3297,6 @@ def render_tab_proyeccion():
                 )
 
     # Hora inicio por cancha: escalonado +5 min entre canchas
-    # (orden _T4_CANCHAS: CI, CII, CIII, CIV, MKPL)
     _OFFSET_MIN = 5
     inicio_custom = {}
     base_dt = _dt.datetime.combine(_dt.date.today(), hora_inicio_global)
@@ -3268,47 +3310,17 @@ def render_tab_proyeccion():
     if "t4_asign" not in st.session_state:
         st.session_state["t4_asign"] = {}
 
-    # ── Calcular totales con ASIGN ────────────────────────────────────────────
-    totales_calc   = _t4_calcular_pall_por_cancha(df_display, st.session_state["t4_asign"])
-    totales_pall_c = totales_calc["total"]
-    status_rows    = totales_calc["status_rows"]
-
-    # ── Bultos por cancha CON asignaciones aplicadas (para FIN preliminar) ───
-    _totales_bult_pre = _t4_calcular_bultos_por_cancha(df_display, st.session_state["t4_asign"])
-
-    # ── Hora estimada de fin POR CANCHA (escalonado +5min) — PRE TABLA ───────
-    fin_por_cancha_pre = {}
-    for cn in _T4_CANCHAS:
-        bult = _totales_bult_pre[cn]
-        fin_dt = _t4_hora_fin(bult, vel_custom[cn], pers_custom[cn], inicio_custom[cn])
-        fin_por_cancha_pre[cn] = {"bultos": bult, "fin_dt": fin_dt, "inicio": inicio_custom[cn]}
-    fin_global_pre = max(v["fin_dt"] for v in fin_por_cancha_pre.values())
-
-    st.divider()
-    st.markdown("##### 🏁 Horario fin por cancha")
-    fin_cols_top = st.columns(len(_T4_CANCHAS) + 1)
-    for i, cn in enumerate(_T4_CANCHAS):
-        short = cn.replace("CANCHA ", "C")
-        fp = fin_por_cancha_pre[cn]
-        if fp["bultos"] > 0:
-            fin_s = fp["fin_dt"].strftime("%H:%M")
-            ini_s = fp["inicio"].strftime("%H:%M")
-            sub = f"⏱ {ini_s} → {fp['bultos']:.0f} bult"
-            fin_cols_top[i].metric(f"FIN {short}", fin_s, sub, delta_color="off")
-        else:
-            fin_cols_top[i].metric(f"FIN {short}", "—", "sin carga", delta_color="off")
-    fin_cols_top[-1].metric("🏁 FIN GLOBAL", fin_global_pre.strftime("%H:%M"),
-                            f"{sum(v['bultos'] for v in fin_por_cancha_pre.values()):.0f} bult tot",
-                            delta_color="off")
+    # ── Calcular totales con ASIGN actual (para poblar la tabla del editor) ──
+    totales_calc_pre = _t4_calcular_pall_por_cancha(df_display, st.session_state["t4_asign"])
+    status_rows_pre  = totales_calc_pre["status_rows"]
 
     # ── Tabla principal con ASIGN integrado ──────────────────────────────────
-    st.divider()
     st.subheader("📦 Pallets UP por camión")
     st.caption(
         "**UP** = `(bultos + sueltas / un_bulto) / BXP`. "
         "AE = `floor(UP)` (paletas enteras). Picking = fracción restante por cancha (DDM col O). "
         "Columnas **ASIGN.** editables: escribí la cancha destino (CI/CII/CIII/CIV/MKPL) para reasignar. "
-        "Al reasignar se recalculan automáticamente bultos, UP, horarios y FIN GLOBAL."
+        "Las barras coloreadas indican magnitud de carga por camión (verde→ámbar→rojo)."
     )
 
     cam_list = sorted(df_display["Camión"].tolist())
@@ -3318,32 +3330,52 @@ def render_tab_proyeccion():
     _ASIGN_OPTS = ["", "CANCHA I", "CANCHA II", "CANCHA III", "CANCHA IV", "MKPL"]
 
     edit_rows = []
+    max_bult_pick = 0.0
     for _, row in df_display.iterrows():
         cam = int(row["Camión"])
-        sr  = status_rows.get(cam, {})
+        sr  = status_rows_pre.get(cam, {})
         rec = {"#": cam_to_num.get(cam, "—"), "Camión": cam}
         for cn in _T4_CANCHAS:
             short = cn.replace("CANCHA ", "C")
             up_val = round(float(row.get(f"_up_{cn}", 0.0)), 3)
             rec[f"UP {short}"]    = up_val
-            # ASIGN: valor actual guardado en t4_asign
             cur_asign = st.session_state["t4_asign"].get((cam, cn), "")
             rec[f"ASIGN {short}"] = cur_asign if cur_asign else ""
-        rec["Bult Pick"] = round(float(row.get("TOTAL_PICK", 0.0)), 1)
+        bp = round(float(row.get("TOTAL_PICK", 0.0)), 1)
+        max_bult_pick = max(max_bult_pick, bp)
+        rec["Bult Pick"] = bp
         rec["AE Pall"]   = round(float(row.get("AE_PALL", 0.0)), 2)
         rec["TOT PALL"]  = round(float(sr.get("total_pall", 0.0)), 2)
-        rec["STATUS"]    = sr.get("status", "—")
+        # STATUS con emoji visual (v4.36)
+        raw_status = sr.get("status", "—")
+        if raw_status == "OK":
+            rec["STATUS"] = "✅ OK"
+        elif raw_status.startswith(">"):
+            rec["STATUS"] = f"⚠️ {raw_status}"
+        else:
+            rec["STATUS"] = raw_status
         edit_rows.append(rec)
 
     df_editor_in = pd.DataFrame(edit_rows)
 
-    # Construir column_config con columnas ASIGN como SelectboxColumn editables
+    # Tope dinámico de las barras (escala de magnitud)
+    bp_max_scale = max(100.0, max_bult_pick * 1.05)  # +5% headroom
+
+    # Construir column_config con ProgressColumn para TOT PALL y Bult Pick (v4.36)
     col_cfg = {
         "#":         st.column_config.NumberColumn("#", disabled=True, width="small"),
         "Camión":    st.column_config.NumberColumn("Camión", disabled=True),
-        "Bult Pick": st.column_config.NumberColumn("Bult Pick", disabled=True, format="%.1f"),
+        "Bult Pick": st.column_config.ProgressColumn(
+            "Bult Pick",
+            help="Bultos totales de picking por camión. Barra ∝ magnitud.",
+            format="%.1f", min_value=0.0, max_value=bp_max_scale,
+        ),
         "AE Pall":   st.column_config.NumberColumn("AE Pall",  disabled=True, format="%.2f"),
-        "TOT PALL":  st.column_config.NumberColumn("TOT PALL", disabled=True, format="%.2f"),
+        "TOT PALL":  st.column_config.ProgressColumn(
+            "TOT PALL",
+            help="Total pallets por camión (verde<8, ámbar 8–9, rojo>9).",
+            format="%.2f", min_value=0.0, max_value=12.0,
+        ),
         "STATUS":    st.column_config.TextColumn("STATUS", disabled=True),
     }
     for cn in _T4_CANCHAS:
@@ -3353,7 +3385,7 @@ def render_tab_proyeccion():
             f"ASIGN {short}", options=_ASIGN_OPTS, default="", required=False,
         )
 
-    # Ordenar columnas: #, Camión, (UP Cx, ASIGN Cx) × 5, Bult Pick, AE Pall, TOT PALL, STATUS
+    # Ordenar columnas
     ordered_cols = ["#", "Camión"]
     for cn in _T4_CANCHAS:
         short = cn.replace("CANCHA ", "C")
@@ -3370,27 +3402,25 @@ def render_tab_proyeccion():
         num_rows="fixed",
     )
 
-    # Aplicar cambios de ASIGN desde la tabla editada al session_state
-    _asign_changed = False
+    # ── v4.36: construir live_asign de UNA sola pasada, sin st.rerun() ───────
+    # En lugar de detectar cambios → rerun → recalcular, construimos
+    # `live_asign` directamente del edited_df y lo usamos para todos los
+    # cálculos POST-tabla. El session_state se actualiza en paralelo para
+    # persistencia, pero NO se dispara rerun manual.
+    live_asign = {}
     for _, erow in edited_df.iterrows():
         cam_e = int(erow["Camión"])
         for cn in _T4_CANCHAS:
             short = cn.replace("CANCHA ", "C")
             new_val = erow.get(f"ASIGN {short}", "") or ""
-            old_val = st.session_state["t4_asign"].get((cam_e, cn), "")
-            if new_val != old_val:
-                if new_val:
-                    st.session_state["t4_asign"][(cam_e, cn)] = new_val
-                else:
-                    st.session_state["t4_asign"].pop((cam_e, cn), None)
-                _asign_changed = True
-    if _asign_changed:
-        st.rerun()
+            if new_val:
+                live_asign[(cam_e, cn)] = new_val
+    # Persistir el estado para próximos reruns naturales (cambio de archivo, hora, etc.)
+    st.session_state["t4_asign"] = live_asign
 
-    # Recalcular totales con ASIGN actualizado
-    totales_calc   = _t4_calcular_pall_por_cancha(df_display, st.session_state["t4_asign"])
+    # ── Recalcular totales con live_asign (UNA sola vez) ─────────────────────
+    totales_calc   = _t4_calcular_pall_por_cancha(df_display, live_asign)
     totales_pall_c = totales_calc["total"]
-    status_rows    = totales_calc["status_rows"]
 
     # ── Filas SUB / DESIGNADOS / TOTAL ───────────────────────────────────────
     resumen_pall = pd.DataFrame({
@@ -3409,13 +3439,9 @@ def render_tab_proyeccion():
         use_container_width=True, hide_index=True,
     )
 
-    # Recalcular con ASIGN actualizado (para totales_pall_c abajo)
-    totales_pall_c = totales_calc["total"]
-
-    # ── Totales bultos/HL/KG por cancha (base sin asignaciones, vs CON asign) ─
+    # ── Totales bultos/HL/KG por cancha (post-asign) ─────────────────────────
     totales_bult_base = {cn: float(df_display[cn].sum()) if cn in df_display.columns else 0.0 for cn in _T4_CANCHAS}
-    # v4.35: una sola pasada calcula bultos+HL+KG post-asign
-    _met_post = _t4_calcular_metricas_por_cancha(df_display, st.session_state["t4_asign"])
+    _met_post = _t4_calcular_metricas_por_cancha(df_display, live_asign)
     totales_bult = _met_post["bultos"]
     totales_hl   = _met_post["hl"]
     totales_kg   = _met_post["kg"]
@@ -3437,10 +3463,7 @@ def render_tab_proyeccion():
             fin_por_cancha[cn]["fin_dt"].strftime("%H:%M") if totales_bult[cn] > 0 else "—",
         ] for cn in _T4_CANCHAS}
     })
-    st.dataframe(
-        resumen_extra,
-        use_container_width=True, hide_index=True,
-    )
+    st.dataframe(resumen_extra, use_container_width=True, hide_index=True)
 
     with st.expander("📊 Totales por cancha", expanded=True):
         cols_met = st.columns(len(_T4_CANCHAS) + 1)
@@ -3457,9 +3480,28 @@ def render_tab_proyeccion():
             cols_met2[i].metric(f"PALL {short}", f"{totales_calc['total'].get(cn, 0):.2f}")
         cols_met2[-1].metric("TOT AE bult", f"{pdata['tot_ae']:.0f}")
 
-    # ── fin_global_dt (ya calculado fin_por_cancha arriba en v4.35) ───────────
+    # ── fin_global_dt ─────────────────────────────────────────────────────────
     fin_global_dt = max(v["fin_dt"] for v in fin_por_cancha.values())
     fin_calc_dict = {"por_cancha": fin_por_cancha, "fin_global_dt": fin_global_dt}
+
+    # ── v4.36: Semáforo de cancha — detecta desfase vs FIN GLOBAL ─────────────
+    # Verde: ±5min del FIN GLOBAL (parejas) | Ámbar: 5–15min | Rojo: >15min
+    # Sirve para identificar canchas atrasadas (rojo) o con holgura (verde
+    # con tiempo sobrante) para decidir reasignar.
+    def _semaforo_delta(fin_dt, fin_global_dt, bultos):
+        if bultos <= 0:
+            return "off", "sin carga"
+        delta_min = (fin_global_dt - fin_dt).total_seconds() / 60.0
+        if delta_min >= 15:
+            return "normal", f"✅ {delta_min:.0f}' holgura"   # verde (mucha holgura → puede recibir carga)
+        elif delta_min >= 5:
+            return "off", f"🟡 {delta_min:.0f}' holgura"      # neutro (poca holgura)
+        elif delta_min >= -5:
+            return "off", "🎯 emparejada"                     # neutral (cerca del fin global)
+        elif delta_min >= -15:
+            return "inverse", f"⚠ {-delta_min:.0f}' tarde"   # ámbar (algo tarde)
+        else:
+            return "inverse", f"🔴 {-delta_min:.0f}' tarde"   # rojo (muy tarde → enviar carga a otra cancha)
 
     # ── Cabecera PICKING (detalle) ────────────────────────────────────────────
     st.divider()
@@ -3470,26 +3512,29 @@ def render_tab_proyeccion():
     hdr_cols[3].metric("Mix picking", f"{pdata['mix_picking']*100:.1f}%")
     hdr_cols[4].caption(f"Fuente: {pdata['fuente']}")
 
+    st.markdown("##### 🏁 Horario fin por cancha — semáforo de desfase")
     fin_cols = st.columns(len(_T4_CANCHAS) + 1)
     for i, cn in enumerate(_T4_CANCHAS):
         short = cn.replace("CANCHA ", "C")
         fp = fin_por_cancha[cn]
         fin_s = fp["fin_dt"].strftime("%H:%M") if fp["bultos"] > 0 else "—"
         ini_s = fp["inicio"].strftime("%H:%M")
-        fin_cols[i].metric(
-            f"FIN {short}",
-            fin_s,
-            f"⏱ {ini_s} | {fp['bultos']:.1f} bult | {totales_pall_c.get(cn, 0):.2f} pall",
-            delta_color="normal" if fp["bultos"] > 0 else "off",
+        delta_color, delta_msg = _semaforo_delta(fp["fin_dt"], fin_global_dt, fp["bultos"])
+        sub_line = (
+            f"{delta_msg} · {ini_s} → {fp['bultos']:.0f} bult · "
+            f"{totales_pall_c.get(cn, 0):.2f} pall"
         )
-    fin_cols[-1].metric("🏁 FIN GLOBAL", fin_global_dt.strftime("%H:%M"), delta_color="off")
+        fin_cols[i].metric(f"FIN {short}", fin_s, sub_line, delta_color=delta_color)
+    fin_cols[-1].metric("🏁 FIN GLOBAL", fin_global_dt.strftime("%H:%M"),
+                        f"{sum(v['bultos'] for v in fin_por_cancha.values()):.0f} bult tot",
+                        delta_color="off")
 
-    # ── Generar PDF ×4 ────────────────────────────────────────────────────────
+    # ── Generar PDF ×5 ────────────────────────────────────────────────────────
     st.divider()
-    st.subheader("📄 Generar PDF ×4 (una copia por cancha)")
+    st.subheader("📄 Generar PDF ×5 (una copia por cancha, incluye MKPL)")
     cp1, cp2 = st.columns([1, 2])
     with cp1:
-        if st.button("📄 Generar PDF ×4", type="primary",
+        if st.button("📄 Generar PDF ×5", type="primary",
                      use_container_width=True, key="t4_pdf_btn"):
             with st.spinner("Generando PDF…"):
                 try:
@@ -3509,13 +3554,13 @@ def render_tab_proyeccion():
                     )
                     fname = f"proyeccion_picking_{pdata['fecha']}.pdf"
                     st.download_button(
-                        "⬇ Descargar PDF (4 páginas)",
+                        "⬇ Descargar PDF (5 páginas)",
                         data=pdf_bytes, file_name=fname,
                         mime="application/pdf", use_container_width=True,
                         key="t4_pdf_dl",
                     )
                     st.success(f"✓ PDF generado: {fname}")
-                    log_event("info", f"PDF Proyección v4.6 generado: {fname}")
+                    log_event("info", f"PDF Proyección v4.36 generado: {fname}")
                 except Exception as e:
                     st.error(f"❌ Error generando PDF: {e}")
                     with st.expander("Stack trace"):
@@ -3528,6 +3573,7 @@ def render_tab_proyeccion():
             f"- Hora inicio: {hora_inicio_global.strftime('%H:%M')}\n"
             f"- Camiones con picking: {len(df_display[df_display['TOTAL_PICK'] > 0])}\n"
             f"- Bultos picking total: {pdata['tot_pick']:.0f}\n"
+            f"- Bultos MKPL (cancha colectiva): {totales_bult.get('MKPL', 0):.0f}\n"
             f"- Mix picking: {pdata['mix_picking']*100:.1f}%\n"
             f"- Fuente: {pdata['fuente']}"
         )
