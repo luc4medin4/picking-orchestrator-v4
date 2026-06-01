@@ -2750,7 +2750,7 @@ def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
     kg_rename = {c: f"_kg_{c}" for c in _T4_CANCHAS + ["SIN CANCHA"] if c in pivot_kg.columns}
     pivot_kg = pivot_kg.rename(columns=kg_rename)
 
-    # Pivot pall_ae por cancha (pallets completos AE desglosados por cancha) — v4.38
+    # Pivot pall_ae por cancha (pallets AE completos por cancha) — v4.38
     pivot_pall_ae = grp.groupby(["cam", "cancha_norm"], as_index=False).agg(
         pall_ae_c=("pall_ae", "sum"),
     ).pivot_table(
@@ -3276,6 +3276,9 @@ def _push_matriz_pall_to_sheets(df_display, pdata, credentials_json: dict) -> in
     client = gspread.authorize(creds)
     sheet  = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
+    # Orden de canchas idéntico al XLSX exportable
+    CANCHAS = _T4_CANCHAS  # ["CANCHA I", "CANCHA II", "CANCHA III", "CANCHA IV", "MKPL"]
+
     fecha_str = (
         pdata["fecha"].strftime("%d/%m/%Y")
         if hasattr(pdata["fecha"], "strftime")
@@ -3290,6 +3293,8 @@ def _push_matriz_pall_to_sheets(df_display, pdata, credentials_json: dict) -> in
         except (ValueError, TypeError):
             pass
 
+        import math as _math_push
+
         # ── UP picking por cancha (fracción de pallet) ──
         up_ci   = round(float(row.get("_up_CANCHA I",   0.0)), 3)
         up_cii  = round(float(row.get("_up_CANCHA II",  0.0)), 3)
@@ -3298,12 +3303,14 @@ def _push_matriz_pall_to_sheets(df_display, pdata, credentials_json: dict) -> in
         up_mkpl = round(float(row.get("_up_MKPL",       0.0)), 3)
         pick_matr_up = round(up_ci + up_cii + up_ciii + up_civ + up_mkpl, 3)
 
-        # ── Pallets completos AE por cancha ──
+        # ── Pall completas AE por cancha (del pipeline upstream) ──
         pall_ci   = int(row.get("_pall_ae_CANCHA I",   0))
         pall_cii  = int(row.get("_pall_ae_CANCHA II",  0))
         pall_ciii = int(row.get("_pall_ae_CANCHA III", 0))
         pall_civ  = int(row.get("_pall_ae_CANCHA IV",  0))
         pall_mkpl = int(row.get("_pall_ae_MKPL",       0))
+        # Col K: pall AE total (suma de todas las canchas activas)
+        ae_pall      = round(float(row.get("AE_PALL", 0.0)), 2)
         pall_matr_up = pall_ci + pall_cii + pall_ciii + pall_civ + pall_mkpl
 
         # ── KG por cancha ──
@@ -3314,44 +3321,65 @@ def _push_matriz_pall_to_sheets(df_display, pdata, credentials_json: dict) -> in
         kg_mkpl = round(float(row.get("_kg_MKPL",       0.0)), 1)
         kg_matr = round(kg_ci + kg_cii + kg_ciii + kg_civ + kg_mkpl, 1)
 
-        # Estructura columnas Sheet:
-        # A=Fecha, B=Camión, C=REPARTO(SI), D=PICK MATRIZ UP
-        # E=CI UP, F=CII UP, G=CIII UP, H=CIV UP, I=CV(0), J=MKPL UP
-        # K=PALL MATRIZ UP(AE total)
-        # L=CI pall, M=CII pall, N=CIII pall, O=CIV pall, P=CV(0), Q=MKPL pall
-        # R=KG total, S=CI KG, T=CII KG, U=CIII KG, V=CIV KG, W=CV(0), X=MKPL KG
+        # ── Armado de fila según estructura del Sheet ──
+        # A  Fecha
+        # B  Camión
+        # C  REPA RTO → siempre "SI"
+        # D  PICK MATR IZ UP  (suma UP picking todas las canchas activas)
+        # E  CANCHA I   UP picking
+        # F  CANCHA II  UP picking
+        # G  CANCHA III UP picking
+        # H  CANCHA IV  UP picking
+        # I  CANCHA V   (inactiva) → 0
+        # J  MKPL       UP picking
+        # K  PALL MATR IZ UP  (pall AE total = suma pall_ae por cancha)
+        # L  CANCHA I   pall AE completas (del pipeline _pall_ae_)
+        # M  CANCHA II  pall AE completas
+        # N  CANCHA III pall AE completas
+        # O  CANCHA IV  pall AE completas
+        # P  CANCHA V   (inactiva) → 0
+        # Q  MKPL       pall AE completas
+        # R  KG MATR IZ total (suma KG todas las canchas activas)
+        # S  CANCHA I   KG
+        # T  CANCHA II  KG
+        # U  CANCHA III KG
+        # V  CANCHA IV  KG
+        # W  CANCHA V   (inactiva) → 0
+        # X  MKPL       KG
+        # (nada después de X)
         new_row = [
             fecha_str,    # A
             camion,       # B
-            "SI",         # C
-            pick_matr_up, # D
-            up_ci,        # E
-            up_cii,       # F
-            up_ciii,      # G
-            up_civ,       # H
-            0,            # I — CANCHA V inactiva
-            up_mkpl,      # J
-            pall_matr_up, # K
-            pall_ci,      # L
-            pall_cii,     # M
-            pall_ciii,    # N
-            pall_civ,     # O
-            0,            # P — CANCHA V inactiva
-            pall_mkpl,    # Q
-            kg_matr,      # R
-            kg_ci,        # S
-            kg_cii,       # T
-            kg_ciii,      # U
-            kg_civ,       # V
-            0,            # W — CANCHA V inactiva
-            kg_mkpl,      # X
+            "SI",         # C — REPA RTO siempre SI
+            pick_matr_up, # D — PICK MATR IZ UP
+            up_ci,        # E — CANCHA I   UP picking
+            up_cii,       # F — CANCHA II  UP picking
+            up_ciii,      # G — CANCHA III UP picking
+            up_civ,       # H — CANCHA IV  UP picking
+            0,            # I — CANCHA V   (inactiva)
+            up_mkpl,      # J — MKPL       UP picking
+            pall_matr_up, # K — PALL MATR IZ UP (AE total)
+            pall_ci,      # L — CANCHA I   pall completas
+            pall_cii,     # M — CANCHA II  pall completas
+            pall_ciii,    # N — CANCHA III pall completas
+            pall_civ,     # O — CANCHA IV  pall completas
+            0,            # P — CANCHA V   (inactiva)
+            pall_mkpl,    # Q — MKPL       pall completas
+            kg_matr,      # R — KG MATR IZ total
+            kg_ci,        # S — CANCHA I   KG
+            kg_cii,       # T — CANCHA II  KG
+            kg_ciii,      # U — CANCHA III KG
+            kg_civ,       # V — CANCHA IV  KG
+            0,            # W — CANCHA V   (inactiva)
+            kg_mkpl,      # X — MKPL       KG
         ]
         rows_to_append.append(new_row)
 
     if not rows_to_append:
         return 0
 
-    # append_rows al final — no sobreescribe, fórmulas AT+ quedan intactas
+    # append_rows escribe al final del rango detectado por Sheets
+    # sin insertar ni desplazar filas → fórmulas en AT+ quedan intactas
     sheet.append_rows(
         rows_to_append,
         value_input_option="USER_ENTERED",
@@ -3363,7 +3391,7 @@ def _push_matriz_pall_to_sheets(df_display, pdata, credentials_json: dict) -> in
 
 def render_tab_proyeccion():
     """
-    Tab 4 — Proyección Picking ×5 (v4.38).
+    Tab 4 — Proyección Picking ×5 (v4.36).
 
     CAMBIOS v4.36 vs v4.35:
       - ❌ Removido `st.rerun()` después de ASIGN edit: causaba doble rerun y
@@ -3388,7 +3416,7 @@ def render_tab_proyeccion():
     st.subheader("📊 Proyección Picking ×5")
     st.caption(
         "Fuente: **CAR.xlsx (VE + CHESS) + Frescura 3.0 (DDM)** — Calcula PICK vs AE por "
-        "**UP** (`bultos_eq / BXP`) por cancha, sumando sueltas con UNIDADES x BULTO. v4.37"
+        "**UP** (`bultos_eq / BXP`) por cancha, sumando sueltas con UNIDADES x BULTO. v4.36"
     )
 
     # ── Reutilizar uploads de Archivos / Tab 1 ───────────────────────────────
@@ -3762,6 +3790,32 @@ def render_tab_proyeccion():
         except Exception as _ex_xlsx:
             st.warning(f"⚠️ XLSX no disponible: {_ex_xlsx}")
 
+        # ── Botón Sheets — Matriz Pall ─────────────────────────────────────────
+        st.markdown("---")
+        if st.button(
+            "📤 Enviar a Sheets (Matriz Pall)",
+            use_container_width=True,
+            key="t4_sheets_matriz_btn",
+            help="Inserta las filas de hoy en la hoja 'Matriz Pall' del Sheets maestro",
+        ):
+            with st.spinner("Enviando a Google Sheets…"):
+                try:
+                    _creds_json = dict(st.secrets["gcp_service_account"])
+                    _n_rows = _push_matriz_pall_to_sheets(df_display, pdata, _creds_json)
+                    st.success(f"✅ {_n_rows} fila(s) enviadas a 'Matriz Pall'")
+                    log_event("info", f"Sheets Matriz Pall: {_n_rows} filas insertadas ({pdata['fecha']})")
+                except KeyError:
+                    st.error(
+                        "❌ No se encontró `gcp_service_account` en `st.secrets`.\n\n"
+                        "Agregá el JSON de la service account en `.streamlit/secrets.toml` "
+                        "bajo la clave `[gcp_service_account]`."
+                    )
+                except Exception as _ex_sheets:
+                    st.error(f"❌ Error al escribir en Sheets: {_ex_sheets}")
+                    with st.expander("Stack trace"):
+                        import traceback
+                        st.code(traceback.format_exc())
+
     with cp2:
         # ── v4.37: Resumen para el Controlador ───────────────────────────────
         import datetime as _dt_res
@@ -3830,32 +3884,6 @@ def render_tab_proyeccion():
             _resumen_md += "**⚠️ Alertas:**\n" + "\n".join(f"  {a}" for a in _alertas) + "\n"
 
         st.info(_resumen_md)
-
-        # ── Botón Sheets — Matriz Pall (v4.38) ────────────────────────────────
-        st.markdown("---")
-        if st.button(
-            "📤 Enviar a Sheets (Matriz Pall)",
-            use_container_width=True,
-            key="t4_sheets_matriz_btn",
-            help="Inserta las filas de hoy en la hoja 'Matriz Pall' del Sheets maestro",
-        ):
-            with st.spinner("Enviando a Google Sheets…"):
-                try:
-                    _creds_json = dict(st.secrets["gcp_service_account"])
-                    _n_rows = _push_matriz_pall_to_sheets(df_display, pdata, _creds_json)
-                    st.success(f"✅ {_n_rows} fila(s) enviadas a 'Matriz Pall'")
-                    log_event("info", f"Sheets Matriz Pall: {_n_rows} filas insertadas ({pdata['fecha']})")
-                except KeyError:
-                    st.error(
-                        "❌ No se encontró `gcp_service_account` en `st.secrets`.\n\n"
-                        "Agregá el JSON de la service account en `.streamlit/secrets.toml` "
-                        "bajo la clave `[gcp_service_account]`."
-                    )
-                except Exception as _ex_sheets:
-                    st.error(f"❌ Error al escribir en Sheets: {_ex_sheets}")
-                    with st.expander("Stack trace"):
-                        import traceback
-                        st.code(traceback.format_exc())
 
 # ── HELPER: Top 10 SKUs ────────────────────────────────────────────────────
 
