@@ -1,6 +1,20 @@
 """
-Picking Orchestrator v4.36.0 — Beccacece Hnos SA
+Picking Orchestrator v4.37.0 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
+
+CAMBIOS v4.37.0:
+  - 📄 PDF Proyección Picking ahora es LANDSCAPE (A4 horizontal): mejor
+    aprovechamiento del ancho, tabla más legible con columnas balanceadas.
+    Columna STS ahora proporcional — ya no consume todo el espacio sobrante.
+    Cancha foco destacada con fondo amarillo de mayor contraste.
+  - 📋 Resumen para el Controlador (panel cp2 expandido):
+    Incluye horarios de finalización por cancha, top 3 SKUs del día (por
+    bultos), alertas de canchas atrasadas, totales HL/KG y mix picking.
+    Diseñado para ser leído de un vistazo antes del inicio de picking.
+  - 🚫 Top SKUs / Top Clientes: eliminados botones JPEG (solo quedan PDFs).
+  - 🚫 Tab "Extraíbles Sheets" eliminada del menú de navegación.
+  - 📊 Nuevo botón "⬇ Descargar Excel (XLSX)" en sección Proyección Picking:
+    descarga la tabla de proyección (por camión × cancha) como .xlsx.
 
 CAMBIOS v4.36.0 (Proyección Picking — Tab 4):
   - ⚡ PERFORMANCE: removido `st.rerun()` manual tras editar ASIGN. Antes
@@ -2909,7 +2923,8 @@ def _t4_generar_pdf_x4(
     asign_detail=None,
 ):
     """
-    Genera PDF A4 portrait con una página por cancha (CI/CII/CIII/CIV).
+    Genera PDF A4 LANDSCAPE con una página por cancha (CI/CII/CIII/CIV/MKPL).
+    v4.37: modo horizontal — mejor uso del espacio, columnas balanceadas, STS proporcional.
     Muestra:
       - Bultos UP (fracción de paleta) a pickear por cancha y camión
       - Paletas puras (AE) en rojo
@@ -2923,8 +2938,10 @@ def _t4_generar_pdf_x4(
         asign_detail = {}
 
     buf    = io.BytesIO()
-    c_pdf  = rl_canvas.Canvas(buf, pagesize=A4)
-    pw, ph = A4
+    # ── v4.37: PDF LANDSCAPE (A4 horizontal) ──────────────────────────────────
+    LS = landscape(A4)
+    c_pdf  = rl_canvas.Canvas(buf, pagesize=LS)
+    pw, ph = LS          # pw ≈ 841 pt, ph ≈ 595 pt
     M      = 10 * mm
 
     # Colores
@@ -2938,17 +2955,26 @@ def _t4_generar_pdf_x4(
     WHITE        = colors.white
     GREEN_PICK   = colors.HexColor("#66BB6A")   # verde = bultos a pickear
     RED_AE       = colors.HexColor("#EF9A9A")   # rojo  = paletas puras AE
-    YELLOW_FOCUS = colors.HexColor("#FFF9C4")
+    YELLOW_FOCUS = colors.HexColor("#FFE57F")   # v4.37: amarillo más vibrante para cancha foco
     ASIGN_BG     = colors.HexColor("#E3F2FD")   # azul claro = carga recibida
 
     FONT_B = "Helvetica-Bold"
     FONT_N = "Helvetica"
 
     # Columnas tabla: CAM | CI | CII | CIII | CIV | MKPL | AE | TOT | STS
+    # v4.37: widths rebalanceados para landscape — STS fijo en 36 pt, resto proporcional
     col_labels = ["CAM"] + [c.replace("CANCHA ", "C") for c in _T4_CANCHAS] + ["AE", "TOTAL", "STS"]
     inner_w    = pw - 2 * M
-    cw = [28, 30, 30, 30, 30, 26, 26, 34, 28]
-    cw[-1] = max(20, inner_w - sum(cw[:-1]))
+    # CAM=34, 5 canchas=44 c/u, AE=40, TOTAL=44, STS=36 → resto se reparte
+    _cw_fixed = [34, 44, 44, 44, 44, 38, 40, 48, 36]
+    _used = sum(_cw_fixed)
+    _slack = max(0, inner_w - _used)
+    # Distribuir el slack entre las 5 canchas (índices 1-5) equitativamente
+    _bonus = int(_slack / 5)
+    cw = [_cw_fixed[0]] + [_cw_fixed[i] + _bonus for i in range(1, 6)] + _cw_fixed[6:]
+    # Si aun hay residuo, sumarlo a TOTAL (idx 7)
+    _residuo = inner_w - sum(cw)
+    cw[7] = max(_cw_fixed[7], cw[7] + int(_residuo))
 
     fin_global = fin_calc["fin_global_dt"]
 
@@ -3529,7 +3555,7 @@ def render_tab_proyeccion():
                         f"{sum(v['bultos'] for v in fin_por_cancha.values()):.0f} bult tot",
                         delta_color="off")
 
-    # ── Generar PDF ×5 ────────────────────────────────────────────────────────
+    # ── Generar PDF ×5 + Excel ────────────────────────────────────────────────
     st.divider()
     st.subheader("📄 Generar PDF ×5 (una copia por cancha, incluye MKPL)")
     cp1, cp2 = st.columns([1, 2])
@@ -3554,29 +3580,127 @@ def render_tab_proyeccion():
                     )
                     fname = f"proyeccion_picking_{pdata['fecha']}.pdf"
                     st.download_button(
-                        "⬇ Descargar PDF (5 páginas)",
+                        "⬇ Descargar PDF (5 páginas — LANDSCAPE)",
                         data=pdf_bytes, file_name=fname,
                         mime="application/pdf", use_container_width=True,
                         key="t4_pdf_dl",
                     )
                     st.success(f"✓ PDF generado: {fname}")
-                    log_event("info", f"PDF Proyección v4.36 generado: {fname}")
+                    log_event("info", f"PDF Proyección v4.37 generado: {fname}")
                 except Exception as e:
                     st.error(f"❌ Error generando PDF: {e}")
                     with st.expander("Stack trace"):
                         import traceback
                         st.code(traceback.format_exc())
+
+        # ── Botón XLSX proyección ──────────────────────────────────────────────
+        st.markdown("---")
+        try:
+            import datetime as _dt_xlsx
+            # Construir DataFrame exportable de proyección
+            _export_rows = []
+            for _, _row in df_display.iterrows():
+                _exp = {"Camión": int(_row["Camión"])}
+                for _cn in _T4_CANCHAS:
+                    _short = _cn.replace("CANCHA ", "C")
+                    _exp[f"UP {_short}"]   = round(float(_row.get(f"_up_{_cn}", 0.0)), 3)
+                    _exp[f"Bult {_short}"] = round(float(_row.get(_cn, 0.0)), 1)
+                _exp["AE Pall"]    = round(float(_row.get("AE_PALL", 0.0)), 2)
+                _exp["TOT PALL"]   = round(float(_row.get("TOTAL_PALL", 0.0)), 2)
+                _exp["Bult Pick"]  = round(float(_row.get("TOTAL_PICK", 0.0)), 1)
+                _export_rows.append(_exp)
+            df_xlsx_exp = pd.DataFrame(_export_rows)
+            # Fila totales
+            _tot_row = {"Camión": "TOTAL"}
+            for _cn in _T4_CANCHAS:
+                _short = _cn.replace("CANCHA ", "C")
+                _tot_row[f"UP {_short}"]   = round(totales_pall_c.get(_cn, 0), 3)
+                _tot_row[f"Bult {_short}"] = round(totales_bult.get(_cn, 0), 1)
+            _tot_row["AE Pall"]   = ""
+            _tot_row["TOT PALL"]  = round(sum(totales_pall_c.values()), 2)
+            _tot_row["Bult Pick"] = round(pdata["tot_pick"], 1)
+            df_xlsx_exp = pd.concat([df_xlsx_exp, pd.DataFrame([_tot_row])], ignore_index=True)
+
+            xlsx_bytes = df_to_xlsx(df_xlsx_exp, sheet_name="Proyección")
+            fname_xlsx = f"proyeccion_picking_{pdata['fecha']}.xlsx"
+            st.download_button(
+                "📊 Descargar Excel (XLSX)",
+                data=xlsx_bytes, file_name=fname_xlsx,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="t4_xlsx_dl",
+            )
+        except Exception as _ex_xlsx:
+            st.warning(f"⚠️ XLSX no disponible: {_ex_xlsx}")
+
     with cp2:
-        st.info(
-            f"📋 **Resumen — {pdata['fecha']}**\n\n"
-            f"- Fin estimado global: {fin_global_dt.strftime('%H:%M')}\n"
-            f"- Hora inicio: {hora_inicio_global.strftime('%H:%M')}\n"
-            f"- Camiones con picking: {len(df_display[df_display['TOTAL_PICK'] > 0])}\n"
-            f"- Bultos picking total: {pdata['tot_pick']:.0f}\n"
-            f"- Bultos MKPL (cancha colectiva): {totales_bult.get('MKPL', 0):.0f}\n"
-            f"- Mix picking: {pdata['mix_picking']*100:.1f}%\n"
-            f"- Fuente: {pdata['fuente']}"
+        # ── v4.37: Resumen para el Controlador ───────────────────────────────
+        import datetime as _dt_res
+
+        # Top 3 SKUs por bultos de picking del día (desde pdata si disponible)
+        _top_skus_lines = ""
+        try:
+            # pdata["df_sku"] puede no existir; usamos df_display col TOTAL_PICK agrupado por SKU si disponible
+            # Intentar desde la fuente raw del CAR si está en session_state
+            _car_b = st.session_state.get("t1_car") or st.session_state.get("t4_car")
+            _fr_b  = st.session_state.get("t1_fr")
+            if _car_b and _fr_b:
+                _df_top = _build_top10_skus(_car_b.getvalue(), _fr_b.getvalue())
+                if not _df_top.empty:
+                    _top3 = _df_top.nlargest(3, "BULTOS")
+                    _lines = []
+                    for _, _sk in _top3.iterrows():
+                        _cod  = int(_sk["CODIGO"]) if not pd.isna(_sk["CODIGO"]) else "—"
+                        _desc = str(_sk.get("DESCRIPCION", "")).strip()[:30] or "—"
+                        _blt  = int(_sk["BULTOS"])
+                        _lines.append(f"  • **{_cod}** {_desc} — {_blt} bult")
+                    _top_skus_lines = "\n".join(_lines)
+        except Exception:
+            _top_skus_lines = "  *(no disponible)*"
+
+        # Detectar canchas con atraso (>15 min tarde)
+        _alertas = []
+        for _cn in _T4_CANCHAS:
+            _fp = fin_por_cancha[_cn]
+            if _fp["bultos"] > 0:
+                _delta = (fin_global_dt - _fp["fin_dt"]).total_seconds() / 60.0
+                if _delta < -15:
+                    _short_cn = _cn.replace("CANCHA ", "C")
+                    _alertas.append(f"🔴 {_short_cn} atrasada {abs(_delta):.0f}' vs global")
+
+        # Construir horarios por cancha
+        _horas_lines = []
+        for _cn in _T4_CANCHAS:
+            _fp = fin_por_cancha[_cn]
+            _short_cn = _cn.replace("CANCHA ", "C")
+            if _fp["bultos"] > 0:
+                _ini_s = _fp["inicio"].strftime("%H:%M")
+                _fin_s = _fp["fin_dt"].strftime("%H:%M")
+                _blt_s = f"{_fp['bultos']:.0f} bult"
+                _horas_lines.append(f"  • **{_short_cn}**: {_ini_s} → {_fin_s} ({_blt_s})")
+
+        _fecha_str_res = pdata["fecha"].strftime("%d/%m/%Y") if hasattr(pdata["fecha"], "strftime") else str(pdata["fecha"])
+
+        _resumen_md = (
+            f"### 📋 Resumen Controlador — {_fecha_str_res}\n\n"
+            f"**🕐 Horarios de finalización por cancha:**\n"
+            + "\n".join(_horas_lines) +
+            f"\n\n**🏁 Fin estimado global: `{fin_global_dt.strftime('%H:%M')}`**\n\n"
+            f"---\n"
+            f"**📦 Totales operativos:**\n"
+            f"  • Camiones con picking: **{len(df_display[df_display['TOTAL_PICK'] > 0])}**\n"
+            f"  • Bultos totales: **{pdata['tot_pick']:.0f}**\n"
+            f"  • Bultos MKPL: **{totales_bult.get('MKPL', 0):.0f}**\n"
+            f"  • HL total picking: **{sum(totales_hl.values()):.1f}**\n"
+            f"  • KG total picking: **{sum(totales_kg.values()):.0f}**\n"
+            f"  • Mix picking: **{pdata['mix_picking']*100:.1f}%**\n\n"
         )
+        if _top_skus_lines:
+            _resumen_md += f"**🏆 Top 3 SKUs del día (por bultos):**\n{_top_skus_lines}\n\n"
+        if _alertas:
+            _resumen_md += "**⚠️ Alertas:**\n" + "\n".join(f"  {a}" for a in _alertas) + "\n"
+
+        st.info(_resumen_md)
 
 # ── HELPER: Top 10 SKUs ────────────────────────────────────────────────────
 
