@@ -3232,6 +3232,87 @@ def _t4_generar_pdf_x4(
     return buf.read()
 
 
+def _push_matriz_pall_to_sheets(df_display, pdata, credentials_json: dict) -> int:
+    """
+    Inserta una fila por camión en la hoja 'Matriz Pall' del Sheets maestro.
+    Detecta la última fila con datos y escribe a continuación (nunca sobreescribe).
+
+    Parámetros
+    ----------
+    df_display       : DataFrame ya calculado en render_tab_proyeccion()
+    pdata            : dict con al menos pdata['fecha'] (date o str)
+    credentials_json : dict con el service account JSON (viene de st.secrets)
+
+    Retorna
+    -------
+    int : cantidad de filas insertadas
+    """
+    import gspread
+    from google.oauth2.service_account import Credentials
+
+    SPREADSHEET_ID = "1QCoMtpHcUaTITp9p9-1mo914HsaH0siq_bHL7nmJ_DA"
+    SHEET_NAME     = "Matriz Pall"
+    SCOPES = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+
+    creds  = Credentials.from_service_account_info(credentials_json, scopes=SCOPES)
+    client = gspread.authorize(creds)
+    sheet  = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+
+    # Orden de canchas idéntico al XLSX exportable
+    CANCHAS = _T4_CANCHAS  # ["CANCHA I", "CANCHA II", "CANCHA III", "CANCHA IV", "MKPL"]
+
+    fecha_str = (
+        pdata["fecha"].strftime("%d/%m/%Y")
+        if hasattr(pdata["fecha"], "strftime")
+        else str(pdata["fecha"])
+    )
+
+    rows_to_append = []
+    for _, row in df_display.iterrows():
+        camion = row.get("Camión", row.get("Camion", ""))
+        try:
+            camion = int(camion)
+        except (ValueError, TypeError):
+            pass
+
+        # UP por cancha (picking) — mismo orden que columnas XLSX
+        up_vals = [round(float(row.get(f"_up_{c}", 0.0)), 3) for c in CANCHAS]
+        # KG por cancha
+        kg_vals = [round(float(row.get(f"_kg_{c}", 0.0)), 1) for c in CANCHAS]
+        # Bultos por cancha
+        bult_vals = [round(float(row.get(c, 0.0)), 1) for c in CANCHAS]
+
+        ae_pall    = round(float(row.get("AE_PALL",    0.0)), 2)
+        total_pall = round(float(row.get("TOTAL_PALL", 0.0)), 2)
+        total_pick = round(float(row.get("TOTAL_PICK", 0.0)), 1)
+
+        # Columnas: Fecha | Camión | UP×5 | AE Pall | TOT PALL | Bult Pick | KG×5
+        new_row = (
+            [fecha_str, camion]
+            + up_vals
+            + [ae_pall, total_pall, total_pick]
+            + kg_vals
+        )
+        rows_to_append.append(new_row)
+
+    if not rows_to_append:
+        return 0
+
+    # Detectar última fila con datos y escribir debajo (sin sobreescribir)
+    existing = sheet.get_all_values()
+    next_row = len(existing) + 1  # 1-indexed, justo debajo del último dato
+
+    sheet.insert_rows(
+        rows_to_append,
+        row=next_row,
+        value_input_option="USER_ENTERED",
+    )
+    return len(rows_to_append)
+
+
 def render_tab_proyeccion():
     """
     Tab 4 — Proyección Picking ×5 (v4.36).
@@ -3632,6 +3713,32 @@ def render_tab_proyeccion():
             )
         except Exception as _ex_xlsx:
             st.warning(f"⚠️ XLSX no disponible: {_ex_xlsx}")
+
+        # ── Botón Sheets — Matriz Pall ─────────────────────────────────────────
+        st.markdown("---")
+        if st.button(
+            "📤 Enviar a Sheets (Matriz Pall)",
+            use_container_width=True,
+            key="t4_sheets_matriz_btn",
+            help="Inserta las filas de hoy en la hoja 'Matriz Pall' del Sheets maestro",
+        ):
+            with st.spinner("Enviando a Google Sheets…"):
+                try:
+                    _creds_json = dict(st.secrets["gcp_service_account"])
+                    _n_rows = _push_matriz_pall_to_sheets(df_display, pdata, _creds_json)
+                    st.success(f"✅ {_n_rows} fila(s) enviadas a 'Matriz Pall'")
+                    log_event("info", f"Sheets Matriz Pall: {_n_rows} filas insertadas ({pdata['fecha']})")
+                except KeyError:
+                    st.error(
+                        "❌ No se encontró `gcp_service_account` en `st.secrets`.\n\n"
+                        "Agregá el JSON de la service account en `.streamlit/secrets.toml` "
+                        "bajo la clave `[gcp_service_account]`."
+                    )
+                except Exception as _ex_sheets:
+                    st.error(f"❌ Error al escribir en Sheets: {_ex_sheets}")
+                    with st.expander("Stack trace"):
+                        import traceback
+                        st.code(traceback.format_exc())
 
     with cp2:
         # ── v4.37: Resumen para el Controlador ───────────────────────────────
