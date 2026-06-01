@@ -1,6 +1,13 @@
 """
-Picking Orchestrator v4.39.0 — Beccacece Hnos SA
+Picking Orchestrator v4.40.0 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
+
+CAMBIOS v4.40.0:
+  - 🔢 Formateo decimales tabla SUB Total PALL / DESIGNADOS / TOTAL PALL x CANCHA:
+    forzado a 2 decimales con style.format() → "9.98" en lugar de "9.980000".
+  - 🔢 Formateo tabla TOTAL BULTOS / HL / KG / HORA EST. FIN: convertido a
+    strings con precisión fija (BULTOS 1 dec, HL 2 dec, KG sin dec).
+    Sin impacto en lógica ni cálculos.
 
 CAMBIOS v4.39.0:
   - 🕐 Proyección Picking: horario (FIN global + semáforo por cancha) movido
@@ -288,7 +295,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.39.0"
+APP_VERSION = "4.40.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -3680,8 +3687,11 @@ def render_tab_proyeccion():
             round(totales_calc["total"][cn], 2),
         ] for cn in _T4_CANCHAS}
     })
+    _cancha_cols_pall = [cn.replace("CANCHA ", "C") for cn in _T4_CANCHAS]
     st.dataframe(
-        resumen_pall.style.apply(
+        resumen_pall.style.format(
+            {col: "{:.2f}" for col in _cancha_cols_pall}
+        ).apply(
             lambda row: ["background-color: #FF8C00; color: white" if row.name == 2 else "" for _ in row],
             axis=1,
         ),
@@ -3706,9 +3716,9 @@ def render_tab_proyeccion():
     resumen_extra = pd.DataFrame({
         "Concepto": ["TOTAL BULTOS", "TOTAL HL", "TOTAL KG", "HORA EST. FIN"],
         **{cn.replace("CANCHA ", "C"): [
-            round(totales_bult[cn], 2),
-            round(totales_hl[cn],   2),
-            round(totales_kg[cn],   0),
+            f"{round(totales_bult[cn], 1):.1f}",
+            f"{round(totales_hl[cn],   2):.2f}",
+            f"{round(totales_kg[cn],   0):.0f}",
             fin_por_cancha[cn]["fin_dt"].strftime("%H:%M") if totales_bult[cn] > 0 else "—",
         ] for cn in _T4_CANCHAS}
     })
