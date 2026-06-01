@@ -3251,7 +3251,7 @@ def _push_matriz_pall_to_sheets(df_display, pdata, credentials_json: dict) -> in
     from google.oauth2.service_account import Credentials
 
     SPREADSHEET_ID = "1QCoMtpHcUaTITp9p9-1mo914HsaH0siq_bHL7nmJ_DA"
-    SHEET_NAME     = "Matriz Pall"
+    SHEET_NAME     = "Matriz Pall."
     SCOPES = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
