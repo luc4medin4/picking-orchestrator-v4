@@ -1,6 +1,39 @@
 """
-Picking Orchestrator v4.32.0 — Beccacece Hnos SA
+Picking Orchestrator v4.33.0 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
+
+CAMBIOS v4.33.0:
+  - 🛠️ Fix CRÍTICO Proyección Picking (Tab 4) — reescritura completa de
+    _t4_load_car_proyeccion() para corregir 3 bugs estructurales:
+
+    1) Detección dinámica VE/CHESS:
+       El código v4.32 usaba `raw.iloc[41:]` hardcoded, perdiendo toda la
+       sección Ventas Especiales y rompiéndose cuando el corte no caía en
+       fila 41. v4.33 detecta la primera fila completamente vacía como
+       separador y procesa AMBAS secciones, etiquetando cada linea con
+       columna 'fuente' = 'VE' o 'CHESS' para trazabilidad.
+
+    2) Conversión correcta de sueltas a bultos equivalentes:
+       v4.32 ignoraba la columna 'Unids' (sueltas) → de ahí el bug visible
+       de "4380 bultos en Cancha I camión 101" cuando el real era 1.42 UP.
+       v4.33 aplica:
+           bultos_eq = Bultos + Unids / unidades_por_bulto
+       leyendo unidades_por_bulto de DDM (col 'UNIDADES'/'UN BULTO'/etc.
+       buscado por header, no por índice ciego).
+
+    3) Split AE/Picking con FLOOR estricto:
+       v4.32 aplicaba `≥0.97 → ceil` redondeando hacia arriba pallets casi
+       completos hacia AE. Esto es INCORRECTO según regla operativa:
+           pall_ae   = floor(UP_total)        ← solo paletas enteras
+           pall_pick = UP_total - floor(UP_total)  ← fracción real
+       Se mantiene 1/BXP como UPKT cuando el cacheado no es confiable.
+
+    Lectura DDM ahora busca columnas por nombre de header
+    ('BULTOS X PAL'/'BXP', 'UNIDADES', 'CAN') con fallback a índices
+    F=5, M=12 o N=13, O=14 para tolerar reordenamientos menores.
+
+    El resto del Tab 4 (UI, reasignación entre canchas, cálculo de tiempos,
+    PDF) no se modifica — recibe el mismo schema de dataframe que v4.32.
 
 CAMBIOS v4.32.0:
   - 🖼️ Fix JPEG Top SKUs: reescritura completa de build_top_skus_anr_jpeg()
@@ -2310,109 +2343,203 @@ def _t4_extract_cv(cell_val):
     return cell_val
 
 
+def _t4_find_ddm_col(headers: list, *candidates) -> int:
+    """
+    v4.33 — Busca columna en headers DDM por nombre (normalizado, case/acentos
+    insensitive). Devuelve índice 0-based o -1.
+    """
+    def _nm(s):
+        if s is None:
+            return ""
+        s = str(s).strip().upper()
+        return ''.join(c for c in unicodedata.normalize('NFD', s)
+                       if unicodedata.category(c) != 'Mn')
+    norm_h = [_nm(h) for h in headers]
+    for cand in candidates:
+        c = _nm(cand)
+        for i, h in enumerate(norm_h):
+            if h == c:
+                return i
+        for i, h in enumerate(norm_h):
+            if c in h:
+                return i
+    return -1
+
+
 def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
     """
-    v4.8 — Proyección corregida: parsea COMPUTED_VALUE de IMPORTRANGE en Frescura.
+    v4.33 — Proyección Picking corregida.
 
-    Lógica paletas enteras por camión × SKU (basada en BXP real):
-      bxp       = col G DDM (BULTOS X PALLET) — leído con parser COMPUTED_VALUE
-      can       = col O DDM (CAN/CANCHA) — ídem
-      upkt      = 1 / bxp  (fracción de pallet por bulto; NO usar col R cacheada = 1.0 incorrecto)
-      pall_raw  = bultos_total / bxp
-      REDONDEO: si frac >= 0.97 → ceil (pallet casi completo → AE)
-      pall_ae   = floor_inteligente(pall_raw)
-      up_pick   = pall_raw - pall_ae  (fracción restante → picking, asignada a su cancha)
-      bult_pick = up_pick * bxp
+    Lógica de UP por SKU × camión:
+        bultos_eq = Bultos + Unids / unidades_por_bulto    (sueltas → bultos)
+        UP_total  = bultos_eq / BXP                        (BXP = bultos por pallet)
+        AE_SKU    = floor(UP_total)                        ← paletas enteras
+        PICK_SKU  = UP_total - floor(UP_total)             ← fracción a cancha
+
+    Lecturas:
+      - CAR Hoja1: K=Transporte (camión), R=Artículo (SKU),
+                   T=Bultos, V=Unids (sueltas).
+                   Detección dinámica de fila vacía separadora →
+                   VE (antes) + CHESS (después), ambas procesadas con flag 'fuente'.
+      - DDM (hoja Frescura): columnas buscadas por NOMBRE de header
+          BXP        ← 'BULTOS X PAL' / 'BXP'           (fallback col F = idx 5)
+          un_bulto   ← 'UNIDADES' / 'UN BULTO' / 'UN'    (fallback col M = idx 12)
+          can        ← 'CAN' / 'CANCHA'                 (fallback col O = idx 14)
+
+    Retorna mismo schema que v4.32 para compatibilidad con UI/PDF:
+      {df, fecha, fuente, mix_picking, tot_pick, tot_ae}
     """
     import datetime as _dt
     import math as _math
 
-    # ── 1. Leer DDM desde Frescura con openpyxl (read_only, sin data_only)
-    #       para acceder al COMPUTED_VALUE de las fórmulas IMPORTRANGE ─────────
+    # ── 1. DDM desde Frescura — búsqueda por header ──────────────────────────
     try:
         wb_fr = openpyxl.load_workbook(io.BytesIO(fr_bytes), read_only=True)
         ws_ddm = wb_fr["DDM"]
-        # Cols 0-indexed: A=0(almacen), B=1(orden), C=2(articulo),
-        #   G=6(bxp), O=14(can), R=17(upkt_cached — NO USAR)
+        rows_iter = ws_ddm.iter_rows(values_only=True)
+        headers_ddm = list(next(rows_iter))
+
+        idx_sku  = _t4_find_ddm_col(headers_ddm, "ARTICULO", "ARTÍCULO", "SKU", "CODIGO", "CÓDIGO")
+        if idx_sku < 0:
+            idx_sku = 2  # fallback col C
+        idx_bxp  = _t4_find_ddm_col(headers_ddm, "BULTOS X PAL", "BULTOS X PALLET", "BXP", "BULTOS/PAL")
+        if idx_bxp < 0:
+            idx_bxp = 5  # fallback col F
+        idx_un   = _t4_find_ddm_col(headers_ddm, "UNIDADES", "UN BULTO", "UN/BULTO", "UN X BULTO", "UN")
+        if idx_un < 0:
+            idx_un = 12  # fallback col M
+        idx_can  = _t4_find_ddm_col(headers_ddm, "CAN", "CANCHA")
+        if idx_can < 0:
+            idx_can = 14  # fallback col O
+
         ddm_rows = []
-        for row in ws_ddm.iter_rows(min_row=2, values_only=True):
-            sku_raw = _t4_extract_cv(row[2])
-            bxp_raw = _t4_extract_cv(row[6])
-            can_raw = _t4_extract_cv(row[14])
+        for row in rows_iter:
+            if row is None or len(row) <= max(idx_sku, idx_bxp, idx_un, idx_can):
+                continue
+            sku_raw = _t4_extract_cv(row[idx_sku])
+            bxp_raw = _t4_extract_cv(row[idx_bxp])
+            un_raw  = _t4_extract_cv(row[idx_un])
+            can_raw = _t4_extract_cv(row[idx_can])
             if sku_raw is None:
                 continue
             try:
                 sku_int = int(float(str(sku_raw)))
                 bxp_val = float(bxp_raw) if bxp_raw not in (None, "", "None") else 0.0
+                un_val  = float(un_raw)  if un_raw  not in (None, "", "None") else 0.0
                 can_str = str(can_raw).strip() if can_raw not in (None, "", "None") else "SIN CANCHA"
-                # UPKT correcto = 1/BXP (el valor cacheado col R = 1.0 es incorrecto)
                 upkt_val = (1.0 / bxp_val) if bxp_val > 0 else 0.0
-                ddm_rows.append({"sku": sku_int, "bxp": bxp_val, "can": can_str, "upkt": upkt_val})
+                ddm_rows.append({
+                    "sku":      sku_int,
+                    "bxp":      bxp_val,
+                    "un_bulto": un_val,
+                    "can":      can_str,
+                    "upkt":     upkt_val,
+                })
             except (ValueError, TypeError):
                 pass
         wb_fr.close()
         df_ddm = pd.DataFrame(ddm_rows).drop_duplicates("sku")
     except Exception:
-        df_ddm = pd.DataFrame(columns=["sku", "bxp", "can", "upkt"])
+        df_ddm = pd.DataFrame(columns=["sku", "bxp", "un_bulto", "can", "upkt"])
 
-    # ── 2. Leer Hoja1 del CAR ────────────────────────────────────────────────
+    # ── 2. CAR Hoja1 — detección dinámica VE / CHESS ─────────────────────────
     raw = pd.read_excel(io.BytesIO(car_bytes), sheet_name=0, header=None)
+    if len(raw) < 2:
+        raise ValueError("CAR vacío o sin filas")
     header = raw.iloc[0].tolist()
-    normal = raw.iloc[41:].copy()
-    normal.columns = header
 
-    normal["Artículo"]   = pd.to_numeric(normal["Artículo"],   errors="coerce")
-    normal["Transporte"] = pd.to_numeric(normal["Transporte"], errors="coerce")
-    normal["Bultos"]     = pd.to_numeric(normal["Bultos"],     errors="coerce").fillna(0)
-    normal["Unids"]      = pd.to_numeric(normal["Unids"],      errors="coerce").fillna(0)
-    normal = normal.dropna(subset=["Artículo", "Transporte"])
-    normal = normal[normal["Artículo"] > 0]
-    normal["Artículo"]   = normal["Artículo"].astype(int)
-    normal["Transporte"] = normal["Transporte"].apply(lambda x: int(float(x)) if pd.notna(x) else x)
+    # Localizar primera fila completamente vacía (separador VE/CHESS).
+    split_idx = None
+    for i in range(1, len(raw)):
+        row_vals = raw.iloc[i].tolist()
+        if all(v is None or (isinstance(v, float) and pd.isna(v))
+               or (isinstance(v, str) and v.strip() == "")
+               for v in row_vals):
+            split_idx = i
+            break
 
-    # Fecha desde columna Fecha Mvto
+    body = raw.iloc[1:].copy()
+    body.columns = header
+    if split_idx is not None:
+        # offset por header eliminado
+        sep_local = split_idx - 1
+        body = body.reset_index(drop=True)
+        body["fuente"] = ""
+        body.loc[:sep_local - 1, "fuente"] = "VE"
+        body.loc[sep_local + 1:, "fuente"] = "CHESS"
+        body = body.drop(index=sep_local)
+    else:
+        body["fuente"] = "CHESS"
+    body = body.reset_index(drop=True)
+
+    # Normalizar tipos y filtrar (mismas reglas que v4.32 + ambas fuentes)
+    body["Artículo"]   = pd.to_numeric(body["Artículo"],   errors="coerce")
+    body["Transporte"] = pd.to_numeric(body["Transporte"], errors="coerce")
+    body["Bultos"]     = pd.to_numeric(body["Bultos"],     errors="coerce").fillna(0)
+    body["Unids"]      = pd.to_numeric(body["Unids"],      errors="coerce").fillna(0)
+    body = body.dropna(subset=["Artículo", "Transporte"])
+    body = body[body["Artículo"] > 0]
+    body["Artículo"]   = body["Artículo"].astype(int)
+    body["Transporte"] = body["Transporte"].apply(lambda x: int(float(x)) if pd.notna(x) else x)
+
+    # Fecha
     try:
-        fecha = pd.to_datetime(normal["Fecha Mvto"].dropna().iloc[0]).date()
+        fecha = pd.to_datetime(body["Fecha Mvto"].dropna().iloc[0]).date()
     except Exception:
         fecha = _dt.date.today()
 
     # ── 3. Excluir envases ───────────────────────────────────────────────────
-    normal = normal[~normal.apply(
+    body = body[~body.apply(
         lambda r: is_envase(int(r["Artículo"]), str(r.get("Descripción Artículo", ""))), axis=1
     )]
 
-    # ── 4. Agregar por (Transporte, Artículo) ────────────────────────────────
-    grp = (normal.groupby(["Transporte", "Artículo", "Descripción Artículo"], as_index=False)
+    # ── 4. Agregar por (Transporte, Artículo) — sumando bultos Y sueltas ─────
+    grp = (body.groupby(["Transporte", "Artículo", "Descripción Artículo"], as_index=False)
            .agg(blt_raw=("Bultos", "sum"), unids=("Unids", "sum")))
-    grp = grp[grp["blt_raw"] > 0]
+    grp = grp[(grp["blt_raw"] > 0) | (grp["unids"] > 0)]
     grp.rename(columns={"Transporte": "cam", "Artículo": "sku"}, inplace=True)
 
-    # ── 5. Merge DDM (bxp, can, upkt) ────────────────────────────────────────
-    grp = grp.merge(df_ddm[["sku", "bxp", "can", "upkt"]], on="sku", how="left")
-    grp["bxp"]  = grp["bxp"].fillna(0.0)
-    grp["upkt"] = grp["upkt"].fillna(0.0)
-    grp["can"]  = grp["can"].fillna("SIN CANCHA")
+    # ── 5. Merge DDM (bxp, un_bulto, can) ────────────────────────────────────
+    if not df_ddm.empty:
+        grp = grp.merge(df_ddm[["sku", "bxp", "un_bulto", "can", "upkt"]], on="sku", how="left")
+    else:
+        grp["bxp"] = 0.0; grp["un_bulto"] = 0.0; grp["can"] = "SIN CANCHA"; grp["upkt"] = 0.0
 
-    # ── 6. Calcular picking vs AE usando BXP/UPKT correcto ───────────────────
+    grp["bxp"]      = grp["bxp"].fillna(0.0)
+    grp["un_bulto"] = grp["un_bulto"].fillna(0.0)
+    grp["upkt"]     = grp["upkt"].fillna(0.0)
+    grp["can"]      = grp["can"].fillna("SIN CANCHA")
+
+    # ── 6. Conversión sueltas → bultos_eq, luego split AE/Picking FLOOR ──────
     def _split_row(row):
-        tot  = float(row["blt_raw"])
-        bxp_ = float(row["bxp"])
+        bultos    = float(row["blt_raw"])
+        sueltas   = float(row["unids"])
+        bxp_      = float(row["bxp"])
+        un_bulto_ = float(row["un_bulto"])
 
+        # 6a. Convertir sueltas a bultos equivalentes
+        if un_bulto_ > 0:
+            bultos_eq = bultos + (sueltas / un_bulto_)
+        else:
+            # Sin un/bulto en DDM → sueltas se ignoran (no se puede convertir)
+            bultos_eq = bultos
+
+        # 6b. UP total y split FLOOR estricto
         if bxp_ > 0:
-            pall_raw = tot / bxp_
-            frac = pall_raw - _math.floor(pall_raw)
-            pall_ae = _math.ceil(pall_raw) if frac >= 0.97 else _math.floor(pall_raw)
-            up_pick = max(0.0, pall_raw - pall_ae)   # fracción de pallet → picking
-            bult_ae   = float(pall_ae) * bxp_
-            bult_ae   = min(bult_ae, tot)
-            bult_pick = max(0.0, tot - bult_ae)
+            up_total = bultos_eq / bxp_
+            pall_ae  = _math.floor(up_total)              # paletas enteras
+            up_pick  = max(0.0, up_total - pall_ae)       # fracción → picking
+            bult_ae  = float(pall_ae) * bxp_
+            bult_ae  = min(bult_ae, bultos_eq)
+            bult_pick = max(0.0, bultos_eq - bult_ae)
         else:
             pall_ae   = 0
             bult_ae   = 0.0
-            bult_pick = tot
+            bult_pick = bultos_eq
             up_pick   = 0.0
 
         return pd.Series({
+            "bultos_eq": bultos_eq,
             "pall_ae":   float(pall_ae),
             "bult_ae":   bult_ae,
             "bult_pick": bult_pick,
@@ -2425,12 +2552,11 @@ def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
     # ── 7. Normalizar cancha ─────────────────────────────────────────────────
     grp["cancha_norm"] = grp["can"].apply(_t4_norm_cancha)
 
-    # ── 8. Pivotar por camión × cancha ───────────────────────────────────────
+    # ── 8. Pivotar por camión × cancha (igual que v4.32) ─────────────────────
     pick_grp = grp.groupby(["cam", "cancha_norm"], as_index=False).agg(
         bult_pick=("bult_pick", "sum"),
         up_pick  =("up_pick",   "sum"),
     )
-
     ae_grp = grp.groupby("cam", as_index=False).agg(
         bult_ae=("bult_ae", "sum"),
         up_ae  =("pall_ae", "sum"),
@@ -2478,10 +2604,13 @@ def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
     tot_ae   = float(cam_df["TOTAL_AE"].sum())
     mix = (tot_pick / (tot_pick + tot_ae)) if (tot_pick + tot_ae) > 0 else 0.0
 
+    # Stats VE/CHESS para auditoría
+    fuentes = body["fuente"].value_counts().to_dict() if "fuente" in body.columns else {}
+
     return {
         "df":          cam_df,
         "fecha":       fecha,
-        "fuente":      "CAR + Frescura (UP = 1/BXP col G DDM)",
+        "fuente":      f"CAR + Frescura DDM · v4.33 · VE={fuentes.get('VE',0)} líneas · CHESS={fuentes.get('CHESS',0)} líneas",
         "mix_picking": mix,
         "tot_pick":    tot_pick,
         "tot_ae":      tot_ae,
@@ -2868,8 +2997,8 @@ def render_tab_proyeccion():
 
     st.subheader("📊 Proyección Picking ×4")
     st.caption(
-        "Fuente: **CAR.xlsx + Frescura 3.0** — Calcula PICK vs AE por "
-        "**UNIDAD PKT** (col R DDM) y cancha, sin necesitar el MASTER."
+        "Fuente: **CAR.xlsx (VE + CHESS) + Frescura 3.0 (DDM)** — Calcula PICK vs AE por "
+        "**UP** (`bultos_eq / BXP`) por cancha, sumando sueltas con UNIDADES x BULTO. v4.33"
     )
 
     # ── Reutilizar uploads de Archivos / Tab 1 ───────────────────────────────
@@ -2951,8 +3080,8 @@ def render_tab_proyeccion():
     st.divider()
     st.subheader("📦 Pallets UP por camión")
     st.caption(
-        "**UP** = fracción de paleta (bultos / BXP col G DDM). "
-        "Paletas enteras → AE. Fracción restante → picking. "
+        "**UP** = `(bultos + sueltas / un_bulto) / BXP`. "
+        "AE = `floor(UP)` (paletas enteras). Picking = fracción restante por cancha (DDM col O). "
         "Columnas **ASIGN.** editables: escribí la cancha destino (CI/CII/CIII/CIV/MKPL) para reasignar."
     )
 
