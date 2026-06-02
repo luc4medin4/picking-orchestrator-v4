@@ -1,5 +1,37 @@
 """
-Picking Orchestrator v4.46.0 — Beccacece Hnos SA
+Picking Orchestrator v4.49.1 — Beccacece Hnos SA
+
+CAMBIOS v4.49.1:
+  - 📂 Archivos: nuevo uploader "ANR -1.xlsx" (ANR del día anterior).
+    Se guarda en session_state["cierre_anr_m1"]. Solo se usa en Cierre D+1.
+    No afecta ninguna otra pestaña.
+  - 💳 Cierre D+1: CTA CTE ahora se recalcula desde ANR -1 en lugar de
+    reutilizar el valor del cierre del día. Si ANR -1 no está cargado,
+    cae back al valor del cierre original (comportamiento anterior).
+  - 📋 Estado de archivos: tabla actualizada con la nueva fila ANR -1.
+  - ✅ Cierre del día: sin cambios — sigue usando ANR normal.
+
+CAMBIOS v4.49.0:
+  - 🗑️  Bloque PRE-tabla eliminado (Proyección Picking): se removió el bloque
+    de horarios/semáforo duplicado que aparecía ANTES del data_editor. Solo
+    queda el bloque POST-tabla (live_asign), que es el correcto y no sufre lag.
+  - 📋 Tabs reordenados: "Tablero Ruteador" se mueve después de "Top SKUs"
+    (nuevo orden: Archivos → Planilla → Resumen → Proyección → Clasificación →
+    Camiones T2 → Top SKUs → Tablero Ruteador → Boletas → Cierre → Validación).
+  - 💳 Cierre — detalle CTA CTE por chofer: se agrega sección expandible
+    "Detalle CTA CTE por camión" que muestra, por cada chofer con CTA CTE > 0,
+    los clientes con nombre + monto. Al sumar todos los clientes de todos los
+    camiones, el resultado coincide exactamente con el total E).
+  - 💳 Cierre PDF — sección CTA CTE detail: nueva página/bloque en el PDF
+    con tabla de clientes CTA CTE por camión (nombre + monto).
+  - 💳 Cierre Excel — hoja "CTA CTE Detalle": nueva hoja con el desglose
+    cliente × camión, con totales por camión y total general.
+  - 🔧 FIX desfasaje CTA CTE: `_build_cierre_df` ahora pasa `df_anr` completo
+    a las funciones de export (PDF/Excel) para construir el detalle client-level.
+    El cálculo del monto total no cambia — solo se expone el desglose.
+
+
+CAMBIOS v4.46.0 — Tablero Ruteador:
 
 CAMBIOS v4.46.0 — Tablero Ruteador:
   - 🔵 VE automático: Ventas Especiales se leen del CAR (Hoja1 filas 2-40),
@@ -56,7 +88,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.48.0"
+APP_VERSION = "4.49.1"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -1606,7 +1638,7 @@ def render_tab_archivos():
         "de la sesión sin necesidad de volver a cargarlos."
     )
 
-    col_a, col_b, col_c, col_d, col_e = st.columns(5)
+    col_a, col_b, col_c, col_d, col_e, col_f = st.columns(6)
 
     with col_a:
         st.markdown("#### 🗂️ CAR.xlsx")
@@ -1709,16 +1741,33 @@ def render_tab_archivos():
         else:
             st.info("Opcional — para 💰 Cierre D+1 con rechazos reales")
 
+    with col_f:
+        st.markdown("#### 📊 ANR -1.xlsx")
+        anr_m1_file = st.file_uploader(
+            "ANR del día anterior (para CTA CTE en Cierre D+1)",
+            type=["xlsx"],
+            key="arch_anr_m1",
+            accept_multiple_files=False,
+        )
+        if anr_m1_file:
+            st.session_state["cierre_anr_m1"] = anr_m1_file
+            st.success(f"✅ {anr_m1_file.name}")
+        elif st.session_state.get("cierre_anr_m1"):
+            st.info(f"📎 En uso: {st.session_state['cierre_anr_m1'].name}")
+        else:
+            st.info("Opcional — ANR del día anterior, solo para Cierre D+1 (CTA CTE)")
+
     st.divider()
 
     # Estado global
     st.markdown("#### 📋 Estado de archivos cargados")
     rows = [
-        ("CAR.xlsx",          "t1_car",       "Planilla de Carga, Resumen, Camiones T2, Proyección"),
-        ("Frescura 3.0.xlsx", "t1_fr",        "Planilla de Carga, Proyección Picking, Clasificación"),
-        ("ANR.xlsx",          "tc_anr",       "Clasificación, Top SKUs, Top Clientes, Cierre, 🖨️ Boletas"),
-        ("SR.xlsx",           "cierre_sr",    "💰 Cierre — totales por camión desde Chess"),
-        ("SR D+1.xlsx",       "cierre_sr_d1", "📅 Cierre Actualizado — TotVal real con rechazos"),
+        ("CAR.xlsx",          "t1_car",          "Planilla de Carga, Resumen, Camiones T2, Proyección"),
+        ("Frescura 3.0.xlsx", "t1_fr",           "Planilla de Carga, Proyección Picking, Clasificación"),
+        ("ANR.xlsx",          "tc_anr",          "Clasificación, Top SKUs, Top Clientes, Cierre del día, 🖨️ Boletas"),
+        ("SR.xlsx",           "cierre_sr",       "💰 Cierre — totales por camión desde Chess"),
+        ("SR D+1.xlsx",       "cierre_sr_d1",    "📅 Cierre D+1 — TotVal real con rechazos"),
+        ("ANR -1.xlsx",       "cierre_anr_m1",   "📅 Cierre D+1 — CTA CTE del día anterior (exclusivo)"),
     ]
     for nombre, key, usado_en in rows:
         f = st.session_state.get(key)
@@ -3550,46 +3599,6 @@ def render_tab_proyeccion():
     # ── Calcular totales con ASIGN actual (para poblar la tabla del editor) ──
     totales_calc_pre = _t4_calcular_pall_por_cancha(df_display, st.session_state["t4_asign"])
     status_rows_pre  = totales_calc_pre["status_rows"]
-
-    # ── PRE-CALCULAR horarios para mostrar ANTES de la tabla ─────────────────
-    _met_pre = _t4_calcular_metricas_por_cancha(df_display, st.session_state["t4_asign"])
-    _bult_pre = _met_pre["bultos"]
-    _vel_pre  = {cn: _T4_VEL_DEFAULT[cn] for cn in _T4_CANCHAS}  # defaults para el bloque previo
-    _pers_pre = {cn: 1 for cn in _T4_CANCHAS}
-    _fin_pre  = {}
-    for _cn in _T4_CANCHAS:
-        _b = _bult_pre[_cn]
-        _fin_pre[_cn] = {"bultos": _b, "fin_dt": _t4_hora_fin(_b, _vel_pre[_cn], _pers_pre[_cn], inicio_custom[_cn]),
-                         "inicio": inicio_custom[_cn]}
-    _fin_global_pre = max(v["fin_dt"] for v in _fin_pre.values())
-
-    # Semáforo rápido (mismo criterio que el detallado post-tabla)
-    def _sem_quick(fin_dt, fin_g, bultos):
-        if bultos <= 0:
-            return "off", "sin carga"
-        dm = (fin_g - fin_dt).total_seconds() / 60.0
-        if dm >= 15:   return "normal",  f"✅ {dm:.0f}' holgura"
-        elif dm >= 5:  return "off",     f"🟡 {dm:.0f}' holgura"
-        elif dm >= -5: return "off",     "🎯 emparejada"
-        elif dm >= -15:return "inverse", f"⚠ {-dm:.0f}' tarde"
-        else:          return "inverse", f"🔴 {-dm:.0f}' tarde"
-
-    st.markdown("##### 🏁 Horario fin por cancha")
-    _fin_cols_top = st.columns(len(_T4_CANCHAS) + 1)
-    for _i, _cn in enumerate(_T4_CANCHAS):
-        _short = _cn.replace("CANCHA ", "C")
-        _fp = _fin_pre[_cn]
-        _fs = _fp["fin_dt"].strftime("%H:%M") if _fp["bultos"] > 0 else "—"
-        _is = _fp["inicio"].strftime("%H:%M")
-        _dc, _dm = _sem_quick(_fp["fin_dt"], _fin_global_pre, _fp["bultos"])
-        _fin_cols_top[_i].metric(f"FIN {_short}", _fs,
-                                  f"{_dm} · {_is}→{_fp['bultos']:.0f}b",
-                                  delta_color=_dc)
-    _fin_cols_top[-1].metric("🏁 FIN GLOBAL", _fin_global_pre.strftime("%H:%M"),
-                              f"{sum(v['bultos'] for v in _fin_pre.values()):.0f} bult tot",
-                              delta_color="off")
-
-    st.divider()
 
     # ── Tabla principal con ASIGN integrado ──────────────────────────────────
     st.subheader("📦 Pallets UP por camión")
@@ -8519,9 +8528,9 @@ def main():
         "📋 Resumen Camiones",
         "📊 Proyección Picking ×5",
         "🏷️ Clasificación",
-        "🚚 Tablero Ruteador",
         "🚛 Camiones T2",
         "🏆 Top SKUs",
+        "🚚 Tablero Ruteador",
         "🖨️ Boletas",
         "💰 Cierre",
         "✅ Validación + Log",
@@ -8531,9 +8540,9 @@ def main():
     with tabs[2]:  render_tab_resumen()
     with tabs[3]:  render_tab_proyeccion()
     with tabs[4]:  render_tab_clasificacion()
-    with tabs[5]:  render_tab_tablero()
-    with tabs[6]:  render_tab_t2()
-    with tabs[7]:  render_tab_top_skus()
+    with tabs[5]:  render_tab_t2()
+    with tabs[6]:  render_tab_top_skus()
+    with tabs[7]:  render_tab_tablero()
     with tabs[8]:  render_tab_boletas()
     with tabs[9]:  render_tab_cierre()
     with tabs[10]: render_tab_validacion()
@@ -8691,11 +8700,14 @@ def _build_cierre_df(df_sr: pd.DataFrame, df_anr: pd.DataFrame,
     """
     Construye la tabla principal del Cierre por camión.
     v4.24: cobro anticipado es global (no figura por camión).
+    v4.49: agrega columna 'CtaCteDetalle' con lista de dicts
+           [{nombre, codigo, monto}] por camión (para desglose UI/PDF/Excel).
     Retorna DataFrame con columnas:
-      idCns, dsCns, TotVal, CtaCte, VtaEsp, Rechazos, NetoIngresar
+      idCns, dsCns, TotVal, CtaCte, VtaEsp, Rechazos, NetoIngresar, CtaCteDetalle
     """
     rows = []
     cta_cte_codigos = {int(c["codigo"]) for c in cta_cte_list}
+    nombre_map = {int(c["codigo"]): c["nombre"] for c in cta_cte_list}
 
     for _, sr_row in df_sr.iterrows():
         cns     = int(sr_row["idCns"])
@@ -8704,25 +8716,36 @@ def _build_cierre_df(df_sr: pd.DataFrame, df_anr: pd.DataFrame,
 
         anr_cam = df_anr[df_anr["TRANSPORTE"] == cns] if not df_anr.empty else pd.DataFrame()
 
-        cta_cte_monto = float(
-            anr_cam[anr_cam["CLIENTE"].isin(cta_cte_codigos)]["IMPORTE_NETO"].sum()
-        ) if not anr_cam.empty else 0.0
+        # Detalle cliente × monto CTA CTE para este camión
+        cta_detail = []
+        if not anr_cam.empty:
+            cta_rows = anr_cam[anr_cam["CLIENTE"].isin(cta_cte_codigos)]
+            if not cta_rows.empty:
+                agg = cta_rows.groupby("CLIENTE")["IMPORTE_NETO"].sum()
+                for cod, monto in agg.items():
+                    if monto > 0:
+                        cta_detail.append({
+                            "codigo": int(cod),
+                            "nombre": nombre_map.get(int(cod), str(int(cod))),
+                            "monto":  float(monto),
+                        })
 
+        cta_cte_monto = sum(d["monto"] for d in cta_detail)
         rechazos = float(anr_cam["IMPORTE_RECHAZADO"].sum()) if not anr_cam.empty else 0.0
-
         vta_esp = float(venta_especial_map.get(cns, 0.0))
 
         # Neto = TotVal - CtaCte + VtaEsp - Rechazos
         neto = tot_val - cta_cte_monto + vta_esp - rechazos
 
         rows.append({
-            "idCns":        cns,
-            "dsCns":        nombre,
-            "TotVal":       tot_val,
-            "CtaCte":       cta_cte_monto,
-            "VtaEsp":       vta_esp,
-            "Rechazos":     rechazos,
-            "NetoIngresar": neto,
+            "idCns":         cns,
+            "dsCns":         nombre,
+            "TotVal":        tot_val,
+            "CtaCte":        cta_cte_monto,
+            "VtaEsp":        vta_esp,
+            "Rechazos":      rechazos,
+            "NetoIngresar":  neto,
+            "CtaCteDetalle": cta_detail,
         })
 
     return pd.DataFrame(rows)
@@ -8939,6 +8962,128 @@ def _cierre_pdf(df_main: pd.DataFrame, totales: dict,
         f"Beccacece Hnos SA  ·  Cierre generado: {fecha_str}  ·  Picking Orchestrator v{APP_VERSION}"
     )
 
+    # ── PÁGINA 2: DETALLE CTA CTE POR CAMIÓN ─────────────────────────────────
+    # Armar lista de camiones con detalle CTA CTE
+    cta_rows_pdf = []
+    if "CtaCteDetalle" in df_main.columns:
+        for _, row in df_main.iterrows():
+            detalle = row.get("CtaCteDetalle") or []
+            if isinstance(detalle, list) and detalle:
+                for d in detalle:
+                    cta_rows_pdf.append({
+                        "camion": f"{int(row['idCns'])} — {row['dsCns']}",
+                        "nombre": d["nombre"],
+                        "codigo": d["codigo"],
+                        "monto":  d["monto"],
+                    })
+
+    if cta_rows_pdf:
+        c.showPage()
+        y2 = PH - M
+
+        # Header página 2
+        c.setFillColor(DARK_BLUE)
+        c.rect(M, y2 - 32, PW - 2*M, 34, fill=1, stroke=0)
+        c.setFillColor(rl_colors.white)
+        c.setFont("Helvetica-Bold", 13)
+        c.drawString(M + 10, y2 - 20, f"DETALLE CTA CTE — {fecha_str}")
+        c.setFont("Helvetica", 8)
+        c.drawRightString(PW - M - 8, y2 - 20, "Beccacece Hnos SA  |  Desglose cliente × camión")
+        y2 -= 46
+
+        # Tabla detalle
+        usable_w2 = PW - 2 * M
+        col_labels2 = ["Camión",        "Cód.",    "Cliente (CTA CTE)",            "Monto ($)"]
+        col_w2      = [usable_w2 * 0.30, usable_w2 * 0.07, usable_w2 * 0.42, usable_w2 * 0.21]
+        row_h2 = 13
+        hdr_h2 = 15
+
+        c.setFillColor(MED_BLUE)
+        c.rect(M, y2 - hdr_h2, usable_w2, hdr_h2, fill=1, stroke=0)
+        c.setFillColor(rl_colors.white)
+        c.setFont("Helvetica-Bold", 8.5)
+        x2 = M + 5
+        for lbl, cw in zip(col_labels2, col_w2):
+            c.drawString(x2, y2 - hdr_h2 + 4, lbl)
+            x2 += cw
+        y2 -= hdr_h2 + 2
+
+        prev_cam = None
+        cam_total = 0.0
+        grand_total = 0.0
+        alt = False
+
+        for ii, dr in enumerate(cta_rows_pdf):
+            # Separador de camión
+            if dr["camion"] != prev_cam:
+                if prev_cam is not None:
+                    # fila subtotal camión anterior
+                    c.setFillColor(rl_colors.HexColor("#D9E4F5"))
+                    c.rect(M, y2 - row_h2, usable_w2, row_h2, fill=1, stroke=0)
+                    c.setFillColor(DARK_BLUE)
+                    c.setFont("Helvetica-Bold", 8)
+                    sub_x = M + 5 + col_w2[0] + col_w2[1]
+                    c.drawString(sub_x, y2 - row_h2 + 4, "SUBTOTAL")
+                    c.drawRightString(M + usable_w2 - 4, y2 - row_h2 + 4, fmt_ars(cam_total))
+                    y2 -= row_h2 + 2
+                    cam_total = 0.0
+                    if y2 < M + 40:
+                        y2 = new_page()
+                prev_cam = dr["camion"]
+                alt = False
+
+            bg2 = rl_colors.HexColor("#F5F8FF") if alt else rl_colors.white
+            c.setFillColor(bg2)
+            c.rect(M, y2 - row_h2, usable_w2, row_h2, fill=1, stroke=0)
+
+            vals2 = [dr["camion"], str(dr["codigo"]), dr["nombre"], fmt_ars(dr["monto"])]
+            x2 = M + 5
+            for vi2, (val2, cw2) in enumerate(zip(vals2, col_w2)):
+                if vi2 == 3:
+                    c.setFillColor(RED_NEG)
+                    c.setFont("Helvetica-Bold", 8)
+                    c.drawRightString(M + usable_w2 - 4, y2 - row_h2 + 4, val2)
+                else:
+                    c.setFillColor(rl_colors.black)
+                    c.setFont("Helvetica", 8)
+                    c.drawString(x2, y2 - row_h2 + 4, val2)
+                x2 += cw2
+
+            cam_total  += dr["monto"]
+            grand_total += dr["monto"]
+            alt = not alt
+            y2 -= row_h2
+
+            if y2 < M + 40:
+                y2 = new_page()
+
+        # Subtotal último camión
+        if prev_cam is not None:
+            c.setFillColor(rl_colors.HexColor("#D9E4F5"))
+            c.rect(M, y2 - row_h2, usable_w2, row_h2, fill=1, stroke=0)
+            c.setFillColor(DARK_BLUE)
+            c.setFont("Helvetica-Bold", 8)
+            sub_x = M + 5 + col_w2[0] + col_w2[1]
+            c.drawString(sub_x, y2 - row_h2 + 4, "SUBTOTAL")
+            c.drawRightString(M + usable_w2 - 4, y2 - row_h2 + 4, fmt_ars(cam_total))
+            y2 -= row_h2 + 4
+
+        # Fila TOTAL GENERAL CTA CTE
+        c.setFillColor(DARK_BLUE)
+        c.rect(M, y2 - 16, usable_w2, 16, fill=1, stroke=0)
+        c.setFillColor(rl_colors.white)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(M + 6, y2 - 11, "TOTAL GENERAL CTA CTE")
+        c.drawRightString(M + usable_w2 - 4, y2 - 11, fmt_ars(grand_total))
+
+        # Footer pág 2
+        c.setFillColor(rl_colors.HexColor("#555555"))
+        c.setFont("Helvetica", 6.5)
+        c.drawCentredString(
+            PW / 2, M - 4,
+            f"Beccacece Hnos SA  ·  Cierre generado: {fecha_str}  ·  Picking Orchestrator v{APP_VERSION}"
+        )
+
     c.save()
     return buf.getvalue()
 
@@ -9096,6 +9241,93 @@ def _cierre_excel(df_main: pd.DataFrame, totales: dict,
     col_widths = [8, 24, 22, 18, 18, 26]
     for ci, w in enumerate(col_widths, 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
+
+    # ── HOJA 2: CTA CTE DETALLE ───────────────────────────────────────────────
+    ws2 = wb.create_sheet(title="CTA CTE Detalle")
+
+    ws2.merge_cells("A1:E1")
+    ws2["A1"] = f"DETALLE CTA CTE — {fecha_str}"
+    ws2["A1"].font = Font(bold=True, size=12, color="1a3a6b")
+    ws2["A1"].alignment = center_al
+
+    ws2.merge_cells("A2:E2")
+    ws2["A2"] = "Beccacece Hnos SA — Desglose por camión y cliente"
+    ws2["A2"].font = Font(size=9, color="555555", italic=True)
+    ws2["A2"].alignment = center_al
+
+    hdr2 = ["ID Camión", "Camión", "Cód. Cliente", "Cliente (CTA CTE)", "Monto ($)"]
+    for ci, h in enumerate(hdr2, 1):
+        cell = ws2.cell(row=4, column=ci, value=h)
+        cell.fill = hdr_fill
+        cell.font = hdr_font
+        cell.alignment = center_al
+        cell.border = border
+    ws2.row_dimensions[4].height = 15
+
+    r2 = 5
+    grand_total_cta = 0.0
+    if "CtaCteDetalle" in df_main.columns:
+        for _, mrow in df_main.iterrows():
+            detalle = mrow.get("CtaCteDetalle") or []
+            if not isinstance(detalle, list) or not detalle:
+                continue
+            cam_total2 = 0.0
+            for di, d in enumerate(detalle):
+                bg_r = alt_fill if di % 2 == 0 else PatternFill()
+                vals2 = [int(mrow["idCns"]), mrow["dsCns"], d["codigo"], d["nombre"], d["monto"]]
+                for ci, val in enumerate(vals2, 1):
+                    cell = ws2.cell(row=r2, column=ci, value=val)
+                    cell.border = border
+                    cell.fill = bg_r
+                    if ci == 5:
+                        cell.alignment = right_al
+                        cell.number_format = money_fmt
+                        cell.font = Font(color="b91c1c", bold=True)
+                    elif ci in (1, 3):
+                        cell.alignment = center_al
+                    else:
+                        cell.alignment = left_al
+                ws2.row_dimensions[r2].height = 13
+                cam_total2  += d["monto"]
+                grand_total_cta += d["monto"]
+                r2 += 1
+
+            # Subtotal por camión
+            sub_fill = PatternFill("solid", fgColor="D9E4F5")
+            ws2.merge_cells(f"A{r2}:D{r2}")
+            ws2[f"A{r2}"] = f"Subtotal — {mrow['dsCns']}"
+            ws2[f"A{r2}"].font = Font(bold=True, color="1a3a6b", size=9)
+            ws2[f"A{r2}"].fill = sub_fill
+            ws2[f"A{r2}"].alignment = left_al
+            ws2[f"A{r2}"].border = border
+            ws2[f"E{r2}"] = cam_total2
+            ws2[f"E{r2}"].number_format = money_fmt
+            ws2[f"E{r2}"].font = Font(bold=True, color="1a3a6b")
+            ws2[f"E{r2}"].fill = sub_fill
+            ws2[f"E{r2}"].alignment = right_al
+            ws2[f"E{r2}"].border = border
+            ws2.row_dimensions[r2].height = 13
+            r2 += 1
+
+    # Total general
+    r2 += 1
+    ws2.merge_cells(f"A{r2}:D{r2}")
+    ws2[f"A{r2}"] = "TOTAL GENERAL CTA CTE"
+    ws2[f"A{r2}"].font = Font(bold=True, size=10, color="FFFFFF")
+    ws2[f"A{r2}"].fill = hdr_fill
+    ws2[f"A{r2}"].alignment = left_al
+    ws2[f"A{r2}"].border = border
+    ws2[f"E{r2}"] = grand_total_cta
+    ws2[f"E{r2}"].number_format = money_fmt
+    ws2[f"E{r2}"].font = Font(bold=True, color="FFFFFF", size=10)
+    ws2[f"E{r2}"].fill = hdr_fill
+    ws2[f"E{r2}"].alignment = right_al
+    ws2[f"E{r2}"].border = border
+    ws2.row_dimensions[r2].height = 16
+
+    # Anchos hoja 2
+    for ci, w in zip(range(1, 6), [10, 26, 12, 38, 22]):
+        ws2.column_dimensions[get_column_letter(ci)].width = w
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -9409,6 +9641,42 @@ def render_tab_cierre():
         else:
             st.info("Sin datos ANR o lista CTA CTE vacía.")
 
+    # ── DETALLE CTA CTE POR CAMIÓN (expandible) ───────────────────────────────
+    if "CtaCteDetalle" in df_main.columns and tot_cta_cte > 0:
+        with st.expander(
+            f"💳 Detalle CTA CTE por camión — Total: {ars(tot_cta_cte)}",
+            expanded=False
+        ):
+            st.caption(
+                "Desglose de clientes CTA CTE por camión. "
+                "La suma de todos los montos debe coincidir con el total E)."
+            )
+            grand_check = 0.0
+            has_detail  = False
+            for _, mrow in df_main.iterrows():
+                detalle = mrow.get("CtaCteDetalle") or []
+                if not isinstance(detalle, list) or not detalle:
+                    continue
+                has_detail = True
+                cam_lbl = f"🚛 {int(mrow['idCns'])} — {mrow['dsCns']}"
+                cam_tot = sum(d["monto"] for d in detalle)
+                st.markdown(f"**{cam_lbl}** — subtotal CTA CTE: **{ars(cam_tot)}**")
+                df_det = pd.DataFrame(detalle)[["codigo", "nombre", "monto"]]
+                df_det.columns = ["Código", "Cliente", "Monto ($)"]
+                df_det["Monto ($)"] = df_det["Monto ($)"].apply(lambda v: f"$ {v:,.0f}".replace(",", "."))
+                st.dataframe(df_det, use_container_width=True, hide_index=True)
+                grand_check += cam_tot
+
+            if has_detail:
+                st.markdown(f"---")
+                st.markdown(
+                    f"**✅ Total CTA CTE** (suma clientes): **{ars(grand_check)}** "
+                    f"| Total E): **{ars(tot_cta_cte)}** "
+                    + ("✅ Coinciden" if abs(grand_check - tot_cta_cte) < 1 else "⚠️ Diferencia detectada")
+                )
+            else:
+                st.info("Sin detalle disponible — verificá que el ANR esté cargado.")
+
     st.divider()
 
     # ── EXPORTAR ──────────────────────────────────────────────────────────────
@@ -9458,27 +9726,45 @@ def render_tab_cierre():
     st.markdown("### 📅 Cierre D+1 — Actualizado con Rechazos Reales")
     st.caption(
         "Al día siguiente del reparto, subí el **SR Actualizado** (col F = TotVal real cobrado "
-        "por el chofer). La app recalcula el cierre con la plata que efectivamente ingresó, "
-        "aplicando los mismos CTA CTE del día original."
+        "por el chofer) y el **ANR -1** (ANR del día anterior, para CTA CTE). "
+        "La app recalcula el cierre con lo que efectivamente ingresó."
     )
 
-    sr_d1_file = st.session_state.get("cierre_sr_d1")
+    sr_d1_file   = st.session_state.get("cierre_sr_d1")
+    anr_m1_file  = st.session_state.get("cierre_anr_m1")
 
     if not sr_d1_file:
         st.info("⬅️ Subí el **SR D+1.xlsx** en la pestaña **📁 Archivos** para generar el Cierre Actualizado.")
     else:
+        # Indicador visual de fuente CTA CTE
+        if anr_m1_file:
+            st.success("✅ **ANR -1 cargado** — CTA CTE se recalcula desde el ANR del día anterior.")
+        else:
+            st.warning(
+                "⚠️ **Sin ANR -1** — CTA CTE tomado del cierre del día original. "
+                "Para mayor precisión, subí el **ANR -1.xlsx** en 📁 Archivos."
+            )
+
         try:
             df_sr_d1 = _cierre_load_sr(sr_d1_file)
         except Exception as e:
             st.error(f"❌ Error leyendo SR D+1.xlsx: {e}")
             df_sr_d1 = pd.DataFrame()
 
+        # Cargar ANR -1 si está disponible
+        df_anr_m1 = pd.DataFrame()
+        if anr_m1_file:
+            try:
+                df_anr_m1 = _cierre_load_anr(anr_m1_file)
+            except Exception as e:
+                st.warning(f"⚠️ Error leyendo ANR -1.xlsx: {e}. CTA CTE tomado del cierre original.")
+
         if not df_sr_d1.empty:
             fecha_d1_str = f"{fecha_str} (D+1)"
             _fecha_slug_d1 = _fecha_slug
 
-            # Construir cierre D+1: TotVal es el real cobrado, rechazos = diferencia con SR original
-            df_d1 = _build_cierre_d1(df_main, df_sr_d1, cta_cte_list_clean, df_anr)
+            # Construir cierre D+1 con ANR -1 para CTA CTE
+            df_d1 = _build_cierre_d1(df_main, df_sr_d1, cta_cte_list_clean, df_anr, df_anr_m1)
 
             # Totales D+1
             d1_chess_orig   = df_d1["TotValOrig"].sum()
@@ -9611,43 +9897,78 @@ def render_tab_cierre():
 
 
 def _build_cierre_d1(df_orig: pd.DataFrame, df_sr_d1: pd.DataFrame,
-                     cta_cte_list: list, df_anr: pd.DataFrame) -> pd.DataFrame:
+                     cta_cte_list: list, df_anr: pd.DataFrame,
+                     df_anr_m1: pd.DataFrame = None) -> pd.DataFrame:
     """
     Construye la tabla de Cierre D+1.
-    df_orig: DataFrame del cierre original (idCns, dsCns, TotVal, CtaCte, ...)
-    df_sr_d1: SR del día siguiente con TotVal real cobrado por el chofer.
+    df_orig:    DataFrame del cierre original (idCns, dsCns, TotVal, CtaCte, ...)
+    df_sr_d1:   SR del día siguiente con TotVal real cobrado por el chofer.
+    df_anr_m1:  ANR del día anterior (D-1 desde la perspectiva del cierre D+1).
+                Si se provee, la CTA CTE se recalcula desde ahí (cliente × TRANSPORTE).
+                Si es None o vacío, cae back al valor del cierre original.
     Los rechazos reales = TotValOrig - TotValReal (lo que no se cobró).
-    CTA CTE se reutiliza del ANR original o del cierre anterior.
     """
     cta_cte_codigos = {int(c["codigo"]) for c in cta_cte_list}
+    nombre_map      = {int(c["codigo"]): c["nombre"] for c in cta_cte_list}
+
     # Índice del SR D+1 por idCns
     sr_d1_idx = {int(r["idCns"]): float(r["TotVal"]) for _, r in df_sr_d1.iterrows()}
 
+    # Bandera: ¿tenemos ANR -1 con datos utilizables?
+    usar_anr_m1 = (
+        df_anr_m1 is not None
+        and not df_anr_m1.empty
+        and "CLIENTE" in df_anr_m1.columns
+        and "TRANSPORTE" in df_anr_m1.columns
+        and "IMPORTE_NETO" in df_anr_m1.columns
+    )
+
     rows = []
     for _, row in df_orig.iterrows():
-        cns         = int(row["idCns"])
-        nombre      = str(row["dsCns"])
-        tot_orig    = float(row["TotVal"])
-        cta_cte_m   = float(row["CtaCte"])
+        cns      = int(row["idCns"])
+        nombre   = str(row["dsCns"])
+        tot_orig = float(row["TotVal"])
 
-        # TotVal real: si el camión no aparece en D+1, se asume que cobró todo
-        tot_real    = sr_d1_idx.get(cns, tot_orig)
+        # CTA CTE: recalcular desde ANR -1 si está disponible
+        if usar_anr_m1:
+            cam_rows = df_anr_m1[df_anr_m1["TRANSPORTE"] == cns]
+            cta_detail_d1 = []
+            if not cam_rows.empty:
+                cta_rows_m1 = cam_rows[cam_rows["CLIENTE"].isin(cta_cte_codigos)]
+                if not cta_rows_m1.empty:
+                    agg = cta_rows_m1.groupby("CLIENTE")["IMPORTE_NETO"].sum()
+                    for cod, monto in agg.items():
+                        if monto > 0:
+                            cta_detail_d1.append({
+                                "codigo": int(cod),
+                                "nombre": nombre_map.get(int(cod), str(int(cod))),
+                                "monto":  float(monto),
+                            })
+            cta_cte_m = sum(d["monto"] for d in cta_detail_d1)
+        else:
+            # Fallback: reutilizar CTA CTE del cierre original
+            cta_cte_m     = float(row["CtaCte"])
+            cta_detail_d1 = (row.get("CtaCteDetalle") or []) if "CtaCteDetalle" in row.index else []
 
-        # Rechazo real: diferencia entre lo que salió y lo que cobró
-        # Si cobró más (por redondeos), rechazo = 0
+        # TotVal real: si el camión no aparece en D+1, se asume cobró todo
+        tot_real     = sr_d1_idx.get(cns, tot_orig)
+
+        # Rechazo real: diferencia; si cobró más (redondeos), rechazo = 0
         rechazo_real = max(0.0, tot_orig - tot_real)
 
         # Neto real = cobrado - CTA CTE
         neto_real = tot_real - cta_cte_m
 
         rows.append({
-            "idCns":        cns,
-            "dsCns":        nombre,
-            "TotValOrig":   tot_orig,
-            "TotValReal":   tot_real,
-            "CtaCte":       cta_cte_m,
-            "RechazoReal":  rechazo_real,
-            "NetoReal":     neto_real,
+            "idCns":           cns,
+            "dsCns":           nombre,
+            "TotValOrig":      tot_orig,
+            "TotValReal":      tot_real,
+            "CtaCte":          cta_cte_m,
+            "RechazoReal":     rechazo_real,
+            "NetoReal":        neto_real,
+            "CtaCteDetalle":   cta_detail_d1,
+            "FuenteCtaCte":    "ANR -1" if usar_anr_m1 else "Cierre original",
         })
 
     return pd.DataFrame(rows)
