@@ -1,22 +1,21 @@
 """
-Picking Orchestrator v4.52.0 — Beccacece Hnos SA
+Picking Orchestrator v4.54.0 — Beccacece Hnos SA
 
-CAMBIOS v4.52.0:
-  - 🐛 FIX Excel Tablero: error `_fo(True, size=11)` → `_fo(True,"000000",11)`.
-    El botón "Generar Excel Tablero" ya no falla.
-  - ✏️  Renombrado: "Excel réplica PDF" → "Excel Tablero" | "PDF del día" →
-    "PDF Tablero" (labels, botones, nombres de archivo).
-  - 📄 PDF Tablero rediseñado:
-    · Sin logo — header de texto compacto (más espacio útil).
-    · Márgenes reducidos (6/8 mm), gráfico 38mm alto (antes 52mm),
-      tabla font 8pt, padding 2pt → todo entra en 1 hoja A4 landscape.
-    · Columnas HL y Peso(kg) con valores reales desde DDM.
-    · Licencias integradas: col Venc.Lic. + col Validación (verde OK /
-      rojo BLOQUEADO) visibles en la tabla y en bloque de alertas al pie.
-  - 🔍 DDM HL/Peso: amplía candidatos de búsqueda de columnas (nombres
-    exactos del Frescura: VALOR HL, PESO KG, AE, AF + variantes).
-    Agrega warning con nombres reales si columnas no se encuentran,
-    evitando omisiones silenciosas de HL y Peso.
+CAMBIOS v4.54.0:
+  - 🔧 HL y Peso — estrategia híbrida completa:
+    El ANR de Chess tiene PESO KG y HL por fila pero algunos SKUs
+    (merch, activos, etc.) los tienen en 0 aunque tienen bultos.
+    NUEVA LÓGICA fila a fila:
+      · PESO KG > 0 en ANR → usar valor real del ANR (Chess)
+      · PESO KG = 0 en ANR → DDM[sku] × bultos como complemento
+      · Ídem para HL
+    Esto cubre tanto ANRs con valores reales como ANRs sin esas cols.
+  - ✅ VE del CAR correctamente sumadas en HL y Peso:
+    Las Ventas Especiales del CAR (hasta fila 40) se agregan siempre
+    vía DDM × bultos sobre la suma del ANR, tanto en UP como en HL y
+    Peso (kg). Antes solo sumaban UP.
+  - ℹ️  Caption dinámico que indica exactamente qué fuentes se usaron
+    para HL/Peso (ANR+DDM, solo ANR, solo DDM, o sin datos).
 
 CAMBIOS v4.49.1:
   - 📂 Archivos: nuevo uploader "ANR -1.xlsx" (ANR del día anterior).
@@ -105,7 +104,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.52.0"
+APP_VERSION = "4.54.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -7262,38 +7261,88 @@ def render_tab_tablero():
         up_por_cam      = df_dia.groupby(col_camion)[col_up].sum()      if col_up      else pd.Series(dtype=float)
         rechazo_por_cam = df_dia.groupby(col_camion)[col_rechazo].sum() if col_rechazo else pd.Series(dtype=float)
 
-        # HL y Peso via cruce DDM × bultos ANR
+        # ── HL y Peso por camión — estrategia híbrida ──────────────────────────
+        # El ANR de Chess tiene PESO KG y HL como totales por fila (peso_unit × bultos).
+        # Algunos SKUs (merch, activos, etc.) tienen PESO=0 aunque tienen bultos.
+        # Lógica fila a fila:
+        #   - Si ANR tiene PESO KG > 0  → usar valor real del ANR
+        #   - Si ANR tiene PESO KG = 0  → completar con DDM[sku] × bultos
+        #   Ídem para HL. Luego sumar por camión.
+        # VE del CAR: siempre se agregan vía DDM × bultos (no están en el ANR).
+
         hl_por_cam   = pd.Series(dtype=float)
         peso_por_cam = pd.Series(dtype=float)
-        if col_sku_anr and col_blt_anr and _ddm_disponible:
-            _dc = df_dia[[col_camion, col_sku_anr, col_blt_anr]].copy()
-            _dc.columns = ["_cam", "_sku", "_blt"]
-            _dc["_sku"] = pd.to_numeric(_dc["_sku"], errors="coerce")
-            _dc["_blt"] = pd.to_numeric(_dc["_blt"], errors="coerce").fillna(0)
-            _dc = _dc.dropna(subset=["_cam", "_sku"])
-            if sku_hl_u:
-                _dc["_hl"] = _dc["_sku"].map(sku_hl_u).fillna(0) * _dc["_blt"]
-                hl_por_cam = _dc.groupby("_cam")["_hl"].sum()
-            if sku_peso_u:
-                _dc["_kg"] = _dc["_sku"].map(sku_peso_u).fillna(0) * _dc["_blt"]
-                peso_por_cam = _dc.groupby("_cam")["_kg"].sum()
-        if hl_por_cam.empty and col_hl is not None:
-            hl_por_cam   = df_dia.groupby(col_camion)[col_hl].sum()
-        if peso_por_cam.empty and col_peso is not None:
-            peso_por_cam = df_dia.groupby(col_camion)[col_peso].sum()
 
-        # Ventas Especiales → añadir a series
+        if col_sku_anr and col_blt_anr:
+            _dc = df_dia[[col_camion, col_sku_anr, col_blt_anr]].copy()
+            # Traer columnas ANR de peso y HL si existen
+            _dc["_peso_anr"] = (
+                pd.to_numeric(df_dia[col_peso].values, errors="coerce").clip(min=0)
+                if col_peso is not None else 0.0
+            )
+            _dc["_hl_anr"] = (
+                pd.to_numeric(df_dia[col_hl].values, errors="coerce").clip(min=0)
+                if col_hl is not None else 0.0
+            )
+            _dc.columns = ["_cam", "_sku", "_blt", "_peso_anr", "_hl_anr"]
+            _dc["_sku"]  = pd.to_numeric(_dc["_sku"],  errors="coerce")
+            _dc["_blt"]  = pd.to_numeric(_dc["_blt"],  errors="coerce").fillna(0)
+            _dc["_peso_anr"] = pd.to_numeric(_dc["_peso_anr"], errors="coerce").fillna(0)
+            _dc["_hl_anr"]   = pd.to_numeric(_dc["_hl_anr"],   errors="coerce").fillna(0)
+            _dc = _dc.dropna(subset=["_cam", "_sku"])
+
+            # Peso híbrido: ANR real si > 0, DDM como complemento donde = 0
+            if _ddm_disponible and sku_peso_u:
+                _dc["_kg_ddm"] = _dc["_sku"].map(sku_peso_u).fillna(0) * _dc["_blt"]
+                _dc["_kg"] = _dc["_peso_anr"].where(_dc["_peso_anr"] > 0, _dc["_kg_ddm"])
+            else:
+                _dc["_kg"] = _dc["_peso_anr"]
+
+            # HL híbrido: ANR real si > 0, DDM como complemento donde = 0
+            if _ddm_disponible and sku_hl_u:
+                _dc["_hl_ddm"] = _dc["_sku"].map(sku_hl_u).fillna(0) * _dc["_blt"]
+                _dc["_hl"] = _dc["_hl_anr"].where(_dc["_hl_anr"] > 0, _dc["_hl_ddm"])
+            else:
+                _dc["_hl"] = _dc["_hl_anr"]
+
+            peso_por_cam = _dc.groupby("_cam")["_kg"].sum()
+            hl_por_cam   = _dc.groupby("_cam")["_hl"].sum()
+
+        elif col_hl is not None or col_peso is not None:
+            # Fallback simple si no hay col_sku/col_blt en el ANR
+            if col_hl is not None:
+                hl_por_cam   = df_dia.groupby(col_camion)[col_hl].apply(
+                    lambda x: pd.to_numeric(x, errors="coerce").fillna(0).sum())
+            if col_peso is not None:
+                peso_por_cam = df_dia.groupby(col_camion)[col_peso].apply(
+                    lambda x: pd.to_numeric(x, errors="coerce").fillna(0).sum())
+
+        # Ventas Especiales del CAR → sumar UP + HL + Peso vía DDM × bultos
+        # (son bultos adicionales que no figuran en el ANR del día)
         ve_clean = ve_edited.dropna(subset=["camion","sku","bultos"]) if not ve_edited.empty else pd.DataFrame()
         if not ve_clean.empty:
             for _, r in ve_clean.iterrows():
                 try:
                     cam = int(r["camion"]); sku = int(r["sku"]); blt = float(r["bultos"])
                     bxp = sku_bxp.get(sku, 50)
-                    up_por_cam[cam]  = up_por_cam.get(cam, 0) + blt / bxp
-                    if sku in sku_hl_u:   hl_por_cam[cam]   = hl_por_cam.get(cam, 0)   + sku_hl_u[sku]*blt
-                    if sku in sku_peso_u: peso_por_cam[cam] = peso_por_cam.get(cam, 0) + sku_peso_u[sku]*blt
+                    up_por_cam[cam]   = up_por_cam.get(cam, 0)   + blt / bxp
+                    if sku in sku_hl_u:
+                        hl_por_cam[cam]   = hl_por_cam.get(cam, 0)   + sku_hl_u[sku]   * blt
+                    if sku in sku_peso_u:
+                        peso_por_cam[cam] = peso_por_cam.get(cam, 0) + sku_peso_u[sku] * blt
                 except Exception:
                     pass
+
+        # Caption fuente HL/Peso
+        if col_hl is not None and col_peso is not None and _ddm_disponible:
+            _fuente_hlkg = "✅ HL y Peso: ANR real (fila a fila) + DDM para SKUs sin valor en ANR + VE del CAR vía DDM."
+        elif col_hl is not None and col_peso is not None:
+            _fuente_hlkg = "✅ HL y Peso: columnas PESO KG y HL del ANR (valores reales Chess). Sin DDM cargado."
+        elif _ddm_disponible:
+            _fuente_hlkg = "⚠️ HL y Peso: calculados 100% desde DDM × Bultos (ANR sin columnas PESO KG / HL)."
+        else:
+            _fuente_hlkg = "⚠️ HL y Peso: sin datos (cargá la Frescura/DDM para calcularlos)."
+        st.caption(_fuente_hlkg)
 
         # ── EXCLUSIÓN DE CAMIONES ──────────────────────────────────────────────
         _todos_cams = sorted([c for c in set(list(pedidos_por_cam.index) + list(cam_patente.keys()))
