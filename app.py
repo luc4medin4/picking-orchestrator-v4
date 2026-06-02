@@ -1,289 +1,33 @@
 """
-Picking Orchestrator v4.41.0 — Beccacece Hnos SA
+Picking Orchestrator v4.42.0 — Beccacece Hnos SA
 Streamlit unificado para automatización de picking (DPO 2.1 — Pilar Almacén)
 
-CAMBIOS v4.41.0:
-  - 🎨 PDF Proyección — Reasignaciones más visibles: celda de la cancha origen
-    muestra fondo NARANJA con flecha "→CDEST" en grande (10pt, bold); celda de
-    la cancha destino muestra fondo VERDE AGUA con "+CORIG" en grande.
-    Se eliminan los estilos pequeños previos (6pt azul).
-  - 📋 PDF Controlador integrado: el resumen del Controlador se agrega como
-    ÚLTIMA PÁGINA del PDF ×5 (ya no se genera por separado). El botón
-    "📄 PDF Controlador" sigue disponible para descarga individual.
-  - 📐 PDF Controlador — primera columna ampliada para evitar superposición
-    de texto. Se eliminó el ícono emoji del encabezado de sección (incompatible
-    con ReportLab). Proporciones de columnas ajustadas (col1=55%, col2=41%).
+CAMBIOS v4.42.0:
+  - 🚚 Nueva Tab "🚚 Tablero Ruteador" (reemplaza el Excel 05-Tablero Ruteador):
+    · Inputs amarillos del día: fecha, SLA entrega, tiempo de ruteo target,
+      ocupación bodega, fuera de zona, camiones totales, visitas teóricas.
+    · Registro del día: hora entrega real, tiempo ruteo real, fuera de zona
+      (cantidad PDV), causa demora (Chess / Bees / Cierre / Sindical / etc).
+    · Ventas Especiales: tabla editable manual para cargar las líneas azules
+      del CAR Chess (N° camión + SKU + bultos). Calcula UP usando DDM (BXP).
+    · Licencias conductores: carga opcional de Licencias.xlsx para validar
+      vencimiento de registro por chofer (BLOQUEADO / OK).
+    · Config patentes/capacidades: tabla editable por camión.
+    · Cálculos replicados del Excel:
+      - Pedidos ruteados (clientes únicos via col AY=1 del ANR)
+      - Bultos UP y paletas por camión (col Q ANR + Ventas Especiales)
+      - Peso kg por camión (col AZ ANR)
+      - HL por camión (col BB ANR)
+      - Rechazos del día (col L ANR)
+      - Drop Size, promedio paletas, conversión equivalente (UP × 2.4)
+      - Eficiencia = pedidos / visitas teóricas
+      - Utilización vehículos = camiones reparto / flota total
+      - Productividad ruteo = proporción de KPIs cumplidos
+    · Tabla detalle por camión con Chofer (desde ANR col AN), PDV, Bultos UP,
+      Paletas, Patente, Capacidad kg, Peso, Vencimiento licencia, Validación.
+    · Status semáforo por KPI (✅ / 🔴 / ⚪ si no hay dato real aún).
+    · Exportación Excel con hoja "Detalle Camiones" + hoja "KPIs".
 
-CAMBIOS v4.40.0:
-  - 🔢 Formateo decimales tabla SUB Total PALL / DESIGNADOS / TOTAL PALL x CANCHA:
-    forzado a 2 decimales con style.format() → "9.98" en lugar de "9.980000".
-  - 🔢 Formateo tabla TOTAL BULTOS / HL / KG / HORA EST. FIN: convertido a
-    strings con precisión fija (BULTOS 1 dec, HL 2 dec, KG sin dec).
-    Sin impacto en lógica ni cálculos.
-
-CAMBIOS v4.39.0:
-  - 🕐 Proyección Picking: horario (FIN global + semáforo por cancha) movido
-    ARRIBA de la tabla de pallets, para visión inmediata al distribuir cargas.
-  - 📄 PDF Proyección (×5): fuente de datos agrandada (header 11pt, rows 9pt,
-    row_h 15pt → más legible). Columnas ajustadas: eliminado ancho vacío
-    sobrante; distribución equilibrada entre canchas.
-  - 📄 PDF Proyección: asignaciones más visibles — celda de cancha origen/destino
-    incluye nota inline "→CIII" / "+CII" con tamaño 8pt y color azul dentro de
-    la celda, no al margen. Se agrega fila resumen de reasignaciones al pie con
-    bultos y tiempo reasignado por cancha.
-  - 🗂️ Orden tabs: "🚛 Camiones T2" movida a DESPUÉS de "🏷️ Clasificación"
-    (orden: Archivos → Planilla → Resumen → Proyección → Clasificación → T2 →
-    Top SKUs → Boletas → Cierre → Validación).
-  - 📋 Resumen Controlador: nuevo botón "📄 PDF Controlador" que genera un PDF
-    landscape con el resumen completo (horarios, totales, top SKUs, alertas)
-    listo para imprimir junto a las copias de canchas.
-  - 💰 Cierre: fecha del encabezado y nombre del archivo toman la fecha del
-    día de reparto (extraída del ANR — col FECHA si existe, fallback al CAR)
-    en formato dd/mm/yyyy. Nombre del PDF: "DD-MM-YYYY_cierre_financiero_bkcc.pdf".
-    Nombre Excel: "DD-MM-YYYY_cierre_financiero_bkcc.xlsx".
-
-CAMBIOS v4.37.0:
-  - 📄 PDF Proyección Picking ahora es LANDSCAPE (A4 horizontal): mejor
-    aprovechamiento del ancho, tabla más legible con columnas balanceadas.
-    Columna STS ahora proporcional — ya no consume todo el espacio sobrante.
-    Cancha foco destacada con fondo amarillo de mayor contraste.
-  - 📋 Resumen para el Controlador (panel cp2 expandido):
-    Incluye horarios de finalización por cancha, top 3 SKUs del día (por
-    bultos), alertas de canchas atrasadas, totales HL/KG y mix picking.
-    Diseñado para ser leído de un vistazo antes del inicio de picking.
-  - 🚫 Top SKUs / Top Clientes: eliminados botones JPEG (solo quedan PDFs).
-  - 🚫 Tab "Extraíbles Sheets" eliminada del menú de navegación.
-  - 📊 Nuevo botón "⬇ Descargar Excel (XLSX)" en sección Proyección Picking:
-    descarga la tabla de proyección (por camión × cancha) como .xlsx.
-
-CAMBIOS v4.36.0 (Proyección Picking — Tab 4):
-  - ⚡ PERFORMANCE: removido `st.rerun()` manual tras editar ASIGN. Antes
-    cada cambio disparaba doble rerun (manual + automático del data_editor)
-    y reejecutaba todo el pipeline. Ahora se construye `live_asign` en una
-    sola pasada desde el `edited_df` y se usa para todos los cálculos
-    POST-tabla. Sensación de fluidez: ~3× más rápido al mover carga.
-  - 🧹 Removido bloque DUPLICADO "Horario fin por cancha" superior (estaba
-    PRE-edit y quedaba un rerun desfasado del bloque inferior).
-  - 🎨 Condicionales visuales tipo Excel master:
-      • `ProgressColumn` para TOT PALL (barra 0–12, magnitud visual) y
-        Bult Pick (barra escalada al max del día).
-      • STATUS con emoji prefijo (✅ OK / ⚠️ >9 Pall) — visible de un vistazo.
-      • FIN por cancha con semáforo `delta_color`:
-          – ≥15min holgura  → verde (puede recibir carga)
-          – 5–15min holgura → neutro amarillo
-          – ±5min FIN GLOBAL → emparejada (objetivo)
-          – 5–15min tarde    → ámbar ⚠
-          – >15min tarde     → rojo 🔴 (enviar carga a otra cancha)
-  - 📄 PDF ahora genera 5 PÁGINAS (incluye MKPL como cancha colectiva,
-    sin operario fijo asignado — la pickean entre todos).
-  - 📋 Resumen lateral suma línea "Bultos MKPL (cancha colectiva)".
-
-CAMBIOS v4.35.0 (Proyección Picking — Tab 4):
-  - 🛠️ Fix CRÍTICO: HL y KG dejaron de estar hardcodeados en 0. Ahora se
-    leen del DDM Frescura (col P = VALOR HL/bulto, col Q = PESO KG/bulto)
-    y se calculan por SKU → se suman por cancha y por camión.
-  - 🛠️ Nueva fn `_t4_calcular_metricas_por_cancha` devuelve bultos+HL+KG
-    post-reasignación en una sola pasada. Reemplaza la fn vieja que solo
-    calculaba bultos.
-  - 🛠️ Tiempo estimado de fin se calcula sobre BULTOS REALES picking
-    (post-asignación), no sobre UP. UP solo define el espacio en cancha.
-  - 🛠️ Reasignación: ahora arrastra UP + bultos reales + HL + KG en
-    proporción (todo del bloque cancha-camión se mueve junto, igual que
-    en el Excel master).
-  - ➕ Tabla resumen agrega filas TOTAL BULTOS, TOTAL HL, TOTAL KG y
-    HORA EST FIN al pie (debajo de TOTAL PALL X CANCHA), igual layout
-    que el Excel master v8.
-  - Inicios escalonados +5 min por cancha (CI→CII→CIII→CIV→MKPL).
-
-CAMBIOS v4.33.1 (Proyección Picking — Tab 4):
-  - 🛠️ FIX CRÍTICO: _t4_norm_cancha() reescrita. El bug raíz era que
-    `s.startswith("CANCHA I")` matchea también "CANCHA II/III/IV" por
-    prefijo, así que TODA la carga de CII/CIII/CIV se acumulaba en CI
-    (esto explica el screenshot v4.32 con CI=21.44 y CII/CIII/CIV en 0).
-    Nueva lógica: igualdad exacta → canónicos cortos (CI/CII/.../2/3/4) →
-    regex de romanos (IV|III|II|V|I) → regex numérico. Cancha V → MKPL.
-
-  - ⏰ Inicio escalonado +5 min entre canchas (orden CI→CII→CIII→CIV→MKPL)
-    desde el "Hora/Min inicio" del UI. Antes todas usaban el mismo inicio.
-
-  - 🏁 Cards FIN por cancha + FIN GLOBAL movidas ARRIBA, antes de la tabla
-    "Pallets UP por camión". Se mantienen abajo como vista detallada
-    (con bultos + pall + inicio).
-
-  - 🔄 Recálculo en cascada al reasignar (ASIGN): mueve fracción picking
-    de UP + mueve bultos de la cancha origen a destino → recalcula horas
-    fin con productividad por cancha (default CI=370, CII=360, CIII=390,
-    CIV=400, MKPL=390 b/h) y personas por cancha (default 1).
-
-  - 📄 PDF actualizado: header muestra los 5 FIN por cancha (ini→fin)
-    además del FIN GLOBAL.
-
-CAMBIOS v4.33.0:
-  - 🛠️ Fix CRÍTICO Proyección Picking (Tab 4) — reescritura completa de
-    _t4_load_car_proyeccion() para corregir 3 bugs estructurales:
-
-    1) Detección dinámica VE/CHESS:
-       El código v4.32 usaba `raw.iloc[41:]` hardcoded, perdiendo toda la
-       sección Ventas Especiales y rompiéndose cuando el corte no caía en
-       fila 41. v4.33 detecta la primera fila completamente vacía como
-       separador y procesa AMBAS secciones, etiquetando cada linea con
-       columna 'fuente' = 'VE' o 'CHESS' para trazabilidad.
-
-    2) Conversión correcta de sueltas a bultos equivalentes:
-       v4.32 ignoraba la columna 'Unids' (sueltas) → de ahí el bug visible
-       de "4380 bultos en Cancha I camión 101" cuando el real era 1.42 UP.
-       v4.33 aplica:
-           bultos_eq = Bultos + Unids / unidades_por_bulto
-       leyendo unidades_por_bulto de DDM (col 'UNIDADES'/'UN BULTO'/etc.
-       buscado por header, no por índice ciego).
-
-    3) Split AE/Picking con FLOOR estricto:
-       v4.32 aplicaba `≥0.97 → ceil` redondeando hacia arriba pallets casi
-       completos hacia AE. Esto es INCORRECTO según regla operativa:
-           pall_ae   = floor(UP_total)        ← solo paletas enteras
-           pall_pick = UP_total - floor(UP_total)  ← fracción real
-       Se mantiene 1/BXP como UPKT cuando el cacheado no es confiable.
-
-    Lectura DDM ahora busca columnas por nombre de header
-    ('BULTOS X PAL'/'BXP', 'UNIDADES', 'CAN') con fallback a índices
-    F=5, M=12 o N=13, O=14 para tolerar reordenamientos menores.
-
-    El resto del Tab 4 (UI, reasignación entre canchas, cálculo de tiempos,
-    PDF) no se modifica — recibe el mismo schema de dataframe que v4.32.
-
-CAMBIOS v4.32.0:
-  - 🖼️ Fix JPEG Top SKUs: reescritura completa de build_top_skus_anr_jpeg()
-    para fidelidad pixel-perfect con el PDF. Problemas corregidos:
-    • DPI aumentado de 150 → 200 (A4 real = 1654 × auto px vs 1240px anterior).
-    • Fuentes escaladas con factor correcto DPI/72 en lugar de valores absolutos
-      arbitrarios (título ~47px, subtítulo ~28px, celdas ~25px).
-    • Márgenes convertidos de mm → px con la fórmula mm × DPI/25.4 (igual al PDF).
-    • Alturas de filas y header ahora derivan de las mismas dimensiones mm del PDF
-      (HDR_H=22mm, ROW_H=8mm, THDR_H=8mm, DHDR_H=7mm, DROW_H=7mm).
-    • Helper draw_table() centralizado con alineación vertical real (v-center)
-      idéntica al PDF (drawCentredString vertical del reportlab).
-    • Padding interno corregido (8px ≈ 1.5mm, igual al PDF).
-    • Footer con texto izquierdo y derecho alineados (igual que PDF).
-    • quality JPEG subido a 94 para mejor legibilidad del texto.
-
-CAMBIOS v4.31.0:
-  - 🔧 Fix JPEG Tops: reemplazada la conversión PDF→JPEG (que requería
-    pdf2image+poppler o PyMuPDF, no disponibles en Streamlit Cloud) por
-    renderizado directo con Pillow. Nuevas funciones build_top_skus_anr_jpeg()
-    y build_top_clientes_anr_jpeg() generan el JPEG nativo con el mismo
-    diseño que el PDF (header azul/dorado, tabla con bandas, footer), sin
-    ninguna dependencia externa más allá de Pillow (ya incluido en Streamlit).
-    El botón JPEG ya no muestra el warning de dependencias faltantes.
-
-CAMBIOS v4.30.0:
-  - 🧹 Top SKUs PDF + Top Clientes PDF: eliminada la línea "Bultos: X · HL: Y"
-    del header. Esos datos correspondían solo al top 10, no a la venta total
-    del día, generando confusión. La fecha queda como único dato en el header
-    derecho. Los totales reales siguen visibles en la sección 1 de la UI.
-
-CAMBIOS v4.29.0:
-  - 🖼️ Top SKUs + Top Clientes: nuevos botones JPEG al lado de cada PDF.
-    La misma imagen que arrojaría el PDF se descarga en .jpg listo para
-    compartir por mensaje/WhatsApp. Conversión en cascada sin dependencias
-    obligatorias: pdf2image+poppler → PyMuPDF/fitz. Si ninguno está
-    disponible, el botón muestra un warning sin romper la app.
-    Nueva función helper _pdf_to_jpeg() reutilizable.
-
-CAMBIOS v4.28.0:
-  - 🔧 Fix Camiones T2: impresión horizontal real.
-    Rotar un PDF portrait 90° con pypdf/pikepdf no produce un PDF landscape
-    real: el contenido se distorsiona y queda mal aprovechado en la página.
-    La solución correcta es exportar landscape DESDE el Apps Script usando
-    el parámetro `fitw=true&size=7` en la URL de export de Google Sheets.
-    En el app.py se eliminó el llamado a _t2_rotate_to_landscape() en el
-    flujo de render_tab_t2() (la función se conserva pero ya no se invoca).
-    ⚠️  REQUIERE también actualizar el Apps Script (ver nota en código).
-
-CAMBIOS v4.27.1:
-  - 🔧 Fix Camiones T2: ModuleNotFoundError al generar PDF landscape.
-    _t2_rotate_to_landscape() reimportaba pypdf localmente sin verificar
-    _PYPDF_AVAILABLE, crasheando si pypdf no estaba instalado en el entorno.
-    Ahora: intenta pypdf → fallback a pikepdf → fallback sin rotación.
-    La tab T2 nunca crashea por este motivo.
-
-CAMBIOS v4.27:
-  - 🔧 Fix CRÍTICO Boletas: el ANR subido en Archivos no llegaba a la tab Boletas.
-    La key usada en Boletas era "anr_df" (DataFrame) pero Archivos solo guardaba
-    el file object bajo "tc_anr". Ahora al cargar ANR.xlsx en Archivos se parsea
-    inmediatamente y se guarda también como DataFrame en "anr_df" (hoja BASE,
-    header=0 raw para que _build_anr_lookup encuentre las cols DESCRIPCIÓN CLIENTE
-    y DESCRIPCIÓN TRANSPORTE). Fix sin romper el Cierre (que usa _cierre_load_anr
-    con header=1 independientemente).
-
-CAMBIOS v4.26:
-  - ✅ Fix Venta Especial: ahora SUMA al total (antes restaba incorrectamente).
-    Fórmula corregida: Neto = TotVal - CtaCte + VtaEsp - Rechazos
-  - 📋 Cierre D+1 — "Cierre Actualizado con Rechazos Reales":
-    • Nuevo uploader SR Actualizado en pestaña Archivos (key: cierre_sr_d1)
-    • Sección nueva dentro de la tab Cierre: carga el SR del día siguiente,
-      toma TotVal real por camión, recalcula CTA CTE del ANR original y
-      muestra el Cierre real con la plata que efectivamente trajeron los choferes.
-    • Exporta a PDF landscape y Excel igual que el Cierre del día.
-
-CAMBIOS v4.25:
-  - Fix CRÍTICO: .applymap() → .map() (pandas >= 2.1) en tabla Cierre → resuelve AttributeError
-  - Eliminado "Cobro anticipado" de UI, PDF y Excel del Cierre (no aplica al flujo operativo)
-  - cobro_anticipado fijado en 0.0 (sin input, sin efecto en cálculos)
-  - Fórmulas resumen actualizadas: D - E - F (sin C)
-
-CAMBIOS v4.24:
-  - 🔧 Fix _cierre_load_sr: TotVal toma col [2] 'A) TotVal Chess' (fuente limpia),
-    no col [5] que es derivada. Robusto ante variantes de nombre de columna.
-  - 🔧 Fix _cierre_load_anr: ANR BASE tiene headers reales en fila 1 del Excel
-    (header=1). Con header=0 todas las columnas quedaban 'Unnamed' → crash.
-    El parser ahora usa header=1 y busca por nombre exacto, sin fallbacks por
-    índice que generaban mapeos erróneos.
-  - 🗑️ Eliminado "Cobro por otros medios" de la tabla y del resumen: columna
-    quitada de la UI, del Excel y del PDF. La lógica de neto se simplifica a
-    TotVal - CtaCte - VtaEsp - Rechazos.
-  - 📄 PDF Cierre en LANDSCAPE (A4 horizontal): mejor aprovechamiento del
-    espacio, tabla más ancha, columnas de importes más legibles para gerencia.
-
-CAMBIOS v4.23:
-  - 💰 Nueva sección "Cierre" (tab independiente): dashboard financiero diario
-    para gerencia. Fuente: SR.xlsx (cols A/B/F) + ANR.xlsx.
-    • Tabla por camión: Total Chess, CTA CTE descontado por camión, Cobro
-      anticipado, Venta especial, Neto a ingresar, Rechazos.
-    • Resumen global: Total reparto, % Rechazo, Neto final.
-    • Lista editable de clientes CTA CTE (agregar/quitar con código+nombre).
-    • MUTUAL: fila de monitoreo separada (no es CTA CTE, se muestra aparte).
-    • Exportar a Excel (.xlsx) y PDF (reportlab) listo para gerencia.
-  - 📁 Archivos: nuevo uploader SR.xlsx (fuente Chess para Cierre).
-
-CAMBIOS v4.22:
-  - 🔄 Camiones T2: impresión horizontal (landscape). El PDF descargado del
-    Apps Script ahora se rota 90° (portrait → landscape) antes de mostrarse
-    y descargarse, aprovechando mejor el espacio en la hoja al imprimir.
-
-CAMBIOS v4.18:
-  - 📁 Nueva pestaña "Archivos" (primera tab): carga centralizada de CAR.xlsx,
-    Frescura 3.0.xlsx y ANR.xlsx. Todas las demás secciones toman de session_state.
-  - 🏆 Top SKUs PDF: columna IMPORTE eliminada de la tabla (solo BULTOS y HL).
-  - 📊 División PDF: columna IMPORTE eliminada (solo BULTOS y HL).
-  - 👥 Top Clientes PDF: columna IMPORTE eliminada.
-  - ❌ Filas TOTAL eliminadas de todos los tops y división en PDF y UI.
-  - 🖼️ Logo Beccacece Hnos incorporado sutilmente en el header.
-
-CAMBIOS v4.17:
-  - 🏷️ Clasificación: ahora es el uploader primario de **ANR.xlsx** (key `tc_anr`).
-    La Frescura se toma EXCLUSIVAMENTE desde 📦 Planilla de Carga (`t1_fr`).
-    Se removieron los uploaders locales de Frescura y los fallbacks (`t4_fr`, `tc_fr`).
-  - 🏆 Top SKUs: ya no tiene uploader propio de ANR. Reusa el ANR cargado en
-    🏷️ Clasificación (`tc_anr`).
-  - Columna **IMPORTE eliminada** de toda la UI y de todos los PDFs:
-    Top SKUs (tabla + métrica "Importe total vendido"), División, Top Clientes.
-    Quedan solo BULTOS y HL.
-
-CAMBIOS v4.16 (previos):
-  - Tema OSCURO restaurado.
-  - 🏷️ Clasificación reenfocada POR CAMIÓN (Camión|Bultos|Pallets).
-  - 🏆 Top SKUs con 3 secciones explícitas.
-  - 🚛 Camiones T2: PDF único combinado server-side.
 """
 import io, math, hashlib, unicodedata, os, shutil, json
 from datetime import datetime
@@ -307,7 +51,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.41.0"
+APP_VERSION = "4.42.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -7099,6 +6843,446 @@ def render_tab_boletas():
         )
 
 
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB TABLERO RUTEADOR (v4.42.0)
+# ════════════════════════════════════════════════════════════════════════════
+
+_TR_CAMIONES_DEFAULT = {
+    101: "AE785NJ", 102: "KDC500",  103: "",       104: "AE785NK",
+    105: "AE962OJ", 106: "AC354KB", 107: "",        108: "AC354KD",
+    109: "UFH587",  110: "DMZ947",  111: "LGH463",  112: "KCT549",
+    113: "AF483IS", 114: "DMZ947",  115: "KDC500",  117: "DJE621",
+    118: "AE962OJ", 119: "",        120: "SOB215",  121: "",
+    122: "MRP648",  123: "",        125: "DJE621",  128: "AST830",
+    129: "",
+}
+
+_TR_CAPACIDADES_DEFAULT = {
+    "AE785NJ": 10450, "KDC500": 9480,  "AE785NK": 9460, "AC354KB": 9480,
+    "AC354KD": 9440,  "UFH587": 9470,  "DMZ947":  9480, "LGH463":  9600,
+    "KCT549":  9470,  "AF483IS": 9480, "AE962OJ": 9480, "DJE621":  9470,
+    "SOB215":  9600,  "MRP648":  9630, "AST830":  10470,
+}
+
+_TR_TARGET_OCUP_BODEGA  = 300
+_TR_TARGET_FUERA_ZONA   = 0.03
+_TR_TARGET_UTIL_VEH     = 0.80
+_TR_TARGET_EFICIENCIA   = 0.70
+
+
+def _tr_parse_time_input(val_str):
+    """Convierte 'HH:MM' en datetime.time, None si vacío."""
+    import datetime
+    if not val_str or str(val_str).strip() in ("", "nan", "None"):
+        return None
+    s = str(val_str).strip()
+    for fmt in ("%H:%M", "%H:%M:%S"):
+        try:
+            return datetime.datetime.strptime(s, fmt).time()
+        except ValueError:
+            continue
+    return None
+
+
+def _tr_time_to_min(t):
+    if t is None:
+        return 0.0
+    return t.hour * 60 + t.minute + t.second / 60
+
+
+def render_tab_tablero():
+    import pandas as pd
+    import datetime
+
+    st.markdown("## 🚚 Tablero Ruteador")
+    st.caption("Reemplaza el Excel 05-Tablero Ruteador. Fuentes: ANR (Chess) + Ventas Especiales + Licencias.")
+
+    ss = st.session_state
+    anr = ss.get("df_anr")
+    ddm = ss.get("df_ddm")
+
+    # ── Parámetros del día (campos en amarillo en el Excel) ──────────────────
+    st.markdown("### 📅 Parámetros del día")
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+    with c1:
+        fecha_dia = st.date_input("Fecha del día",
+            value=datetime.date.today() + datetime.timedelta(days=1), key="tr_fecha")
+    with c2:
+        es_sabado = fecha_dia.weekday() == 5
+        sla_str = st.text_input("SLA entrega (HH:MM)",
+            value="12:30" if es_sabado else "16:15", key="tr_sla")
+    with c3:
+        ruteo_str = st.text_input("T. ruteo target (HH:MM)", value="01:10", key="tr_ruteo")
+    with c4:
+        ocup_target = st.number_input("Ocup. bodega target (UP)",
+            value=_TR_TARGET_OCUP_BODEGA, step=10, key="tr_ocup")
+    with c5:
+        fz_target_pct = st.number_input("Fuera de zona target (%)",
+            value=3.0, step=0.5, format="%.1f", key="tr_fz")
+    with c6:
+        total_camiones_flota = st.number_input("Camiones totales (flota)",
+            value=15, step=1, key="tr_flota")
+    with c7:
+        visitas_teoricas = st.number_input("Visitas teóricas",
+            value=650, step=10, key="tr_vis")
+
+    fz_target = fz_target_pct / 100
+
+    # ── Registro del día ────────────────────────────────────────────────────
+    st.markdown("### ⏱️ Registro del día")
+    r1, r2, r3, r4 = st.columns(4)
+    with r1:
+        hora_real_str = st.text_input("Hora entrega real (HH:MM)",
+            value="", placeholder="ej: 16:25", key="tr_hora_real")
+    with r2:
+        ruteo_real_str = st.text_input("Tiempo de ruteo real (HH:MM)",
+            value="", placeholder="ej: 00:20", key="tr_truteo_real")
+    with r3:
+        fuera_zona_real = st.number_input("Fuera de zona (PDV)",
+            value=0, step=1, key="tr_fz_real")
+    with r4:
+        causa_demora = st.selectbox("Causa demora",
+            options=["", "Chess", "Bees", "Cierre de venta",
+                     "Problema sindical", "Corte de luz", "Otro"],
+            key="tr_causa_demora")
+
+    # ── Ventas Especiales (líneas azules del CAR) ───────────────────────────
+    st.markdown("### 🔵 Ventas Especiales (carga manual)")
+    st.caption("Ingresá las líneas azules del archivo CAR Chess: N° camión, código SKU y bultos.")
+
+    if "tr_ve_df" not in ss:
+        ss["tr_ve_df"] = pd.DataFrame({"camion": [None]*3, "sku": [None]*3, "bultos": [None]*3})
+
+    ve_edited = st.data_editor(
+        ss["tr_ve_df"], num_rows="dynamic", use_container_width=True,
+        column_config={
+            "camion": st.column_config.NumberColumn("N° Camión", min_value=100, max_value=999, step=1),
+            "sku":    st.column_config.NumberColumn("Código SKU", min_value=1, step=1),
+            "bultos": st.column_config.NumberColumn("Bultos", min_value=0.0, format="%.2f"),
+        },
+        key="tr_ve_editor",
+    )
+    ss["tr_ve_df"] = ve_edited
+
+    # ── Licencias conductores ───────────────────────────────────────────────
+    st.markdown("### 🪪 Licencias conductores")
+    lic_file = st.file_uploader("Licencias.xlsx (col D=Nombre, col I=Vencimiento)",
+        type=["xlsx", "xls"], key="tr_lic_file")
+    df_lic = pd.DataFrame()
+    if lic_file:
+        try:
+            _lic = pd.read_excel(lic_file, header=0)
+            if _lic.shape[1] >= 9:
+                df_lic = _lic.iloc[:, [3, 8]].copy()
+                df_lic.columns = ["nombre", "vencimiento"]
+                df_lic = df_lic.dropna(subset=["nombre"])
+                df_lic["nombre"] = df_lic["nombre"].astype(str).str.strip().str.upper()
+                df_lic["vencimiento"] = pd.to_datetime(df_lic["vencimiento"], errors="coerce")
+        except Exception as e:
+            st.warning(f"No se pudo leer licencias: {e}")
+
+    # ── Config patentes ─────────────────────────────────────────────────────
+    with st.expander("⚙️ Patentes y capacidades", expanded=False):
+        cam_data = [{"camion": k, "patente": v,
+                     "capacidad_kg": _TR_CAPACIDADES_DEFAULT.get(v, 9480)}
+                    for k, v in _TR_CAMIONES_DEFAULT.items()]
+        df_cam_edit = st.data_editor(pd.DataFrame(cam_data),
+            use_container_width=True, hide_index=True, key="tr_cam_cfg",
+            column_config={
+                "camion": st.column_config.NumberColumn("N° Camión", disabled=True),
+                "patente": st.column_config.TextColumn("Patente"),
+                "capacidad_kg": st.column_config.NumberColumn("Cap. máx (kg)", step=10),
+            })
+        cam_patente = dict(zip(df_cam_edit["camion"], df_cam_edit["patente"]))
+        cam_capkg   = dict(zip(df_cam_edit["patente"], df_cam_edit["capacidad_kg"]))
+
+    st.markdown("---")
+
+    # ── REQUIERE ANR ───────────────────────────────────────────────────────
+    if anr is None:
+        st.warning("⚠️ Cargá el ANR en la Tab **📁 Archivos** para calcular el tablero.")
+        return
+
+    # ── Normalizar ANR ──────────────────────────────────────────────────────
+    def _get_col(df, *candidates):
+        cols_up = [c.upper().strip() for c in df.columns]
+        for c in candidates:
+            if c.upper().strip() in cols_up:
+                return df.columns[cols_up.index(c.upper().strip())]
+        return None
+
+    anr_w = anr.copy()
+
+    col_camion   = _get_col(anr_w, "TRANSPORTE", "AP")
+    col_fecha_a  = _get_col(anr_w, "FECHA", "S")
+    col_up       = _get_col(anr_w, "UNIDAD PAQUETE", "Q")
+    col_clientes = _get_col(anr_w, "TOTAL CLIENTES", "AY")
+    col_peso     = _get_col(anr_w, "PESO KG", "AZ")
+    col_hl       = _get_col(anr_w, "HL", "BB")
+    col_rechazo  = _get_col(anr_w, "BULTOS RECHAZADOS", "L")
+    col_chofer_d = _get_col(anr_w, "DESCRIPCIÓN CHOFER", "AN", "DESCRIPCION CHOFER")
+    col_sku      = _get_col(anr_w, "ARTÍCULO", "H", "ARTICULO")
+
+    if col_camion is None or col_fecha_a is None:
+        st.error("No se encontraron columnas TRANSPORTE/FECHA en el ANR.")
+        return
+
+    anr_w[col_fecha_a] = pd.to_datetime(anr_w[col_fecha_a], errors="coerce")
+    df_dia = anr_w[anr_w[col_fecha_a].dt.date == fecha_dia].copy()
+
+    if df_dia.empty:
+        st.warning(f"No hay datos ANR para **{fecha_dia.strftime('%d/%m/%Y')}**.")
+        return
+
+    # ── DDM para BXP ────────────────────────────────────────────────────────
+    sku_bxp = {}
+    sku_peso_unit = {}
+    sku_hl_unit   = {}
+    if ddm is not None:
+        try:
+            ddm_n = ddm.copy()
+            ddm_n.columns = [str(c).upper().strip() for c in ddm_n.columns]
+            cod_c = _get_col(ddm_n, "CÓDIGO", "CODIGO", "COD") or ddm_n.columns[0]
+            bxp_c = _get_col(ddm_n, "BULTOS X PALLET", "AT")
+            val_c = _get_col(ddm_n, "VALOR", "AE")
+            pes_c = _get_col(ddm_n, "PESO", "AF")
+            for _, r in ddm_n.iterrows():
+                try:
+                    sid = int(r[cod_c])
+                    if bxp_c and pd.notna(r[bxp_c]) and float(r[bxp_c]) > 0:
+                        sku_bxp[sid] = float(r[bxp_c])
+                    if val_c and pd.notna(r.get(val_c)):
+                        sku_hl_unit[sid] = float(r[val_c])
+                    if pes_c and pd.notna(r.get(pes_c)):
+                        sku_peso_unit[sid] = float(r[pes_c])
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # ── Métricas por camión desde ANR ───────────────────────────────────────
+    # Pedidos = clientes únicos (AY=1 marca último registro del cliente)
+    if col_clientes is not None:
+        df_dia[col_clientes] = pd.to_numeric(df_dia[col_clientes], errors="coerce").fillna(0)
+        pedidos_por_cam = (df_dia[df_dia[col_clientes] == 1]
+                           .groupby(col_camion).size())
+    else:
+        col_cli2 = _get_col(anr_w, "CLIENTE", "W")
+        if col_cli2:
+            pedidos_por_cam = df_dia.groupby(col_camion)[col_cli2].nunique()
+        else:
+            pedidos_por_cam = df_dia.groupby(col_camion).size()
+
+    up_por_cam     = df_dia.groupby(col_camion)[col_up].sum()     if col_up     else pd.Series(dtype=float)
+    peso_por_cam   = df_dia.groupby(col_camion)[col_peso].sum()   if col_peso   else pd.Series(dtype=float)
+    hl_por_cam     = df_dia.groupby(col_camion)[col_hl].sum()     if col_hl     else pd.Series(dtype=float)
+    rechazo_por_cam= df_dia.groupby(col_camion)[col_rechazo].sum()if col_rechazo else pd.Series(dtype=float)
+
+    # ── Ventas Especiales → agregar al UP por camión ────────────────────────
+    ve_clean = (ve_edited.dropna(subset=["camion", "sku", "bultos"])
+                if not ve_edited.empty else pd.DataFrame())
+    if not ve_clean.empty:
+        for _, r in ve_clean.iterrows():
+            try:
+                cam = int(r["camion"])
+                sku = int(r["sku"])
+                blt = float(r["bultos"])
+                bxp = sku_bxp.get(sku, 50)
+                up_add = blt / bxp if bxp > 0 else 0
+                up_por_cam[cam]   = up_por_cam.get(cam, 0) + up_add
+                if sku in sku_peso_unit:
+                    peso_por_cam[cam] = peso_por_cam.get(cam, 0) + sku_peso_unit[sku] * blt
+                if sku in sku_hl_unit:
+                    hl_por_cam[cam]   = hl_por_cam.get(cam, 0) + sku_hl_unit[sku] * blt
+            except Exception:
+                pass
+
+    # ── Totales ─────────────────────────────────────────────────────────────
+    camiones_en_reparto = int((pedidos_por_cam > 0).sum()) if not pedidos_por_cam.empty else 0
+    total_pedidos       = int(pedidos_por_cam.sum()) if not pedidos_por_cam.empty else 0
+    total_up            = float(up_por_cam.sum()) if not up_por_cam.empty else 0.0
+    total_peso_kg       = float(peso_por_cam.sum()) if not peso_por_cam.empty else 0.0
+    total_hl            = float(hl_por_cam.sum()) if not hl_por_cam.empty else 0.0
+    total_rechazos      = float(rechazo_por_cam.sum()) if not rechazo_por_cam.empty else 0.0
+    paletas_total       = total_up / 50
+    prom_paletas        = paletas_total / camiones_en_reparto if camiones_en_reparto > 0 else 0.0
+    drop_size           = total_up / total_pedidos if total_pedidos > 0 else 0.0
+    conversion_eq       = total_up * 2.4
+    eficiencia          = total_pedidos / visitas_teoricas if visitas_teoricas > 0 else 0.0
+    util_vehiculos      = camiones_en_reparto / total_camiones_flota if total_camiones_flota > 0 else 0.0
+    ocup_bodega         = total_up / camiones_en_reparto if camiones_en_reparto > 0 else 0.0
+    fuera_zona_pct      = fuera_zona_real / total_pedidos if total_pedidos > 0 else 0.0
+
+    # Tiempos
+    sla_t        = _tr_parse_time_input(sla_str)
+    ruteo_tgt_t  = _tr_parse_time_input(ruteo_str)
+    hora_real_t  = _tr_parse_time_input(hora_real_str)
+    ruteo_real_t = _tr_parse_time_input(ruteo_real_str)
+
+    sla_min      = _tr_time_to_min(sla_t)
+    ruteo_tgt_m  = _tr_time_to_min(ruteo_tgt_t)
+    hora_real_m  = _tr_time_to_min(hora_real_t) if hora_real_t else None
+    ruteo_real_m = _tr_time_to_min(ruteo_real_t) if ruteo_real_t else None
+
+    sla_ok   = (hora_real_m <= sla_min) if hora_real_m is not None else None
+    ruteo_ok = (ruteo_real_m <= ruteo_tgt_m) if ruteo_real_m is not None else None
+    ocup_ok  = ocup_bodega >= ocup_target
+    fz_ok    = fuera_zona_pct <= fz_target
+    util_ok  = util_vehiculos >= _TR_TARGET_UTIL_VEH
+    efic_ok  = eficiencia >= _TR_TARGET_EFICIENCIA
+
+    kpi_vals = [v for v in [sla_ok, ruteo_ok, ocup_ok, fz_ok, util_ok] if v is not None]
+    prod_ruteo = sum(kpi_vals) / max(len(kpi_vals), 1)
+
+    # ── Display ─────────────────────────────────────────────────────────────
+    st.markdown(f"### 📊 Tablero — {fecha_dia.strftime('%d/%m/%Y')}")
+
+    m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
+    m1.metric("🚚 Camiones", f"{camiones_en_reparto} / {total_camiones_flota}")
+    m2.metric("📦 Pedidos", total_pedidos)
+    m3.metric("🏋️ Bultos UP", f"{total_up:.1f}")
+    m4.metric("📐 Paletas", f"{paletas_total:.2f}", f"{prom_paletas:.2f} x cam")
+    m5.metric("💧 HL", f"{total_hl:.2f}")
+    m6.metric("⚖️ Peso kg", f"{total_peso_kg:,.0f}")
+    m7.metric("📈 Prod. Ruteo", f"{prod_ruteo:.0%}")
+
+    st.markdown("#### KPIs vs Target")
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+
+    def _e(ok):
+        if ok is True:  return "✅"
+        if ok is False: return "🔴"
+        return "⚪"
+
+    with k1:
+        st.markdown(f"**{_e(sla_ok)} SLA Entrega**")
+        st.write(f"Real: **{hora_real_str or '—'}** / Target: {sla_str}")
+    with k2:
+        st.markdown(f"**{_e(ruteo_ok)} T. Ruteo**")
+        st.write(f"Real: **{ruteo_real_str or '—'}** / Target: {ruteo_str}")
+    with k3:
+        st.markdown(f"**{_e(ocup_ok)} Ocup. Bodega**")
+        st.write(f"Real: **{ocup_bodega:.1f}** / Target: {ocup_target}")
+    with k4:
+        st.markdown(f"**{_e(fz_ok)} Fuera de Zona**")
+        st.write(f"Real: **{fuera_zona_pct:.2%}** / Target: {fz_target:.0%}")
+    with k5:
+        st.markdown(f"**{_e(util_ok)} Util. Vehículos**")
+        st.write(f"Real: **{util_vehiculos:.0%}** / Target: {_TR_TARGET_UTIL_VEH:.0%}")
+    with k6:
+        st.markdown(f"**{_e(efic_ok)} Eficiencia**")
+        st.write(f"Real: **{eficiencia:.1%}** / Target: {_TR_TARGET_EFICIENCIA:.0%}")
+
+    # ── Tabla por camión ────────────────────────────────────────────────────
+    st.markdown("#### Detalle por Camión")
+    tabla_rows = []
+    for cam in sorted(
+        set(list(pedidos_por_cam.index) + list(cam_patente.keys()))
+    ):
+        pdv = int(pedidos_por_cam.get(cam, 0))
+        if pdv == 0:
+            continue
+        bup    = float(up_por_cam.get(cam, 0.0))
+        pals   = bup / 50
+        peso_c = float(peso_por_cam.get(cam, 0.0))
+        pate   = cam_patente.get(cam, "")
+        cap_kg = cam_capkg.get(pate, 0)
+
+        chofer = ""
+        if col_chofer_d is not None:
+            mask = df_dia[col_camion] == cam
+            if mask.any():
+                vals = df_dia.loc[mask, col_chofer_d].dropna().unique()
+                if len(vals) > 0:
+                    chofer = str(vals[0]).strip()
+                    # Limpiar prefijo "000115 - ARANDA" → "ARANDA"
+                    if " - " in chofer:
+                        chofer = chofer.split(" - ", 1)[-1].strip()
+
+        venc_lic = ""
+        val_lic  = ""
+        if not df_lic.empty and chofer:
+            match = df_lic[df_lic["nombre"].str.contains(chofer[:6].upper(), na=False, case=False)]
+            if not match.empty:
+                venc = match.iloc[0]["vencimiento"]
+                if pd.notna(venc):
+                    venc_lic = venc.strftime("%d/%m/%Y")
+                    val_lic  = "BLOQUEADO" if pd.Timestamp(fecha_dia) >= venc else "OK"
+
+        tabla_rows.append({
+            "N° Camión": cam, "Chofer": chofer, "PDV": pdv,
+            "Bultos UP": round(bup, 2), "Paletas": round(pals, 2),
+            "Patente": pate, "Cap. Kg": cap_kg if cap_kg else "",
+            "Peso (kg)": round(peso_c, 2),
+            "Venc. Licencia": venc_lic, "Validación": val_lic,
+        })
+
+    if tabla_rows:
+        df_tab = pd.DataFrame(tabla_rows)
+
+        def _style_v(v):
+            if v == "BLOQUEADO": return "background-color:#ff4b4b;color:white;font-weight:bold"
+            if v == "OK":        return "background-color:#00c853;color:white"
+            return ""
+
+        st.dataframe(
+            df_tab.style.applymap(_style_v, subset=["Validación"]),
+            use_container_width=True, hide_index=True,
+        )
+        tc1, tc2, tc3, tc4, tc5 = st.columns(5)
+        tc1.metric("Camiones activos", len(df_tab))
+        tc2.metric("Total PDV", df_tab["PDV"].sum())
+        tc3.metric("Total Bultos UP", f"{df_tab['Bultos UP'].sum():.2f}")
+        tc4.metric("Total Paletas", f"{df_tab['Paletas'].sum():.2f}")
+        tc5.metric("Total Peso (kg)", f"{df_tab['Peso (kg)'].sum():,.0f}")
+    else:
+        st.info("No hay camiones activos para la fecha seleccionada.")
+
+    # ── Indicadores adicionales ──────────────────────────────────────────────
+    st.markdown("#### Indicadores adicionales")
+    ia1, ia2, ia3, ia4 = st.columns(4)
+    ia1.metric("Drop Size (UP/PDV)", f"{drop_size:.2f}")
+    ia2.metric("Prom. Paletas / Camión", f"{prom_paletas:.2f}")
+    ia3.metric("Conversión Eq. (kg)", f"{conversion_eq:,.0f}")
+    ia4.metric("Eficiencia", f"{eficiencia:.1%}")
+
+    if total_rechazos > 0:
+        st.warning(f"⚠️ Rechazos del día: **{total_rechazos:.1f}** bultos")
+    if causa_demora:
+        st.info(f"📌 Causa de demora: **{causa_demora}**")
+
+    # ── Exportar ────────────────────────────────────────────────────────────
+    st.markdown("---")
+    if st.button("📥 Preparar exportación Excel", key="tr_export_btn"):
+        import io
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            if tabla_rows:
+                pd.DataFrame(tabla_rows).to_excel(writer, sheet_name="Detalle Camiones", index=False)
+            pd.DataFrame({
+                "KPI": ["Fecha", "Camiones reparto", "Total PDV", "Bultos UP", "Paletas",
+                         "HL", "Peso (kg)", "Drop Size", "Eficiencia",
+                         "Util. Vehículos", "Fuera de zona %", "Ocup. bodega",
+                         "Productividad ruteo", "Causa demora"],
+                "Valor": [fecha_dia.strftime("%d/%m/%Y"), camiones_en_reparto, total_pedidos,
+                           round(total_up, 2), round(paletas_total, 2),
+                           round(total_hl, 2), round(total_peso_kg, 2),
+                           round(drop_size, 2), f"{eficiencia:.1%}",
+                           f"{util_vehiculos:.0%}", f"{fuera_zona_pct:.2%}",
+                           round(ocup_bodega, 2), f"{prod_ruteo:.0%}", causa_demora],
+            }).to_excel(writer, sheet_name="KPIs", index=False)
+        buf.seek(0)
+        st.download_button(
+            "⬇️ Descargar Excel",
+            data=buf.getvalue(),
+            file_name=f"{fecha_dia.strftime('%d%m%Y')}_tablero_ruteador_bkcc.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="tr_dl",
+        )
+
+
+
 def main():
     st.set_page_config(
         page_title=f"Picking Orchestrator v{APP_VERSION}",
@@ -7147,22 +7331,24 @@ def main():
         "📋 Resumen Camiones",
         "📊 Proyección Picking ×5",
         "🏷️ Clasificación",
+        "🚚 Tablero Ruteador",
         "🚛 Camiones T2",
         "🏆 Top SKUs",
         "🖨️ Boletas",
         "💰 Cierre",
         "✅ Validación + Log",
     ])
-    with tabs[0]: render_tab_archivos()
-    with tabs[1]: render_tab_planilla()
-    with tabs[2]: render_tab_resumen()
-    with tabs[3]: render_tab_proyeccion()
-    with tabs[4]: render_tab_clasificacion()
-    with tabs[5]: render_tab_t2()
-    with tabs[6]: render_tab_top_skus()
-    with tabs[7]: render_tab_boletas()
-    with tabs[8]: render_tab_cierre()
-    with tabs[9]: render_tab_validacion()
+    with tabs[0]:  render_tab_archivos()
+    with tabs[1]:  render_tab_planilla()
+    with tabs[2]:  render_tab_resumen()
+    with tabs[3]:  render_tab_proyeccion()
+    with tabs[4]:  render_tab_clasificacion()
+    with tabs[5]:  render_tab_tablero()
+    with tabs[6]:  render_tab_t2()
+    with tabs[7]:  render_tab_top_skus()
+    with tabs[8]:  render_tab_boletas()
+    with tabs[9]:  render_tab_cierre()
+    with tabs[10]: render_tab_validacion()
 
 
 # ════════════════════════════════════════════════════════════════════════════
