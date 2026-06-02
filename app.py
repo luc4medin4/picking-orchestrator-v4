@@ -1,16 +1,22 @@
 """
-Picking Orchestrator v4.50.0 — Beccacece Hnos SA
+Picking Orchestrator v4.52.0 — Beccacece Hnos SA
 
-CAMBIOS v4.50.0:
-  - 🐛 FIX Tabla D+1 — CTA CTE visible: se agrega `style_cta_d1` al styled
-    de la tabla D+1. Antes la columna mostraba $0 visualmente aunque el
-    valor estaba cargado. Ahora muestra el monto en rojo si > 0.
-  - 📄 FIX PDF D+1 — Detalle CTA CTE: nueva página 2 con sub-filas por
-    camión (header camión, fila por cliente con código + nombre + monto,
-    subtotal por camión, total general). Idéntico al PDF del cierre del día.
-  - 📊 FIX Excel D+1 — Hoja "CTA CTE Detalle": nueva hoja con header de
-    camión, sub-filas por cliente (código + nombre + monto), subtotal por
-    camión y total general. Formato consistente con la hoja principal.
+CAMBIOS v4.52.0:
+  - 🐛 FIX Excel Tablero: error `_fo(True, size=11)` → `_fo(True,"000000",11)`.
+    El botón "Generar Excel Tablero" ya no falla.
+  - ✏️  Renombrado: "Excel réplica PDF" → "Excel Tablero" | "PDF del día" →
+    "PDF Tablero" (labels, botones, nombres de archivo).
+  - 📄 PDF Tablero rediseñado:
+    · Sin logo — header de texto compacto (más espacio útil).
+    · Márgenes reducidos (6/8 mm), gráfico 38mm alto (antes 52mm),
+      tabla font 8pt, padding 2pt → todo entra en 1 hoja A4 landscape.
+    · Columnas HL y Peso(kg) con valores reales desde DDM.
+    · Licencias integradas: col Venc.Lic. + col Validación (verde OK /
+      rojo BLOQUEADO) visibles en la tabla y en bloque de alertas al pie.
+  - 🔍 DDM HL/Peso: amplía candidatos de búsqueda de columnas (nombres
+    exactos del Frescura: VALOR HL, PESO KG, AE, AF + variantes).
+    Agrega warning con nombres reales si columnas no se encuentran,
+    evitando omisiones silenciosas de HL y Peso.
 
 CAMBIOS v4.49.1:
   - 📂 Archivos: nuevo uploader "ANR -1.xlsx" (ANR del día anterior).
@@ -99,7 +105,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.50.0"
+APP_VERSION = "4.52.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -7201,10 +7207,27 @@ def render_tab_tablero():
             try:
                 ddm_n = ddm.copy()
                 ddm_n.columns = [str(c).upper().strip() for c in ddm_n.columns]
-                cod_c = _get_col(ddm_n, "CÓDIGO", "CODIGO", "ARTÍCULO", "ARTICULO", "COD") or ddm_n.columns[0]
-                bxp_c = _get_col(ddm_n, "BULTOS X PALLET", "BXP", "AT")
-                val_c = _get_col(ddm_n, "VALOR HL", "VALOR", "HL/BULTO", "AE")
-                pes_c = _get_col(ddm_n, "PESO KG", "KG/BULTO", "PESO", "AF")
+                # Columna código SKU — primera col o candidatos conocidos
+                cod_c = _get_col(ddm_n,
+                    "CÓDIGO", "CODIGO", "ARTÍCULO", "ARTICULO",
+                    "COD", "SKU", "CÓDIGO ARTÍCULO", "CODIGO ARTICULO") or ddm_n.columns[0]
+                # BXP — col F o G del DDM (letra Excel = AT en base 0)
+                bxp_c = _get_col(ddm_n,
+                    "BULTOS X PALLET", "BXP", "BULTOS POR PALLET",
+                    "BULTOS/PALLET", "AT", "F", "G")
+                # HL — col AE del DDM Frescura: "VALOR HL" o similares
+                val_c = _get_col(ddm_n,
+                    "VALOR HL", "HL", "HL/BULTO", "HL POR BULTO",
+                    "HECTOLITROS", "AE", "VALOR", "HL BULTO")
+                # PESO — col AF del DDM Frescura: "PESO KG" o similares
+                pes_c = _get_col(ddm_n,
+                    "PESO KG", "PESO (KG)", "PESO_KG", "KG/BULTO",
+                    "KG POR BULTO", "PESO", "AF", "KG BULTO",
+                    "PESO BRUTO", "PESO NETO")
+                # Debug info en caso de que sigan sin encontrarse
+                if not val_c or not pes_c:
+                    _col_names = list(ddm_n.columns[:30])
+                    st.caption(f"ℹ️ DDM cols (primeras 30): {_col_names}")
                 for _, r in ddm_n.iterrows():
                     try:
                         sid = int(r[cod_c])
@@ -7217,8 +7240,15 @@ def render_tab_tablero():
                     except Exception:
                         pass
                 _ddm_disponible = bool(sku_hl_u or sku_peso_u)
-            except Exception:
-                pass
+                if not _ddm_disponible:
+                    st.warning(
+                        "⚠️ DDM cargado pero no se encontraron columnas HL/Peso. "
+                        f"Columna HL buscada: {val_c or 'NO ENCONTRADA'} | "
+                        f"Columna Peso: {pes_c or 'NO ENCONTRADA'}. "
+                        "Verificá los nombres en la hoja DDM del Frescura."
+                    )
+            except Exception as _ddm_ex:
+                st.warning(f"⚠️ Error leyendo DDM para HL/Peso: {_ddm_ex}")
 
         # ── MÉTRICAS POR CAMIÓN ─────────────────────────────────────────────────
         if col_clientes is not None:
@@ -7568,10 +7598,10 @@ def render_tab_tablero():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="tr_dl_xl", use_container_width=True)
 
-        # ── Excel 2: Réplica PDF con formato ──────────────────────────────────
+        # ── Excel 2: Excel Tablero con formato ────────────────────────────────
         with _ex2:
-            st.markdown("**📋 Excel réplica PDF**")
-            if st.button("🖨️ Generar Excel PDF", key="tr_btn_xl2", use_container_width=True):
+            st.markdown("**📋 Excel Tablero**")
+            if st.button("🖨️ Generar Excel Tablero", key="tr_btn_xl2", use_container_width=True):
                 try:
                     from openpyxl import Workbook
                     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -7610,7 +7640,7 @@ def render_tab_tablero():
                               f"{total_peso_kg:,.0f}", f"{drop_size:.2f}", f"{total_rechazos_up:.1f}"]
                     for i, (tl, tv2) in enumerate(zip(_tlbls, _tvals)):
                         _cl = _ws2.cell(row, i+1, tl); _cl.fill = _fx("E8EAF6"); _cl.font = _fo(True, _NX, 9); _cl.alignment = _al(); _cl.border = _bd()
-                        _cv = _ws2.cell(row+1, i+1, tv2); _cv.font = _fo(True, size=11); _cv.alignment = _al(); _cv.border = _bd()
+                        _cv = _ws2.cell(row+1, i+1, tv2); _cv.font = _fo(True, "000000", 11); _cv.alignment = _al(); _cv.border = _bd()
                     _ws2.row_dimensions[row].height = 15; _ws2.row_dimensions[row+1].height = 18; row += 3
                     # Tabla camiones
                     if tabla_rows:
@@ -7650,22 +7680,22 @@ def render_tab_tablero():
                         _ws2.column_dimensions[get_column_letter(ci4)].width = cw
                     _buf_xl2 = io.BytesIO(); _wb2.save(_buf_xl2); _buf_xl2.seek(0)
                     ss["tr_xl2_bytes"] = _buf_xl2.getvalue()
-                    ss["tr_xl2_fname"] = f"{fecha_dia.strftime('%d%m%Y')}_tablero_replica.xlsx"
-                    st.success("✅ Excel réplica generado")
+                    ss["tr_xl2_fname"] = f"{fecha_dia.strftime('%d%m%Y')}_tablero_ruteador_bkcc.xlsx"
+                    st.success("✅ Excel Tablero generado")
                 except Exception as _xe2:
                     import traceback
                     st.error(f"Error: {_xe2}")
                     with st.expander("Detalle"): st.code(traceback.format_exc())
             if ss.get("tr_xl2_bytes"):
-                st.download_button("⬇️ Descargar réplica", data=ss["tr_xl2_bytes"],
-                    file_name=ss.get("tr_xl2_fname","tablero_replica.xlsx"),
+                st.download_button("⬇️ Descargar Excel Tablero", data=ss["tr_xl2_bytes"],
+                    file_name=ss.get("tr_xl2_fname","tablero_ruteador_bkcc.xlsx"),
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="tr_dl_xl2", use_container_width=True)
 
-        # ── PDF del día ────────────────────────────────────────────────────────
+        # ── PDF Tablero ────────────────────────────────────────────────────────
         with _ex3:
-            st.markdown("**📄 PDF del día**")
-            if st.button("🖨️ Generar PDF", key="tr_btn_pdf", use_container_width=True):
+            st.markdown("**📄 PDF Tablero**")
+            if st.button("🖨️ Generar PDF Tablero", key="tr_btn_pdf", use_container_width=True):
                 try:
                     import base64
                     from reportlab.lib.pagesizes import A4, landscape
@@ -7679,8 +7709,8 @@ def render_tab_tablero():
                     _buf_pdf = io.BytesIO()
                     _PW, _PH = landscape(A4)
                     _doc = SimpleDocTemplate(_buf_pdf, pagesize=landscape(A4),
-                        topMargin=8*mm, bottomMargin=8*mm,
-                        leftMargin=10*mm, rightMargin=10*mm)
+                        topMargin=6*mm, bottomMargin=6*mm,
+                        leftMargin=8*mm, rightMargin=8*mm)
 
                     _NAVY  = colors.HexColor("#1F3864")
                     _GOLD  = colors.HexColor("#C9A84C")
@@ -7688,40 +7718,33 @@ def render_tab_tablero():
                     _RED   = colors.HexColor("#FF4B4B")
                     _LGREY = colors.HexColor("#F5F5F5")
                     _BLUE2 = colors.HexColor("#2e5fa3")
-                    _usable_w = _PW - 20*mm
+                    _AMBER = colors.HexColor("#FFC107")
+                    _usable_w = _PW - 16*mm
 
-                    def _p(txt, sz=10, bold=False, color=colors.black):
+                    def _p(txt, sz=9, bold=False, color=colors.black):
                         return Paragraph(txt, ParagraphStyle("_px",
                             fontSize=sz, fontName="Helvetica-Bold" if bold else "Helvetica",
-                            textColor=color, spaceAfter=0, leading=sz+3))
+                            textColor=color, spaceAfter=0, leading=sz+2))
 
                     _story = []
 
-                    # Logo
-                    try:
-                        _logo_bytes = base64.b64decode(_LOGO_B64)
-                        _logo_img = RLImage(io.BytesIO(_logo_bytes), width=30*mm, height=15*mm)
-                    except Exception:
-                        _logo_img = _p("BKCC", 11, True, _GOLD)
-
-                    # Header
+                    # ── Header sin logo ──────────────────────────────────────
                     _hdr = Table([[
-                        _logo_img,
-                        _p(f"TABLERO RUTEADOR — {fecha_dia.strftime('%A %d/%m/%Y').upper()}", 14, True, colors.white),
+                        _p(f"TABLERO RUTEADOR — {fecha_dia.strftime('%A %d/%m/%Y').upper()}", 13, True, colors.white),
                         _p(f"Beccacece Hnos SA · DPO 2.1 · v{APP_VERSION}", 8, False, colors.HexColor("#BDD5EA")),
-                        _p(f"Prod. Ruteo<br/><b>{prod_ruteo:.0%}</b>", 11, False,
+                        _p(f"Prod. Ruteo  <b>{prod_ruteo:.0%}</b>", 11, False,
                            _GREEN if prod_ruteo >= 0.7 else _RED),
-                    ]], colWidths=[34*mm, "47%", "27%", "14%"])
+                    ]], colWidths=["58%", "28%", "14%"])
                     _hdr.setStyle(TableStyle([
-                        ("BACKGROUND",(0,0),(2,0),_NAVY),
-                        ("BACKGROUND",(3,0),(3,0),colors.HexColor("#1a1a2e")),
+                        ("BACKGROUND",(0,0),(1,0),_NAVY),
+                        ("BACKGROUND",(2,0),(2,0),colors.HexColor("#1a1a2e")),
                         ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
-                        ("ALIGN",(3,0),(3,0),"CENTER"),
-                        ("LEFTPADDING",(0,0),(-1,-1),7),
-                        ("TOPPADDING",(0,0),(-1,-1),6),
-                        ("BOTTOMPADDING",(0,0),(-1,-1),6),
+                        ("ALIGN",(2,0),(2,0),"CENTER"),
+                        ("LEFTPADDING",(0,0),(-1,-1),8),
+                        ("TOPPADDING",(0,0),(-1,-1),5),
+                        ("BOTTOMPADDING",(0,0),(-1,-1),5),
                     ]))
-                    _story.append(_hdr); _story.append(Spacer(1,4*mm))
+                    _story.append(_hdr); _story.append(Spacer(1, 2*mm))
 
                     # KPI cards
                     def _kpi_cell(label, real, target, ok):
@@ -7741,48 +7764,48 @@ def render_tab_tablero():
                     ]
                     _kpi_tbl = Table([[c[0] for c in _kpi_data]], colWidths=["16.66%"]*6)
                     _ks = [("GRID",(0,0),(-1,-1),0.5,colors.white),
-                           ("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6),
-                           ("LEFTPADDING",(0,0),(-1,-1),6)]
+                           ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
+                           ("LEFTPADDING",(0,0),(-1,-1),5)]
                     for _i2, _c2 in enumerate(_kpi_data):
                         _ks.append(("BACKGROUND",(_i2,0),(_i2,0),_c2[1]))
                     _kpi_tbl.setStyle(TableStyle(_ks))
-                    _story.append(_kpi_tbl); _story.append(Spacer(1,4*mm))
+                    _story.append(_kpi_tbl); _story.append(Spacer(1, 2*mm))
 
-                    # Totales globales
+                    # Totales globales — fila compacta
                     _tot = Table([[
-                        _p("Camiones",7,True,_NAVY), _p(f"{camiones_en_reparto}/{total_camiones_flota}",11,True),
-                        _p("PDV",7,True,_NAVY),      _p(str(total_pedidos),11,True),
-                        _p("Bultos UP",7,True,_NAVY), _p(f"{total_up:.1f}",11,True),
-                        _p("Paletas",7,True,_NAVY),  _p(f"{paletas_total:.2f}",11,True),
-                        _p("HL",7,True,_NAVY),       _p(f"{total_hl:.2f}",11,True),
-                        _p("Peso kg",7,True,_NAVY),  _p(f"{total_peso_kg:,.0f}",11,True),
-                        _p("Drop Size",7,True,_NAVY),_p(f"{drop_size:.2f}",11,True),
-                        _p("Rechazos",7,True,_RED),  _p(f"{total_rechazos_up:.1f}",11,True,_RED if total_rechazos_up > 0 else colors.black),
+                        _p("Camiones",7,True,_NAVY), _p(f"{camiones_en_reparto}/{total_camiones_flota}",10,True),
+                        _p("PDV",7,True,_NAVY),      _p(str(total_pedidos),10,True),
+                        _p("Bultos UP",7,True,_NAVY), _p(f"{total_up:.1f}",10,True),
+                        _p("Paletas",7,True,_NAVY),  _p(f"{paletas_total:.2f}",10,True),
+                        _p("HL",7,True,_NAVY),       _p(f"{total_hl:.2f}",10,True),
+                        _p("Peso kg",7,True,_NAVY),  _p(f"{total_peso_kg:,.0f}",10,True),
+                        _p("Drop Size",7,True,_NAVY),_p(f"{drop_size:.2f}",10,True),
+                        _p("Rechazos",7,True,_RED),  _p(f"{total_rechazos_up:.1f}",10,True,_RED if total_rechazos_up > 0 else colors.black),
                     ]])
                     _tot.setStyle(TableStyle([
                         ("GRID",(0,0),(-1,-1),0.3,colors.lightgrey),
                         *[("BACKGROUND",(i*2,0),(i*2,0),colors.HexColor("#E8EAF6")) for i in range(8)],
-                        ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
-                        ("LEFTPADDING",(0,0),(-1,-1),5),
+                        ("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),3),
+                        ("LEFTPADDING",(0,0),(-1,-1),4),
                     ]))
-                    _story.append(_tot); _story.append(Spacer(1,4*mm))
+                    _story.append(_tot); _story.append(Spacer(1, 2*mm))
 
-                    # Gráfico barras
+                    # Gráfico barras — compacto
                     if tabla_rows:
                         try:
                             _cam_labels = [str(r["N° Cam"]) for r in tabla_rows]
                             _cam_vals   = [r["Bultos UP"] for r in tabla_rows]
                             _n = len(_cam_labels)
                             _chart_w = float(_usable_w)
-                            _chart_h = 52.0 * mm
-                            _margin_l = 14*mm; _margin_b = 11*mm
-                            _plot_w = _chart_w - _margin_l - 6*mm
-                            _plot_h = _chart_h - _margin_b - 5*mm
+                            _chart_h = 38.0 * mm
+                            _margin_l = 10*mm; _margin_b = 9*mm
+                            _plot_w = _chart_w - _margin_l - 5*mm
+                            _plot_h = _chart_h - _margin_b - 4*mm
                             _x_step = _plot_w / max(_n, 1)
                             _max_val = max(_cam_vals) if _cam_vals else 1
-                            _d = Drawing(_chart_w, _chart_h + 7*mm)
-                            _d.add(String(_chart_w/2, _chart_h + 4*mm, "Bultos UP por Camión",
-                                          fontSize=11, fontName="Helvetica-Bold",
+                            _d = Drawing(_chart_w, _chart_h + 5*mm)
+                            _d.add(String(_chart_w/2, _chart_h + 2*mm, "Bultos UP por Camión",
+                                          fontSize=9, fontName="Helvetica-Bold",
                                           fillColor=_NAVY, textAnchor="middle"))
                             for _bi, (_lbl, _val) in enumerate(zip(_cam_labels, _cam_vals)):
                                 _bx = _margin_l + _bi * _x_step + _x_step * 0.1
@@ -7790,107 +7813,120 @@ def render_tab_tablero():
                                 _bh = (_val / _max_val) * _plot_h if _max_val > 0 else 0
                                 _d.add(Rect(_bx, _margin_b, _bw, max(_bh, 1),
                                             fillColor=_BLUE2, strokeColor=colors.white, strokeWidth=0.5))
-                                _d.add(String(_bx + _bw/2, _margin_b + _bh + 2*mm,
-                                              f"{_val:.0f}", fontSize=7, fontName="Helvetica",
+                                _d.add(String(_bx + _bw/2, _margin_b + _bh + 1.5*mm,
+                                              f"{_val:.0f}", fontSize=6, fontName="Helvetica",
                                               fillColor=_NAVY, textAnchor="middle"))
-                                _d.add(String(_bx + _bw/2, _margin_b - 4.5*mm,
-                                              _lbl, fontSize=7, fontName="Helvetica",
+                                _d.add(String(_bx + _bw/2, _margin_b - 3.5*mm,
+                                              _lbl, fontSize=6, fontName="Helvetica",
                                               fillColor=_NAVY, textAnchor="middle"))
                             _d.add(Line(_margin_l, _margin_b, _margin_l, _margin_b + _plot_h,
                                         strokeColor=_NAVY, strokeWidth=0.8))
                             _d.add(Line(_margin_l, _margin_b, _margin_l + _plot_w, _margin_b,
                                         strokeColor=_NAVY, strokeWidth=0.8))
-                            _story.append(_d); _story.append(Spacer(1, 2*mm))
+                            _story.append(_d); _story.append(Spacer(1, 1*mm))
                         except Exception as _ge:
                             _story.append(_p(f"[Gráfico no disponible: {_ge}]", 7, color=colors.grey))
 
-                    # Tabla detalle por camión (12 cols)
+                    # Tabla detalle por camión — 12 cols compactas + Licencias + Validación
                     if tabla_rows:
                         _det_hdr = ["N°","Chofer","PDV","Bultos UP","Paletas","Patente","Cap.kg","HL","Peso(kg)","Rechazos","Venc.Lic.","Validación"]
-                        _det_data = [_det_hdr] + [
-                            [str(r["N° Cam"]), r["Chofer"] or "—", str(r["PDV"]),
-                             f"{r['Bultos UP']:.1f}", f"{r['Paletas']:.2f}",
-                             r["Patente"],
-                             f"{r['Cap. Kg']:,}" if r.get("Cap. Kg") else "—",
-                             f"{r.get('HL',0):.2f}",
-                             f"{r.get('Peso (kg)',0):,.0f}",
-                             f"{r['Rechazos']:.1f}",
-                             r["Venc. Lic."] or "—",
-                             r["Validación"] or "—"]
-                            for r in tabla_rows
-                        ] + [["TOTAL","",
-                               str(sum(r["PDV"] for r in tabla_rows)),
-                               f"{sum(r['Bultos UP'] for r in tabla_rows):.1f}",
-                               f"{sum(r['Paletas'] for r in tabla_rows):.2f}",
-                               "","",
-                               f"{sum(r.get('HL',0) for r in tabla_rows):.2f}",
-                               f"{sum(r.get('Peso (kg)',0) for r in tabla_rows):,.0f}",
-                               f"{sum(r['Rechazos'] for r in tabla_rows):.1f}","",""]]
+                        _alertas_lic = []
+                        _det_data = [_det_hdr]
+                        for _i3, _r3 in enumerate(tabla_rows, 1):
+                            vl = _r3.get("Venc. Lic.","") or "—"
+                            va = _r3.get("Validación","") or "—"
+                            _det_data.append([
+                                str(_r3["N° Cam"]),
+                                _r3["Chofer"] or "—",
+                                str(_r3["PDV"]),
+                                f"{_r3['Bultos UP']:.1f}",
+                                f"{_r3['Paletas']:.2f}",
+                                _r3["Patente"] or "—",
+                                f"{_r3['Cap. Kg']:,}" if _r3.get("Cap. Kg") else "—",
+                                f"{_r3.get('HL',0):.2f}",
+                                f"{_r3.get('Peso (kg)',0):,.0f}",
+                                f"{_r3['Rechazos']:.1f}",
+                                vl,
+                                va,
+                            ])
+                            if va == "BLOQUEADO":
+                                _alertas_lic.append(
+                                    f"⚠ CAM {_r3['N° Cam']} — {_r3['Chofer'] or 'S/N'}: "
+                                    f"LICENCIA VENCIDA ({vl})"
+                                )
 
-                        # Col widths 12 cols en landscape A4
+                        _det_data.append(["TOTAL","",
+                            str(sum(r["PDV"] for r in tabla_rows)),
+                            f"{sum(r['Bultos UP'] for r in tabla_rows):.1f}",
+                            f"{sum(r['Paletas'] for r in tabla_rows):.2f}",
+                            "","",
+                            f"{sum(r.get('HL',0) for r in tabla_rows):.2f}",
+                            f"{sum(r.get('Peso (kg)',0) for r in tabla_rows):,.0f}",
+                            f"{sum(r['Rechazos'] for r in tabla_rows):.1f}","",""])
+
+                        # Col widths landscape A4 ajustadas
                         _det_tbl = Table(_det_data, repeatRows=1,
                             colWidths=[
-                                _usable_w * 0.045,  # N°
-                                _usable_w * 0.125,  # Chofer
-                                _usable_w * 0.045,  # PDV
-                                _usable_w * 0.08,   # BUP
-                                _usable_w * 0.06,   # Pal
-                                _usable_w * 0.07,   # Pat
-                                _usable_w * 0.065,  # Cap
-                                _usable_w * 0.065,  # HL
-                                _usable_w * 0.08,   # Peso
-                                _usable_w * 0.065,  # Rec
-                                _usable_w * 0.09,   # Venc
-                                _usable_w * 0.075,  # Val
+                                _usable_w * 0.042,  # N°
+                                _usable_w * 0.115,  # Chofer
+                                _usable_w * 0.042,  # PDV
+                                _usable_w * 0.075,  # BUP
+                                _usable_w * 0.055,  # Pal
+                                _usable_w * 0.068,  # Patente
+                                _usable_w * 0.062,  # Cap
+                                _usable_w * 0.062,  # HL
+                                _usable_w * 0.075,  # Peso
+                                _usable_w * 0.058,  # Rec
+                                _usable_w * 0.088,  # Venc.Lic
+                                _usable_w * 0.088,  # Validación — suma ~73% → ok con márgenes
                             ])
 
                         _ds = [
                             ("BACKGROUND",(0,0),(-1,0),_NAVY),
                             ("TEXTCOLOR",(0,0),(-1,0),colors.white),
                             ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),
-                            ("FONTSIZE",(0,0),(-1,0),9),
-                            ("FONTSIZE",(0,1),(-1,-1),9),
+                            ("FONTSIZE",(0,0),(-1,0),8),
+                            ("FONTSIZE",(0,1),(-1,-1),8),
                             ("FONTNAME",(0,1),(-1,-1),"Helvetica"),
                             ("ROWBACKGROUNDS",(0,1),(-1,-2),[colors.white, _LGREY]),
                             ("BACKGROUND",(0,-1),(-1,-1),colors.HexColor("#E8EAF6")),
                             ("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),
-                            ("FONTSIZE",(0,-1),(-1,-1),9),
+                            ("FONTSIZE",(0,-1),(-1,-1),8),
                             ("GRID",(0,0),(-1,-1),0.3,colors.lightgrey),
-                            ("TOPPADDING",(0,0),(-1,-1),3),
-                            ("BOTTOMPADDING",(0,0),(-1,-1),3),
-                            ("LEFTPADDING",(0,0),(-1,-1),4),
+                            ("TOPPADDING",(0,0),(-1,-1),2),
+                            ("BOTTOMPADDING",(0,0),(-1,-1),2),
+                            ("LEFTPADDING",(0,0),(-1,-1),3),
                             ("ALIGN",(0,0),(-1,-1),"CENTER"),
-                            ("ALIGN",(1,1),(1,-1),"LEFT"),  # Chofer left-aligned
+                            ("ALIGN",(1,1),(1,-1),"LEFT"),
                         ]
-                        _alertas_lic = []
-                        for _i3, _r3 in enumerate(tabla_rows, 1):
-                            if _r3["Validación"] == "BLOQUEADO":
-                                _ds += [("BACKGROUND",(11,_i3),(11,_i3),_RED),
-                                        ("TEXTCOLOR",(11,_i3),(11,_i3),colors.white),
-                                        ("FONTNAME",(11,_i3),(11,_i3),"Helvetica-Bold")]
-                                _alertas_lic.append(f"⚠ CAM {_r3['N° Cam']} — {_r3['Chofer'] or 'S/N'}: LICENCIA VENCIDA ({_r3['Venc. Lic.']})")
-                            elif _r3["Validación"] == "OK":
-                                _ds += [("BACKGROUND",(11,_i3),(11,_i3),_GREEN),
-                                        ("TEXTCOLOR",(11,_i3),(11,_i3),colors.white)]
+                        for _ix, _rx in enumerate(tabla_rows, 1):
+                            if _rx.get("Validación") == "BLOQUEADO":
+                                _ds += [("BACKGROUND",(11,_ix),(11,_ix),_RED),
+                                        ("TEXTCOLOR",(11,_ix),(11,_ix),colors.white),
+                                        ("FONTNAME",(11,_ix),(11,_ix),"Helvetica-Bold")]
+                            elif _rx.get("Validación") == "OK":
+                                _ds += [("BACKGROUND",(11,_ix),(11,_ix),_GREEN),
+                                        ("TEXTCOLOR",(11,_ix),(11,_ix),colors.white)]
                         _det_tbl.setStyle(TableStyle(_ds))
                         _story.append(_det_tbl)
 
+                        # Bloque alertas licencias vencidas
                         if _alertas_lic:
-                            _story.append(Spacer(1,3*mm))
-                            _at_rows = [[_p("⚠️ ALERTAS LICENCIAS VENCIDAS", 9, True, colors.white)]]
-                            for _al in _alertas_lic:
-                                _at_rows.append([_p(_al, 9, True, _RED)])
+                            _story.append(Spacer(1, 2*mm))
+                            _at_rows = [[_p("⚠️ ALERTAS — LICENCIAS VENCIDAS", 8, True, colors.white)]]
+                            for _al_txt in _alertas_lic:
+                                _at_rows.append([_p(_al_txt, 8, True, _RED)])
                             _at = Table(_at_rows, colWidths=[_usable_w])
                             _at.setStyle(TableStyle([
                                 ("BACKGROUND",(0,0),(0,0),_RED),
                                 ("BACKGROUND",(0,1),(-1,-1),colors.HexColor("#FFF3CD")),
-                                ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
-                                ("LEFTPADDING",(0,0),(-1,-1),7),("GRID",(0,0),(-1,-1),0.3,_RED),
+                                ("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),3),
+                                ("LEFTPADDING",(0,0),(-1,-1),6),("GRID",(0,0),(-1,-1),0.3,_RED),
                             ]))
                             _story.append(_at)
 
-                    # Footer
-                    _story.append(Spacer(1,3*mm))
+                    # Footer compacto
+                    _story.append(Spacer(1, 2*mm))
                     _fp = [f"Generado: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')}",
                            f"Picking Orchestrator v{APP_VERSION}",
                            "Beccacece Hnos SA — DPO 2.1"]
@@ -8848,6 +8884,10 @@ def _cierre_pdf(df_main: pd.DataFrame, totales: dict,
         x_cur += cw
     y -= hdr_h + 2
 
+    SUB_H    = 11   # altura sub-fila CTA CTE
+    SUB_FILL = rl_colors.HexColor("#FFF3F3")   # fondo rosado suave
+    INDENT   = 16   # sangría izquierda sub-fila
+
     for i, row in df_main.iterrows():
         bg = LIGHT_GRAY if i % 2 == 0 else rl_colors.white
         c.setFillColor(bg)
@@ -8875,6 +8915,30 @@ def _cierre_pdf(df_main: pd.DataFrame, totales: dict,
             c.drawString(x_cur, y - row_h + 4, val)
             x_cur += cw
         y -= row_h
+
+        # Sub-filas CTA CTE integradas
+        detalle_cte = row.get("CtaCteDetalle") or []
+        if isinstance(detalle_cte, list) and detalle_cte:
+            for d in detalle_cte:
+                if y < M + 60:
+                    y = new_page()
+                c.setFillColor(SUB_FILL)
+                c.rect(M, y - SUB_H, usable_w, SUB_H, fill=1, stroke=0)
+                # Línea izquierda roja como indicador
+                c.setFillColor(RED_NEG)
+                c.rect(M, y - SUB_H, 3, SUB_H, fill=1, stroke=0)
+                # Texto: "  ↳ Cód · Nombre"
+                c.setFillColor(RED_NEG)
+                c.setFont("Helvetica-Bold", 7.5)
+                nombre_cte = d.get("nombre", str(d.get("codigo", "")))
+                cod_cte    = d.get("codigo", "")
+                c.drawString(M + INDENT, y - SUB_H + 3,
+                             f"\u21b3 {cod_cte}  {nombre_cte}")
+                # Monto alineado a la columna CTA CTE
+                x_cta = M + col_w[0] + col_w[1]
+                c.drawString(x_cta + 3, y - SUB_H + 3,
+                             fmt_ars(float(d.get("monto", 0))))
+                y -= SUB_H
 
         if y < M + 100:
             y = new_page()
@@ -9151,9 +9215,12 @@ def _cierre_excel(df_main: pd.DataFrame, totales: dict,
         cell.border = border
     ws.row_dimensions[4].height = 16
 
+    sub_fill   = PatternFill("solid", fgColor="FFF0F0")   # rosado suave
+    red_left   = Font(color="b91c1c", size=8, italic=True)
+
     # ── FILAS ─────────────────────────────────────────────────────────────────
+    r = 5   # fila inicial en hoja
     for ri, row in df_main.iterrows():
-        r = ri + 5
         vals = [
             int(row["idCns"]),
             row["dsCns"],
@@ -9177,10 +9244,37 @@ def _cierre_excel(df_main: pd.DataFrame, totales: dict,
                 cell.number_format = money_fmt
                 if ci == 6:
                     cell.font = green_font if row["NetoIngresar"] >= 0 else red_font
+                elif ci == 4 and row["CtaCte"] > 0:
+                    cell.font = red_font
         ws.row_dimensions[r].height = 14
+        r += 1
+
+        # Sub-filas CTA CTE integradas
+        detalle_cte = row.get("CtaCteDetalle") or []
+        if isinstance(detalle_cte, list):
+            for d in detalle_cte:
+                monto_d = float(d.get("monto", 0))
+                if monto_d <= 0:
+                    continue
+                # col A: vacío, col B: "  ↳ nombre", col C: vacío, col D: monto, E-F: vacío
+                ws.cell(row=r, column=1, value="").fill = sub_fill
+                cell_nom = ws.cell(row=r, column=2,
+                                   value=f"\u21b3 {d.get('codigo','')}  {d.get('nombre','')}")
+                cell_nom.font  = red_left
+                cell_nom.fill  = sub_fill
+                cell_nom.alignment = left_al
+                for ci in range(3, 7):
+                    ws.cell(row=r, column=ci).fill = sub_fill
+                cell_m = ws.cell(row=r, column=4, value=monto_d)
+                cell_m.font          = Font(color="b91c1c", size=8, bold=True)
+                cell_m.fill          = sub_fill
+                cell_m.alignment     = right_al
+                cell_m.number_format = money_fmt
+                ws.row_dimensions[r].height = 12
+                r += 1
 
     # ── FILA TOTAL ────────────────────────────────────────────────────────────
-    tr = len(df_main) + 5
+    tr = r   # r ya apunta a la siguiente fila libre
     tot_vals = ["", "TOTAL",
                 totales["tot_chess"], totales["tot_cta_cte"],
                 totales["tot_rechazos"], totales["tot_neto"]]
@@ -10050,6 +10144,10 @@ def _cierre_d1_pdf(df_d1: pd.DataFrame, totales: dict, fecha_str: str) -> bytes:
         x_cur += cw
     y -= hdr_h + 2
 
+    SUB_H_D1  = 11
+    SUB_FILL_D1 = rl_colors.HexColor("#FFF3F3")
+    INDENT_D1   = 16
+
     for i, row in df_d1.iterrows():
         bg = LIGHT_GRAY if i % 2 == 0 else rl_colors.white
         c.setFillColor(bg)
@@ -10080,6 +10178,34 @@ def _cierre_d1_pdf(df_d1: pd.DataFrame, totales: dict, fecha_str: str) -> bytes:
             c.drawString(x_cur, y - row_h + 4, val)
             x_cur += cw
         y -= row_h
+
+        # Sub-filas CTA CTE integradas
+        detalle_cte_d1 = row.get("CtaCteDetalle") or []
+        if isinstance(detalle_cte_d1, list) and detalle_cte_d1:
+            for d in detalle_cte_d1:
+                if y < M + 60:
+                    c.showPage()
+                    c.setFillColor(DARK_BLUE)
+                    c.rect(M, PH - 16, PW - 2*M, 16, fill=1, stroke=0)
+                    c.setFillColor(rl_colors.white)
+                    c.setFont("Helvetica-Bold", 8)
+                    c.drawString(M + 4, PH - 11, f"CIERRE FINANCIERO D+1 — {fecha_str} (cont.)")
+                    y = PH - 26
+                c.setFillColor(SUB_FILL_D1)
+                c.rect(M, y - SUB_H_D1, usable_w, SUB_H_D1, fill=1, stroke=0)
+                c.setFillColor(RED_NEG)
+                c.rect(M, y - SUB_H_D1, 3, SUB_H_D1, fill=1, stroke=0)
+                nombre_d1 = d.get("nombre", str(d.get("codigo", "")))
+                cod_d1    = d.get("codigo", "")
+                c.setFillColor(RED_NEG)
+                c.setFont("Helvetica-Bold", 7.5)
+                c.drawString(M + INDENT_D1, y - SUB_H_D1 + 3,
+                             f"\u21b3 {cod_d1}  {nombre_d1}")
+                # Columna CTA CTE en D+1 es la 4ta (idx 3): col_w[0]+col_w[1]+col_w[2]
+                x_cta_d1 = M + col_w[0] + col_w[1] + col_w[2]
+                c.drawString(x_cta_d1 + 3, y - SUB_H_D1 + 3,
+                             fmt_ars(float(d.get("monto", 0))))
+                y -= SUB_H_D1
 
     # FILA TOTAL
     y -= 4
@@ -10334,8 +10460,11 @@ def _cierre_d1_excel(df_d1: pd.DataFrame, totales: dict, fecha_str: str) -> byte
         cell.border = border
     ws.row_dimensions[4].height = 16
 
+    sub_fill_d1 = PatternFill("solid", fgColor="FFF0F0")
+    red_left_d1 = Font(color="b91c1c", size=8, italic=True)
+
+    r_d1 = 5   # fila dinámica
     for ri, row in df_d1.iterrows():
-        r = ri + 5
         vals = [
             int(row["idCns"]),
             row["dsCns"],
@@ -10347,7 +10476,7 @@ def _cierre_d1_excel(df_d1: pd.DataFrame, totales: dict, fecha_str: str) -> byte
         ]
         fill_row = alt_fill if ri % 2 == 0 else PatternFill()
         for ci, val in enumerate(vals, 1):
-            cell = ws.cell(row=r, column=ci, value=val)
+            cell = ws.cell(row=r_d1, column=ci, value=val)
             cell.border = border
             cell.fill = fill_row
             if ci == 1:
@@ -10362,9 +10491,35 @@ def _cierre_d1_excel(df_d1: pd.DataFrame, totales: dict, fecha_str: str) -> byte
                     cell.font = green_font if row["NetoReal"] >= 0 else red_font
                 elif ci == 6 and row["RechazoReal"] > 0:
                     cell.font = red_font
-        ws.row_dimensions[r].height = 14
+                elif ci == 5 and row["CtaCte"] > 0:
+                    cell.font = red_font
+        ws.row_dimensions[r_d1].height = 14
+        r_d1 += 1
 
-    tr = len(df_d1) + 5
+        # Sub-filas CTA CTE integradas
+        detalle_d1 = row.get("CtaCteDetalle") or []
+        if isinstance(detalle_d1, list):
+            for d in detalle_d1:
+                monto_dd = float(d.get("monto", 0))
+                if monto_dd <= 0:
+                    continue
+                ws.cell(row=r_d1, column=1, value="").fill = sub_fill_d1
+                cell_nom = ws.cell(row=r_d1, column=2,
+                                   value=f"\u21b3 {d.get('codigo','')}  {d.get('nombre','')}")
+                cell_nom.font      = red_left_d1
+                cell_nom.fill      = sub_fill_d1
+                cell_nom.alignment = left_al
+                for ci in range(3, 8):
+                    ws.cell(row=r_d1, column=ci).fill = sub_fill_d1
+                cell_m = ws.cell(row=r_d1, column=5, value=monto_dd)
+                cell_m.font          = Font(color="b91c1c", size=8, bold=True)
+                cell_m.fill          = sub_fill_d1
+                cell_m.alignment     = right_al
+                cell_m.number_format = money_fmt
+                ws.row_dimensions[r_d1].height = 12
+                r_d1 += 1
+
+    tr = r_d1   # r_d1 ya apunta a la siguiente fila libre
     tot_vals = ["", "TOTAL",
                 totales["tot_chess_orig"], totales["tot_real"],
                 totales["tot_cta_cte"], totales["tot_rechazos"], totales["tot_neto"]]
