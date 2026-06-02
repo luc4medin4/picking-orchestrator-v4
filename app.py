@@ -45,7 +45,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.44.0"
+APP_VERSION = "4.45.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -6908,7 +6908,7 @@ def render_tab_tablero():
         c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
         with c1:
             fecha_dia = st.date_input("Fecha del día",
-                value=datetime.date.today() + datetime.timedelta(days=1), key="tr_fecha")
+                value=datetime.date.today(), key="tr_fecha")
         with c2:
             es_sabado = fecha_dia.weekday() == 5
             sla_str = st.text_input("SLA entrega (HH:MM)",
@@ -7062,13 +7062,21 @@ def render_tab_tablero():
         df_dia = anr_w[anr_w[col_fecha_a].dt.date == fecha_dia].copy()
 
         if df_dia.empty:
-            # Mostrar fechas disponibles para diagnosticar
             fechas_disp = sorted(anr_w[col_fecha_a].dropna().dt.date.unique())
-            st.warning(
-                f"No hay datos ANR para **{fecha_dia.strftime('%d/%m/%Y')}**. "
-                f"Fechas disponibles en el ANR: {', '.join(str(f) for f in fechas_disp[-5:])}"
-            )
-            return
+            if fechas_disp:
+                # Auto-seleccionar la última fecha disponible en el ANR
+                ultima_fecha = fechas_disp[-1]
+                df_dia = anr_w[anr_w[col_fecha_a].dt.date == ultima_fecha].copy()
+                fecha_dia = ultima_fecha
+                st.info(
+                    f"ℹ️ Fecha seleccionada sin datos. "
+                    f"Cargando automáticamente la última fecha disponible: "
+                    f"**{ultima_fecha.strftime('%d/%m/%Y')}**. "
+                    f"(Disponibles: {', '.join(str(f) for f in fechas_disp[-5:])})"
+                )
+            if df_dia.empty:
+                st.warning("No hay datos en el ANR para ninguna fecha.")
+                return
 
         # ── DDM BXP/HL/Peso ────────────────────────────────────────────────────
         sku_bxp = {}; sku_hl_u = {}; sku_peso_u = {}
@@ -7167,57 +7175,98 @@ def render_tab_tablero():
         kpi_vals = [v for v in [sla_ok, ruteo_ok, ocup_ok, fz_ok, util_ok] if v is not None]
         prod_ruteo = sum(kpi_vals) / max(len(kpi_vals), 1)
 
-        # ── DISPLAY ─────────────────────────────────────────────────────────────
-        st.markdown(f"### 📊 Tablero — {fecha_dia.strftime('%d/%m/%Y')} {'(Sábado)' if es_sabado else ''}")
 
+        # ── DISPLAY PROFESIONAL ────────────────────────────────────────────────
+        st.markdown(f"""
+        <div style="background:linear-gradient(90deg,#1F3864 0%,#2e5fa3 100%);
+                    padding:12px 20px;border-radius:8px;margin:8px 0 16px 0;
+                    color:white;display:flex;align-items:center;gap:12px;">
+            <div style="font-size:20px;font-weight:700;">
+                📊 Tablero — {fecha_dia.strftime('%A %d/%m/%Y').capitalize()}
+                {'&nbsp;·&nbsp;🗓 Sábado' if es_sabado else ''}
+            </div>
+            <div style="margin-left:auto;font-size:14px;opacity:0.85;">
+                Prod. Ruteo: <b>{prod_ruteo:.0%}</b>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ── Fila métricas principales ───────────────────────────────────────────
         m1,m2,m3,m4,m5,m6,m7 = st.columns(7)
-        m1.metric("🚚 Camiones", f"{camiones_en_reparto} / {total_camiones_flota}")
-        m2.metric("📦 Pedidos", total_pedidos)
-        m3.metric("🏋️ Bultos UP", f"{total_up:.1f}")
-        m4.metric("📐 Paletas", f"{paletas_total:.2f}", f"{prom_paletas:.2f} x cam")
-        m5.metric("💧 HL", f"{total_hl:.2f}")
-        m6.metric("⚖️ Peso kg", f"{total_peso_kg:,.0f}")
-        m7.metric("📈 Prod. Ruteo", f"{prod_ruteo:.0%}")
+        m1.metric("🚚 Camiones", f"{camiones_en_reparto}/{total_camiones_flota}",
+                  help="En reparto / Flota total")
+        m2.metric("📦 Pedidos", total_pedidos,
+                  delta=f"{eficiencia:.1%} efic." if total_pedidos > 0 else None)
+        m3.metric("🏋 Bultos UP", f"{total_up:.1f}")
+        m4.metric("📐 Paletas", f"{paletas_total:.2f}",
+                  delta=f"{prom_paletas:.2f} x cam")
+        m5.metric("💧 HL", f"{total_hl:.2f}" if total_hl > 0 else "—")
+        m6.metric("⚖️ Peso (kg)", f"{total_peso_kg:,.0f}")
+        m7.metric("📈 Prod. Ruteo", f"{prod_ruteo:.0%}",
+                  delta_color="normal" if prod_ruteo >= 0.7 else "inverse")
 
-        def _e(ok):
-            if ok is True:  return "✅"
-            if ok is False: return "🔴"
-            return "⚪"
+        # ── KPIs cards con color ────────────────────────────────────────────────
+        def _kpi_html(icon, label, real, target, ok):
+            if ok is True:
+                bg, badge, txt = "#d4edda", "✓ OK", "#155724"
+            elif ok is False:
+                bg, badge, txt = "#f8d7da", "✗ NO", "#721c24"
+            else:
+                bg, badge, txt = "#fff3cd", "– S/D", "#856404"
+            return f"""
+            <div style="background:{bg};border-radius:8px;padding:10px 14px;margin:2px;
+                        min-height:70px;display:flex;flex-direction:column;justify-content:space-between;">
+                <div style="font-size:11px;color:{txt};font-weight:600;">{icon} {label}</div>
+                <div style="font-size:16px;font-weight:700;color:{txt};">{real}</div>
+                <div style="font-size:10px;color:{txt};opacity:0.8;">
+                    Target: {target} &nbsp;<span style="font-weight:700;">{badge}</span>
+                </div>
+            </div>"""
 
-        st.markdown("#### KPIs vs Target")
-        k1,k2,k3,k4,k5,k6 = st.columns(6)
-        with k1:
-            st.markdown(f"**{_e(sla_ok)} SLA Entrega**")
-            st.write(f"Real: **{hora_real_str or '—'}** / Target: {sla_str}")
-        with k2:
-            st.markdown(f"**{_e(ruteo_ok)} T. Ruteo**")
-            st.write(f"Real: **{ruteo_real_str or '—'}** / Target: {ruteo_str}")
-        with k3:
-            st.markdown(f"**{_e(ocup_ok)} Ocup. Bodega**")
-            st.write(f"Real: **{ocup_bodega:.1f}** UP / Target: ≥{ocup_target}")
-        with k4:
-            st.markdown(f"**{_e(fz_ok)} Fuera Zona**")
-            st.write(f"Real: **{fuera_zona_real} PDV ({fuera_zona_pct:.1%})** / Target: ≤{fz_target:.0%}")
-        with k5:
-            st.markdown(f"**{_e(util_ok)} Util. Vehículos**")
-            st.write(f"Real: **{util_vehiculos:.0%}** / Target: {_TR_TARGET_UTIL_VEH:.0%}")
-        with k6:
-            st.markdown(f"**{_e(efic_ok)} Eficiencia**")
-            st.write(f"Real: **{eficiencia:.1%}** / Target: {_TR_TARGET_EFICIENCIA:.0%}")
+        k_cols = st.columns(6)
+        kpi_cards = [
+            ("🕐", "SLA Entrega",    hora_real_str or "Sin dato",   sla_str,                              sla_ok),
+            ("⏱️", "T. Ruteo",       ruteo_real_str or "Sin dato",  ruteo_str,                             ruteo_ok),
+            ("🏠", "Ocup. Bodega",   f"{ocup_bodega:.1f} UP",       f"≥{ocup_target} UP",                  ocup_ok),
+            ("📍", "Fuera Zona",     f"{fuera_zona_real} ({fuera_zona_pct:.1%})", f"≤{fz_target:.0%}",  fz_ok),
+            ("🚗", "Util. Vehículos",f"{util_vehiculos:.0%}",       f"≥{_TR_TARGET_UTIL_VEH:.0%}",        util_ok),
+            ("📊", "Eficiencia",     f"{eficiencia:.1%}",           f"≥{_TR_TARGET_EFICIENCIA:.0%}",      efic_ok),
+        ]
+        for col, (icon, label, real, target, ok) in zip(k_cols, kpi_cards):
+            col.markdown(_kpi_html(icon, label, real, target, ok), unsafe_allow_html=True)
 
-        # ── Tabla por camión ────────────────────────────────────────────────────
-        st.markdown("#### Detalle por Camión")
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Indicadores secundarios ─────────────────────────────────────────────
+        ia1,ia2,ia3,ia4,ia5 = st.columns(5)
+        ia1.metric("Drop Size (UP/PDV)", f"{drop_size:.2f}")
+        ia2.metric("Prom. Paletas/Cam", f"{prom_paletas:.2f}")
+        ia3.metric("Conversión Eq. (kg)", f"{conversion_eq:,.0f}")
+        ia4.metric("Ocup. Bodega UP", f"{ocup_bodega:.1f}",
+                   help="(Bultos UP − Rechazos) / (Camiones + 2das vueltas)")
+        ia5.metric("Camiones en reparto", f"{camiones_en_reparto}/{total_camiones_flota}",
+                   delta=f"Util: {util_vehiculos:.0%}")
+
+        if total_rechazos_up > 0:
+            st.warning(f"⚠️ Rechazos del día: **{total_rechazos_up:.1f}** bultos UP")
+        if causa_demora:
+            st.info(f"📌 Causa de demora registrada: **{causa_demora}**")
+
+        # ── Tabla detalle por camión ────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### 🚛 Detalle por Camión")
+
         tabla_rows = []
         for cam in sorted(set(list(pedidos_por_cam.index) + list(cam_patente.keys()))):
             pdv = int(pedidos_por_cam.get(cam, 0))
             if pdv == 0:
                 continue
-            bup   = float(up_por_cam.get(cam, 0.0))
-            pals  = bup / 50
-            peso_c= float(peso_por_cam.get(cam, 0.0))
-            pate  = str(cam_patente.get(cam, ""))
-            cap_kg= cam_capkg.get(pate, 0) if pate else 0
-            rec_c = float(rechazo_por_cam.get(cam, 0.0))
+            bup    = float(up_por_cam.get(cam, 0.0))
+            pals   = bup / 50
+            peso_c = float(peso_por_cam.get(cam, 0.0))
+            pate   = str(cam_patente.get(cam, ""))
+            cap_kg = cam_capkg.get(pate, 0) if pate else 0
+            rec_c  = float(rechazo_por_cam.get(cam, 0.0))
 
             chofer = ""
             if col_chofer_d is not None:
@@ -7226,7 +7275,7 @@ def render_tab_tablero():
                     vals = df_dia.loc[mask, col_chofer_d].dropna().unique()
                     if len(vals) > 0:
                         ch = str(vals[0]).strip()
-                        chofer = ch.split(" - ",1)[-1].strip() if " - " in ch else ch
+                        chofer = ch.split(" - ", 1)[-1].strip() if " - " in ch else ch
 
             venc_lic = ""; val_lic = ""
             if not df_lic.empty and chofer:
@@ -7238,269 +7287,276 @@ def render_tab_tablero():
                         val_lic  = "BLOQUEADO" if pd.Timestamp(fecha_dia) >= venc else "OK"
 
             tabla_rows.append({
-                "N° Camión": cam, "Chofer": chofer, "PDV": pdv,
-                "Bultos UP": round(bup,2), "Paletas": round(pals,2),
-                "Patente": pate, "Cap. Kg": cap_kg if cap_kg else "",
-                "Peso (kg)": round(peso_c,2), "Rechazos (bultos)": round(rec_c,2),
-                "Venc. Licencia": venc_lic, "Validación": val_lic,
+                "N° Cam": cam, "Chofer": chofer, "PDV": pdv,
+                "Bultos UP": round(bup, 2), "Paletas": round(pals, 2),
+                "Patente": pate,
+                "Cap. Kg": int(cap_kg) if cap_kg else 0,
+                "Peso (kg)": round(peso_c, 2),
+                "Rechazos": round(rec_c, 2),
+                "Venc. Lic.": venc_lic,
+                "Validación": val_lic,
             })
 
         if tabla_rows:
             df_tab = pd.DataFrame(tabla_rows)
 
-            def _sv(v):
-                if v == "BLOQUEADO": return "background-color:#ff4b4b;color:white;font-weight:bold"
-                if v == "OK":        return "background-color:#00c853;color:white"
+            # Fix applymap → use map (pandas ≥ 2.1) with fallback
+            def _style_validacion(val):
+                if val == "BLOQUEADO":
+                    return "background-color:#ff4b4b;color:white;font-weight:bold"
+                if val == "OK":
+                    return "background-color:#00c853;color:white;font-weight:bold"
                 return ""
 
-            st.dataframe(df_tab.style.applymap(_sv, subset=["Validación"]),
-                         use_container_width=True, hide_index=True)
+            try:
+                styled = df_tab.style.map(_style_validacion, subset=["Validación"])
+            except AttributeError:
+                styled = df_tab.style.applymap(_style_validacion, subset=["Validación"])
 
-            tc1,tc2,tc3,tc4,tc5,tc6 = st.columns(6)
-            tc1.metric("Camiones activos", len(df_tab))
-            tc2.metric("Total PDV", df_tab["PDV"].sum())
-            tc3.metric("Total Bultos UP", f"{df_tab['Bultos UP'].sum():.2f}")
-            tc4.metric("Total Paletas", f"{df_tab['Paletas'].sum():.2f}")
-            tc5.metric("Total Peso (kg)", f"{df_tab['Peso (kg)'].sum():,.0f}")
-            tc6.metric("Total Rechazos", f"{df_tab['Rechazos (bultos)'].sum():.1f}")
+            # Column config para mejor presentación
+            st.dataframe(
+                styled,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "N° Cam":    st.column_config.NumberColumn("N° Cam", format="%d"),
+                    "PDV":       st.column_config.NumberColumn("PDV", format="%d"),
+                    "Bultos UP": st.column_config.NumberColumn("Bultos UP", format="%.2f"),
+                    "Paletas":   st.column_config.NumberColumn("Paletas", format="%.2f"),
+                    "Cap. Kg":   st.column_config.NumberColumn("Cap. (kg)", format="%d"),
+                    "Peso (kg)": st.column_config.NumberColumn("Peso (kg)", format="%.0f"),
+                    "Rechazos":  st.column_config.NumberColumn("Rechazos", format="%.1f"),
+                },
+                height=min(400, 45 + 35 * len(df_tab)),
+            )
+
+            # Fila de totales destacada
+            st.markdown(f"""
+            <div style="background:#1F3864;color:white;border-radius:6px;
+                        padding:8px 16px;margin:4px 0;display:flex;gap:20px;
+                        font-size:13px;font-weight:600;">
+                <span>TOTAL</span>
+                <span>🚚 {len(df_tab)} camiones</span>
+                <span>📦 {df_tab['PDV'].sum()} PDV</span>
+                <span>🏋 {df_tab['Bultos UP'].sum():.2f} UP</span>
+                <span>📐 {df_tab['Paletas'].sum():.2f} paletas</span>
+                <span>⚖️ {df_tab['Peso (kg)'].sum():,.0f} kg</span>
+                <span>❌ {df_tab['Rechazos'].sum():.1f} rechazos</span>
+            </div>
+            """, unsafe_allow_html=True)
         else:
             st.info("No hay camiones activos para la fecha seleccionada.")
             df_tab = pd.DataFrame()
 
-        # ── Indicadores adicionales ─────────────────────────────────────────────
-        st.markdown("#### Indicadores adicionales")
-        ia1,ia2,ia3,ia4 = st.columns(4)
-        ia1.metric("Drop Size (UP/PDV)", f"{drop_size:.2f}")
-        ia2.metric("Prom. Paletas / Camión", f"{prom_paletas:.2f}")
-        ia3.metric("Conversión Eq. (kg)", f"{conversion_eq:,.0f}")
-        ia4.metric("Ocup. Bodega (fórmula)", f"{ocup_bodega:.1f}", help="(UP − Rechazos) / (Camiones + 2das vueltas)")
-
-        if total_rechazos_up > 0:
-            st.warning(f"⚠️ Rechazos del día: **{total_rechazos_up:.1f}** bultos UP")
-        if causa_demora:
-            st.info(f"📌 Causa de demora: **{causa_demora}**")
-
-        # ── Exportaciones ───────────────────────────────────────────────────────
+        # ── EXPORTACIONES — siempre visibles ────────────────────────────────────
         st.markdown("---")
         st.markdown("#### 📤 Exportar")
 
-        col_exp1, col_exp2 = st.columns(2)
+        _exp1, _exp2 = st.columns(2)
 
-        # ── Excel exportar ──────────────────────────────────────────────────────
-        with col_exp1:
-            if st.button("📊 Generar Excel del día", key="tr_btn_xl"):
-                buf_xl = io.BytesIO()
-                with pd.ExcelWriter(buf_xl, engine="openpyxl") as writer:
-                    kpi_data = {
-                        "KPI": ["Fecha", "Camiones reparto", "Total PDV", "Bultos UP",
-                                 "Paletas", "HL", "Peso (kg)", "Drop Size",
-                                 "Eficiencia", "Util. Vehículos", "Fuera de zona (PDV)",
-                                 "Fuera de zona (%)", "Ocup. bodega", "Productividad ruteo",
-                                 "Causa demora", "Segundas vueltas"],
-                        "Valor": [fecha_dia.strftime("%d/%m/%Y"), camiones_en_reparto, total_pedidos,
-                                   round(total_up,2), round(paletas_total,2),
-                                   round(total_hl,2), round(total_peso_kg,2),
-                                   round(drop_size,2), round(eficiencia,4),
-                                   round(util_vehiculos,4), fuera_zona_real,
-                                   round(fuera_zona_pct,4), round(ocup_bodega,2),
-                                   round(prod_ruteo,4), causa_demora, segundas_vueltas],
-                        "Target": ["—", "—", "—", "—", "—", "—", "—", "—",
-                                    f"≥{_TR_TARGET_EFICIENCIA:.0%}", f"≥{_TR_TARGET_UTIL_VEH:.0%}",
-                                    "—", f"≤{fz_target:.0%}", f"≥{ocup_target}", "≥70%", "—", "—"],
-                        "Status": ["—","—","—","—","—","—","—","—",
-                                    "OK" if efic_ok else "NO",
-                                    "OK" if util_ok else "NO",
-                                    "—",
-                                    "OK" if fz_ok else "NO",
-                                    "OK" if ocup_ok else "NO",
-                                    f"{prod_ruteo:.0%}","—","—"],
-                    }
-                    pd.DataFrame(kpi_data).to_excel(writer, sheet_name="KPIs", index=False)
-                    if tabla_rows:
-                        pd.DataFrame(tabla_rows).to_excel(writer, sheet_name="Detalle Camiones", index=False)
-                    if not ve_clean.empty:
-                        ve_clean.to_excel(writer, sheet_name="Ventas Especiales", index=False)
-                buf_xl.seek(0)
-                fname_xl = f"{fecha_dia.strftime('%d%m%Y')}_tablero_ruteador_bkcc.xlsx"
-                st.download_button("⬇️ Descargar Excel", data=buf_xl.getvalue(),
-                    file_name=fname_xl,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="tr_dl_xl")
-                st.success(f"Excel listo: **{fname_xl}**")
+        with _exp1:
+            st.markdown("**📊 Excel del día**")
+            _buf_xl = io.BytesIO()
+            with pd.ExcelWriter(_buf_xl, engine="openpyxl") as _writer:
+                pd.DataFrame({
+                    "KPI": ["Fecha","Camiones reparto","Total PDV","Bultos UP","Paletas",
+                             "HL","Peso (kg)","Drop Size","Eficiencia","Util. Vehículos",
+                             "Fuera de zona (PDV)","Fuera de zona (%)","Ocup. bodega",
+                             "Productividad ruteo","Causa demora","Segundas vueltas"],
+                    "Valor": [fecha_dia.strftime("%d/%m/%Y"), camiones_en_reparto, total_pedidos,
+                               round(total_up,2), round(paletas_total,2), round(total_hl,2),
+                               round(total_peso_kg,2), round(drop_size,2),
+                               round(eficiencia,4), round(util_vehiculos,4),
+                               fuera_zona_real, round(fuera_zona_pct,4),
+                               round(ocup_bodega,2), round(prod_ruteo,4),
+                               causa_demora, segundas_vueltas],
+                    "Target": ["—","—","—","—","—","—","—","—",
+                                f"≥{_TR_TARGET_EFICIENCIA:.0%}",
+                                f"≥{_TR_TARGET_UTIL_VEH:.0%}",
+                                "—", f"≤{fz_target:.0%}",
+                                f"≥{ocup_target}", "≥70%","—","—"],
+                    "Status": ["—","—","—","—","—","—","—","—",
+                                "OK" if efic_ok else "NO",
+                                "OK" if util_ok else "NO",
+                                "—", "OK" if fz_ok else "NO",
+                                "OK" if ocup_ok else "NO",
+                                f"{prod_ruteo:.0%}","—","—"],
+                }).to_excel(_writer, sheet_name="KPIs", index=False)
+                if tabla_rows:
+                    pd.DataFrame(tabla_rows).to_excel(_writer, sheet_name="Detalle Camiones", index=False)
+                _ve_clean = ve_edited.dropna(subset=["camion","sku","bultos"]) if not ve_edited.empty else pd.DataFrame()
+                if not _ve_clean.empty:
+                    _ve_clean.to_excel(_writer, sheet_name="Ventas Especiales", index=False)
+            _buf_xl.seek(0)
+            st.download_button(
+                label="⬇️ Descargar Excel",
+                data=_buf_xl.getvalue(),
+                file_name=f"{fecha_dia.strftime('%d%m%Y')}_tablero_ruteador_bkcc.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="tr_dl_xl",
+                use_container_width=True,
+            )
 
-        # ── PDF exportar ────────────────────────────────────────────────────────
-        with col_exp2:
-            if st.button("📄 Generar PDF del día", key="tr_btn_pdf"):
+        with _exp2:
+            st.markdown("**📄 PDF del día**")
+            if st.button("🖨️ Generar PDF", key="tr_btn_pdf", use_container_width=True):
                 try:
                     from reportlab.lib.pagesizes import A4, landscape
                     from reportlab.lib import colors
                     from reportlab.lib.units import mm
-                    from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle,
-                                                    Paragraph, Spacer, HRFlowable)
+                    from reportlab.platypus import (SimpleDocTemplate, Table,
+                        TableStyle, Paragraph, Spacer)
                     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-                    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 
-                    buf_pdf = io.BytesIO()
-                    doc = SimpleDocTemplate(buf_pdf, pagesize=landscape(A4),
-                        topMargin=12*mm, bottomMargin=10*mm,
-                        leftMargin=12*mm, rightMargin=12*mm)
+                    _buf_pdf = io.BytesIO()
+                    _doc = SimpleDocTemplate(_buf_pdf, pagesize=landscape(A4),
+                        topMargin=10*mm, bottomMargin=8*mm,
+                        leftMargin=10*mm, rightMargin=10*mm)
 
-                    styles = getSampleStyleSheet()
-                    NAVY = colors.HexColor("#1F3864")
-                    GOLD = colors.HexColor("#C9A84C")
-                    GREEN = colors.HexColor("#00C853")
-                    RED   = colors.HexColor("#FF4B4B")
-                    YELLOW= colors.HexColor("#FFF9C4")
+                    _NAVY  = colors.HexColor("#1F3864")
+                    _GOLD  = colors.HexColor("#C9A84C")
+                    _GREEN = colors.HexColor("#00C853")
+                    _RED   = colors.HexColor("#FF4B4B")
+                    _styles = getSampleStyleSheet()
 
-                    h1 = ParagraphStyle("h1", parent=styles["Normal"],
-                        fontSize=16, fontName="Helvetica-Bold",
-                        textColor=colors.white, spaceAfter=2)
-                    h2 = ParagraphStyle("h2", parent=styles["Normal"],
-                        fontSize=10, fontName="Helvetica-Bold",
-                        textColor=NAVY, spaceBefore=6, spaceAfter=3)
-                    body = ParagraphStyle("body", parent=styles["Normal"],
-                        fontSize=8, fontName="Helvetica", spaceAfter=2)
+                    def _p(txt, sz=8, bold=False, color=colors.black):
+                        return Paragraph(txt, ParagraphStyle("x",
+                            fontSize=sz, fontName="Helvetica-Bold" if bold else "Helvetica",
+                            textColor=color, spaceAfter=0))
 
-                    story = []
+                    _story = []
 
                     # Header
-                    header_data = [[
-                        Paragraph(f"<b>TABLERO RUTEADOR — {fecha_dia.strftime('%A %d/%m/%Y').upper()}</b>", h1),
-                        Paragraph(f"<font color='white'>Beccacece Hnos SA  ·  Picking Orchestrator v{APP_VERSION}</font>", body),
-                    ]]
-                    header_tbl = Table(header_data, colWidths=["70%","30%"])
-                    header_tbl.setStyle(TableStyle([
-                        ("BACKGROUND", (0,0),(-1,-1), NAVY),
-                        ("VALIGN",     (0,0),(-1,-1), "MIDDLE"),
-                        ("TOPPADDING",(0,0),(-1,-1), 6),
-                        ("BOTTOMPADDING",(0,0),(-1,-1), 6),
-                        ("LEFTPADDING",(0,0),(-1,-1), 8),
+                    _hdr = Table([[
+                        _p(f"TABLERO RUTEADOR — {fecha_dia.strftime('%A %d/%m/%Y').upper()}", 14, True, colors.white),
+                        _p(f"Beccacece Hnos SA  ·  DPO 2.1  ·  v{APP_VERSION}", 8, False, colors.white),
+                        _p(f"Prod. Ruteo: {prod_ruteo:.0%}", 12, True,
+                           _GREEN if prod_ruteo >= 0.7 else _RED),
+                    ]], colWidths=["55%","30%","15%"])
+                    _hdr.setStyle(TableStyle([
+                        ("BACKGROUND",(0,0),(1,0),_NAVY),
+                        ("BACKGROUND",(2,0),(2,0),colors.HexColor("#2e2e2e")),
+                        ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+                        ("LEFTPADDING",(0,0),(-1,-1),8),
+                        ("TOPPADDING",(0,0),(-1,-1),6),
+                        ("BOTTOMPADDING",(0,0),(-1,-1),6),
                     ]))
-                    story.append(header_tbl)
-                    story.append(Spacer(1, 4*mm))
+                    _story.append(_hdr)
+                    _story.append(Spacer(1,3*mm))
 
-                    # KPIs row
+                    # KPI row
                     def _kpi_cell(label, real, target, ok):
-                        bg = GREEN if ok is True else (RED if ok is False else colors.lightgrey)
-                        icon = "✓" if ok is True else ("✗" if ok is False else "–")
-                        return [Paragraph(f"<b>{label}</b><br/>{icon} Real: {real}<br/>Target: {target}",
-                                          ParagraphStyle("kc", fontSize=7, fontName="Helvetica",
-                                                         textColor=colors.white if ok is not None else colors.black)),
-                                bg]
+                        _bg = _GREEN if ok is True else (_RED if ok is False else colors.HexColor("#FFC107"))
+                        _icon = "✓" if ok is True else ("✗" if ok is False else "–")
+                        return (_p(f"<b>{label}</b><br/>{_icon} {real}<br/>Target: {target}", 7,
+                                   color=colors.white if ok is not None else colors.black), _bg)
 
-                    kpi_cells = [
-                        _kpi_cell("SLA Entrega", hora_real_str or "—", sla_str, sla_ok),
-                        _kpi_cell("T. Ruteo", ruteo_real_str or "—", ruteo_str, ruteo_ok),
+                    _kpi_data = [
+                        _kpi_cell("SLA Entrega", hora_real_str or "Sin dato", sla_str, sla_ok),
+                        _kpi_cell("T. Ruteo", ruteo_real_str or "Sin dato", ruteo_str, ruteo_ok),
                         _kpi_cell("Ocup. Bodega", f"{ocup_bodega:.1f} UP", f"≥{ocup_target}", ocup_ok),
                         _kpi_cell("Fuera Zona", f"{fuera_zona_real} ({fuera_zona_pct:.1%})", f"≤{fz_target:.0%}", fz_ok),
                         _kpi_cell("Util. Veh.", f"{util_vehiculos:.0%}", f"≥{_TR_TARGET_UTIL_VEH:.0%}", util_ok),
                         _kpi_cell("Eficiencia", f"{eficiencia:.1%}", f"≥{_TR_TARGET_EFICIENCIA:.0%}", efic_ok),
                     ]
-                    kpi_row = [[c[0] for c in kpi_cells]]
-                    kpi_tbl = Table(kpi_row, colWidths=[f"{100/6:.1f}%"]*6)
-                    style_cmds = [("GRID",(0,0),(-1,-1),0.5,colors.white),
-                                   ("TOPPADDING",(0,0),(-1,-1),4),
-                                   ("BOTTOMPADDING",(0,0),(-1,-1),4),
-                                   ("LEFTPADDING",(0,0),(-1,-1),5),]
-                    for i, c in enumerate(kpi_cells):
-                        style_cmds.append(("BACKGROUND",(i,0),(i,0), c[1]))
-                    kpi_tbl.setStyle(TableStyle(style_cmds))
-                    story.append(kpi_tbl)
-                    story.append(Spacer(1, 3*mm))
+                    _kpi_tbl = Table([[c[0] for c in _kpi_data]], colWidths=["16.66%"]*6)
+                    _kpi_style = [("GRID",(0,0),(-1,-1),0.5,colors.white),
+                                   ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
+                                   ("LEFTPADDING",(0,0),(-1,-1),5)]
+                    for _i, _c in enumerate(_kpi_data):
+                        _kpi_style.append(("BACKGROUND",(_i,0),(_i,0),_c[1]))
+                    _kpi_tbl.setStyle(TableStyle(_kpi_style))
+                    _story.append(_kpi_tbl)
+                    _story.append(Spacer(1,3*mm))
 
                     # Totales
-                    story.append(Paragraph("TOTALES DEL DÍA", h2))
-                    tot_data = [
-                        ["Camiones reparto", f"{camiones_en_reparto}/{total_camiones_flota}",
-                         "Total PDV", str(total_pedidos),
-                         "Bultos UP", f"{total_up:.1f}",
-                         "Paletas", f"{paletas_total:.2f}"],
-                        ["HL", f"{total_hl:.2f}",
-                         "Peso (kg)", f"{total_peso_kg:,.0f}",
-                         "Drop Size", f"{drop_size:.2f}",
-                         "Prod. Ruteo", f"{prod_ruteo:.0%}"],
-                    ]
-                    tot_tbl = Table(tot_data, colWidths=["12%","12%","12%","12%","12%","12%","13%","15%"])
-                    tot_tbl.setStyle(TableStyle([
-                        ("BACKGROUND",(0,0),(0,-1), NAVY),("BACKGROUND",(2,0),(2,-1),NAVY),
-                        ("BACKGROUND",(4,0),(4,-1), NAVY),("BACKGROUND",(6,0),(6,-1),NAVY),
-                        ("TEXTCOLOR",(0,0),(0,-1), colors.white),("TEXTCOLOR",(2,0),(2,-1),colors.white),
-                        ("TEXTCOLOR",(4,0),(4,-1), colors.white),("TEXTCOLOR",(6,0),(6,-1),colors.white),
-                        ("FONTNAME",(0,0),(-1,-1),"Helvetica"),("FONTSIZE",(0,0),(-1,-1),8),
-                        ("FONTNAME",(0,0),(0,-1),"Helvetica-Bold"),("FONTNAME",(2,0),(2,-1),"Helvetica-Bold"),
-                        ("FONTNAME",(4,0),(4,-1),"Helvetica-Bold"),("FONTNAME",(6,0),(6,-1),"Helvetica-Bold"),
-                        ("GRID",(0,0),(-1,-1),0.5,colors.lightgrey),
+                    _tot = Table([[
+                        _p("Camiones", 7, True, _NAVY), _p(f"{camiones_en_reparto}/{total_camiones_flota}", 9, True),
+                        _p("PDV", 7, True, _NAVY), _p(str(total_pedidos), 9, True),
+                        _p("Bultos UP", 7, True, _NAVY), _p(f"{total_up:.1f}", 9, True),
+                        _p("Paletas", 7, True, _NAVY), _p(f"{paletas_total:.2f}", 9, True),
+                        _p("HL", 7, True, _NAVY), _p(f"{total_hl:.2f}", 9, True),
+                        _p("Peso kg", 7, True, _NAVY), _p(f"{total_peso_kg:,.0f}", 9, True),
+                        _p("Drop Size", 7, True, _NAVY), _p(f"{drop_size:.2f}", 9, True),
+                    ]])
+                    _tot.setStyle(TableStyle([
+                        ("GRID",(0,0),(-1,-1),0.3,colors.lightgrey),
+                        ("BACKGROUND",(0,0),(0,0),colors.HexColor("#E8EAF6")),
+                        ("BACKGROUND",(2,0),(2,0),colors.HexColor("#E8EAF6")),
+                        ("BACKGROUND",(4,0),(4,0),colors.HexColor("#E8EAF6")),
+                        ("BACKGROUND",(6,0),(6,0),colors.HexColor("#E8EAF6")),
+                        ("BACKGROUND",(8,0),(8,0),colors.HexColor("#E8EAF6")),
+                        ("BACKGROUND",(10,0),(10,0),colors.HexColor("#E8EAF6")),
+                        ("BACKGROUND",(12,0),(12,0),colors.HexColor("#E8EAF6")),
                         ("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),3),
                         ("LEFTPADDING",(0,0),(-1,-1),4),
                     ]))
-                    story.append(tot_tbl)
-                    story.append(Spacer(1, 3*mm))
+                    _story.append(_tot)
+                    _story.append(Spacer(1,3*mm))
 
                     # Tabla camiones
                     if tabla_rows:
-                        story.append(Paragraph("DETALLE POR CAMIÓN", h2))
-                        det_headers = ["N° Cam","Chofer","PDV","Bultos UP","Paletas",
-                                       "Patente","Peso (kg)","Venc. Licencia","Validación"]
-                        det_data = [det_headers]
-                        for r in tabla_rows:
-                            det_data.append([
-                                str(r["N° Camión"]), r["Chofer"], str(r["PDV"]),
-                                f"{r['Bultos UP']:.1f}", f"{r['Paletas']:.2f}",
-                                r["Patente"], f"{r['Peso (kg)']:,.0f}",
-                                r["Venc. Licencia"], r["Validación"],
-                            ])
-                        # Fila totales
-                        det_data.append([
-                            "TOTAL", "", str(sum(r["PDV"] for r in tabla_rows)),
-                            f"{sum(r['Bultos UP'] for r in tabla_rows):.1f}",
-                            f"{sum(r['Paletas'] for r in tabla_rows):.2f}",
-                            "","","","",
-                        ])
+                        _det_hdr = ["N°","Chofer","PDV","Bultos UP","Paletas","Patente","Peso (kg)","Rechazos","Venc. Lic.","Validación"]
+                        _det_data = [_det_hdr] + [
+                            [str(r["N° Cam"]), r["Chofer"], str(r["PDV"]),
+                             f"{r['Bultos UP']:.1f}", f"{r['Paletas']:.2f}",
+                             r["Patente"], f"{r['Peso (kg)']:,.0f}",
+                             f"{r['Rechazos']:.1f}", r["Venc. Lic."], r["Validación"]]
+                            for r in tabla_rows
+                        ] + [["TOTAL","",str(sum(r["PDV"] for r in tabla_rows)),
+                               f"{sum(r['Bultos UP'] for r in tabla_rows):.1f}",
+                               f"{sum(r['Paletas'] for r in tabla_rows):.2f}",
+                               "","","","",""]]
 
-                        col_ws = ["7%","16%","6%","9%","8%","10%","9%","12%","8%"]
-                        det_tbl = Table(det_data, colWidths=col_ws, repeatRows=1)
-                        det_style = [
-                            ("BACKGROUND",(0,0),(-1,0), NAVY),
-                            ("TEXTCOLOR",(0,0),(-1,0), colors.white),
-                            ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),
-                            ("FONTSIZE",(0,0),(-1,-1),7),
-                            ("FONTNAME",(0,1),(-1,-1),"Helvetica"),
-                            ("GRID",(0,0),(-1,-1),0.3,colors.lightgrey),
-                            ("ROWBACKGROUNDS",(0,1),(-1,-2),[colors.white, colors.HexColor("#F5F5F5")]),
-                            ("BACKGROUND",(0,-1),(-1,-1),colors.HexColor("#E8EAF6")),
-                            ("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),
-                            ("TOPPADDING",(0,0),(-1,-1),2),("BOTTOMPADDING",(0,0),(-1,-1),2),
-                            ("LEFTPADDING",(0,0),(-1,-1),3),
-                        ]
-                        # Color validación
-                        for i, r in enumerate(tabla_rows, 1):
-                            if r["Validación"] == "BLOQUEADO":
-                                det_style.append(("BACKGROUND",(8,i),(8,i), RED))
-                                det_style.append(("TEXTCOLOR",(8,i),(8,i), colors.white))
-                            elif r["Validación"] == "OK":
-                                det_style.append(("BACKGROUND",(8,i),(8,i), GREEN))
-                                det_style.append(("TEXTCOLOR",(8,i),(8,i), colors.white))
-                        det_tbl.setStyle(TableStyle(det_style))
-                        story.append(det_tbl)
+                        _det_tbl = Table(_det_data, repeatRows=1,
+                            colWidths=["5%","15%","5%","9%","7%","9%","9%","7%","11%","8%"])
+                        _ds = [("BACKGROUND",(0,0),(-1,0),_NAVY),
+                                ("TEXTCOLOR",(0,0),(-1,0),colors.white),
+                                ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),
+                                ("FONTSIZE",(0,0),(-1,-1),7),
+                                ("FONTNAME",(0,1),(-1,-1),"Helvetica"),
+                                ("ROWBACKGROUNDS",(0,1),(-1,-2),[colors.white,colors.HexColor("#F5F5F5")]),
+                                ("BACKGROUND",(0,-1),(-1,-1),colors.HexColor("#E8EAF6")),
+                                ("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),
+                                ("GRID",(0,0),(-1,-1),0.3,colors.lightgrey),
+                                ("TOPPADDING",(0,0),(-1,-1),2),("BOTTOMPADDING",(0,0),(-1,-1),2),
+                                ("LEFTPADDING",(0,0),(-1,-1),3)]
+                        for _i2, _r2 in enumerate(tabla_rows, 1):
+                            if _r2["Validación"] == "BLOQUEADO":
+                                _ds += [("BACKGROUND",(9,_i2),(9,_i2),_RED),
+                                        ("TEXTCOLOR",(9,_i2),(9,_i2),colors.white)]
+                            elif _r2["Validación"] == "OK":
+                                _ds += [("BACKGROUND",(9,_i2),(9,_i2),_GREEN),
+                                        ("TEXTCOLOR",(9,_i2),(9,_i2),colors.white)]
+                        _det_tbl.setStyle(TableStyle(_ds))
+                        _story.append(_det_tbl)
 
-                    # Footer
-                    story.append(Spacer(1, 3*mm))
-                    footer_txt = (f"Generado: {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}  |  "
-                                  f"Picking Orchestrator v{APP_VERSION}  |  Beccacece Hnos SA — DPO 2.1")
-                    if causa_demora:
-                        footer_txt += f"  |  Causa demora: {causa_demora}"
-                    story.append(Paragraph(footer_txt,
-                        ParagraphStyle("footer", fontSize=6, textColor=colors.grey, fontName="Helvetica")))
+                    _story.append(Spacer(1,2*mm))
+                    _story.append(_p(
+                        f"Generado: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')}  |  "
+                        f"Picking Orchestrator v{APP_VERSION}  |  Beccacece Hnos SA"
+                        + (f"  |  Demora: {causa_demora}" if causa_demora else ""),
+                        6, color=colors.grey))
+                    _doc.build(_story)
+                    _buf_pdf.seek(0)
+                    _fname_pdf = f"{fecha_dia.strftime('%d%m%Y')}_tablero_ruteador_bkcc.pdf"
+                    ss["tr_pdf_bytes"] = _buf_pdf.getvalue()
+                    ss["tr_pdf_fname"] = _fname_pdf
+                    st.success(f"✅ PDF listo: **{_fname_pdf}**")
+                except Exception as _e_pdf:
+                    st.error(f"Error PDF: {_e_pdf}")
 
-                    doc.build(story)
-                    buf_pdf.seek(0)
-                    fname_pdf = f"{fecha_dia.strftime('%d%m%Y')}_tablero_ruteador_bkcc.pdf"
-                    st.download_button("⬇️ Descargar PDF", data=buf_pdf.getvalue(),
-                        file_name=fname_pdf, mime="application/pdf", key="tr_dl_pdf")
-                    st.success(f"PDF listo: **{fname_pdf}**")
+            if ss.get("tr_pdf_bytes"):
+                st.download_button(
+                    label="⬇️ Descargar PDF",
+                    data=ss["tr_pdf_bytes"],
+                    file_name=ss.get("tr_pdf_fname","tablero.pdf"),
+                    mime="application/pdf",
+                    key="tr_dl_pdf",
+                    use_container_width=True,
+                )
 
-                except Exception as e_pdf:
-                    st.error(f"Error generando PDF: {e_pdf}")
+
     with _tr_subtabs[1]:
         import pandas as pd
         import datetime
