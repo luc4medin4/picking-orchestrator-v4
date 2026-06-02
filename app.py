@@ -1,5 +1,16 @@
 """
-Picking Orchestrator v4.49.1 — Beccacece Hnos SA
+Picking Orchestrator v4.50.0 — Beccacece Hnos SA
+
+CAMBIOS v4.50.0:
+  - 🐛 FIX Tabla D+1 — CTA CTE visible: se agrega `style_cta_d1` al styled
+    de la tabla D+1. Antes la columna mostraba $0 visualmente aunque el
+    valor estaba cargado. Ahora muestra el monto en rojo si > 0.
+  - 📄 FIX PDF D+1 — Detalle CTA CTE: nueva página 2 con sub-filas por
+    camión (header camión, fila por cliente con código + nombre + monto,
+    subtotal por camión, total general). Idéntico al PDF del cierre del día.
+  - 📊 FIX Excel D+1 — Hoja "CTA CTE Detalle": nueva hoja con header de
+    camión, sub-filas por cliente (código + nombre + monto), subtotal por
+    camión y total general. Formato consistente con la hoja principal.
 
 CAMBIOS v4.49.1:
   - 📂 Archivos: nuevo uploader "ANR -1.xlsx" (ANR del día anterior).
@@ -88,7 +99,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.49.1"
+APP_VERSION = "4.50.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -9801,6 +9812,9 @@ def render_tab_cierre():
                 "Neto Real":       df_d1["NetoReal"],
             })
 
+            def style_cta_d1(val):
+                return "color: #b91c1c; font-weight: bold" if val > 0 else ""
+
             _use_map_d1 = hasattr(pd.io.formats.style.Styler, "map")
             _base_d1 = df_d1_show.style.format({
                 "Preventa":     "$ {:,.0f}",
@@ -9813,12 +9827,14 @@ def render_tab_cierre():
                 styled_d1 = (_base_d1
                     .map(style_neto_d1, subset=["Neto Real"])
                     .map(style_rech_d1, subset=["Rechazo Real"])
+                    .map(style_cta_d1,  subset=["CTA CTE"])
                     .set_properties(**{"text-align": "right"},
                                     subset=["Preventa", "Cobrado Real", "CTA CTE", "Rechazo Real", "Neto Real"]))
             else:
                 styled_d1 = (_base_d1
                     .applymap(style_neto_d1, subset=["Neto Real"])
                     .applymap(style_rech_d1, subset=["Rechazo Real"])
+                    .applymap(style_cta_d1,  subset=["CTA CTE"])
                     .set_properties(**{"text-align": "right"},
                                     subset=["Preventa", "Cobrado Real", "CTA CTE", "Rechazo Real", "Neto Real"]))
 
@@ -10116,13 +10132,158 @@ def _cierre_d1_pdf(df_d1: pd.DataFrame, totales: dict, fecha_str: str) -> bytes:
             c.drawRightString(M + half_w, yi, fmt_ars(val))
         yi -= 13
 
-    # FOOTER
+    # FOOTER pág 1
     c.setFillColor(rl_colors.HexColor("#555555"))
     c.setFont("Helvetica", 6.5)
     c.drawCentredString(
         PW / 2, M - 4,
         f"Beccacece Hnos SA  ·  Cierre D+1 generado: {fecha_str}  ·  Picking Orchestrator v{APP_VERSION}"
     )
+
+    # ── PÁGINA 2: DETALLE CTA CTE POR CAMIÓN ─────────────────────────────────
+    cta_rows_pdf = []
+    if "CtaCteDetalle" in df_d1.columns:
+        for _, row in df_d1.iterrows():
+            detalle = row.get("CtaCteDetalle") or []
+            if isinstance(detalle, list) and detalle:
+                for d in detalle:
+                    cta_rows_pdf.append({
+                        "camion_id":   int(row["idCns"]),
+                        "camion_ds":   str(row["dsCns"]),
+                        "codigo":      d.get("codigo", ""),
+                        "nombre":      d.get("nombre", ""),
+                        "monto":       float(d.get("monto", 0)),
+                    })
+
+    if cta_rows_pdf:
+        c.showPage()
+        # Mini-header pág 2
+        c.setFillColor(DARK_BLUE)
+        c.rect(M, PH - 16, PW - 2*M, 16, fill=1, stroke=0)
+        c.setFillColor(rl_colors.white)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(M + 4, PH - 11, f"CIERRE FINANCIERO D+1 — DETALLE CTA CTE — {fecha_str}")
+        c.setFont("Helvetica", 7)
+        c.drawRightString(PW - M - 4, PH - 11, "Beccacece Hnos SA")
+        y2 = PH - 26
+
+        col_labels2 = ["Camión",        "Cód.",    "Cliente (CTA CTE)",            "Monto ($)"]
+        col_w2      = [
+            usable_w * 0.28,
+            usable_w * 0.10,
+            usable_w * 0.42,
+            usable_w * 0.20,
+        ]
+        hdr2_h = 15
+        c.setFillColor(MED_BLUE)
+        c.rect(M, y2 - hdr2_h, usable_w, hdr2_h, fill=1, stroke=0)
+        c.setFillColor(rl_colors.white)
+        c.setFont("Helvetica-Bold", 9)
+        x2 = M + 5
+        for lbl2, cw2 in zip(col_labels2, col_w2):
+            c.drawString(x2, y2 - hdr2_h + 4, lbl2)
+            x2 += cw2
+        y2 -= hdr2_h + 2
+
+        current_cam = None
+        cam_subtotal = 0.0
+        grand_total  = 0.0
+        row_idx      = 0
+
+        def _flush_cam_subtotal(y_pos, cam_label, subtot):
+            """Dibuja fila de subtotal de camión."""
+            c.setFillColor(rl_colors.HexColor("#D9E4F5"))
+            c.rect(M, y_pos - 12, usable_w, 12, fill=1, stroke=0)
+            c.setFillColor(DARK_BLUE)
+            c.setFont("Helvetica-Bold", 8)
+            c.drawString(M + 5, y_pos - 9, f"Subtotal {cam_label}")
+            c.drawRightString(PW - M - 5, y_pos - 9, fmt_ars(subtot))
+            return y_pos - 16
+
+        for cr in cta_rows_pdf:
+            cam_label = f"{cr['camion_id']} — {cr['camion_ds']}"
+            if cam_label != current_cam:
+                if current_cam is not None:
+                    # Subtotal camión anterior
+                    if y2 < M + 50:
+                        c.showPage()
+                        c.setFillColor(DARK_BLUE)
+                        c.rect(M, PH - 16, PW - 2*M, 16, fill=1, stroke=0)
+                        c.setFillColor(rl_colors.white)
+                        c.setFont("Helvetica-Bold", 8)
+                        c.drawString(M + 4, PH - 11, f"DETALLE CTA CTE D+1 — {fecha_str} (cont.)")
+                        y2 = PH - 26
+                    y2 = _flush_cam_subtotal(y2, current_cam, cam_subtotal)
+                    cam_subtotal = 0.0
+                current_cam = cam_label
+                # Encabezado de camión
+                if y2 < M + 50:
+                    c.showPage()
+                    c.setFillColor(DARK_BLUE)
+                    c.rect(M, PH - 16, PW - 2*M, 16, fill=1, stroke=0)
+                    c.setFillColor(rl_colors.white)
+                    c.setFont("Helvetica-Bold", 8)
+                    c.drawString(M + 4, PH - 11, f"DETALLE CTA CTE D+1 — {fecha_str} (cont.)")
+                    y2 = PH - 26
+                c.setFillColor(rl_colors.HexColor("#EEF3FB"))
+                c.rect(M, y2 - 13, usable_w, 13, fill=1, stroke=0)
+                c.setFillColor(MED_BLUE)
+                c.setFont("Helvetica-Bold", 8.5)
+                c.drawString(M + 5, y2 - 10, cam_label)
+                y2 -= 15
+
+            # Fila cliente
+            bg2 = LIGHT_GRAY if row_idx % 2 == 0 else rl_colors.white
+            c.setFillColor(bg2)
+            c.rect(M, y2 - 12, usable_w, 12, fill=1, stroke=0)
+            c.setFillColor(rl_colors.black)
+            c.setFont("Helvetica", 8)
+            x2 = M + 5
+            sub_vals = ["", str(cr["codigo"]), cr["nombre"], fmt_ars(cr["monto"])]
+            for svi, (sv, scw) in enumerate(zip(sub_vals, col_w2)):
+                if svi == 3:
+                    c.setFillColor(RED_NEG)
+                    c.setFont("Helvetica-Bold", 8)
+                    c.drawRightString(x2 + scw - 5, y2 - 9, sv)
+                else:
+                    c.setFillColor(rl_colors.black)
+                    c.setFont("Helvetica", 8)
+                    c.drawString(x2 + 2, y2 - 9, sv)
+                x2 += scw
+            y2 -= 13
+            cam_subtotal += cr["monto"]
+            grand_total  += cr["monto"]
+            row_idx      += 1
+
+            if y2 < M + 50:
+                c.showPage()
+                c.setFillColor(DARK_BLUE)
+                c.rect(M, PH - 16, PW - 2*M, 16, fill=1, stroke=0)
+                c.setFillColor(rl_colors.white)
+                c.setFont("Helvetica-Bold", 8)
+                c.drawString(M + 4, PH - 11, f"DETALLE CTA CTE D+1 — {fecha_str} (cont.)")
+                y2 = PH - 26
+
+        # Último subtotal
+        if current_cam:
+            y2 = _flush_cam_subtotal(y2, current_cam, cam_subtotal)
+
+        # Total general CTA CTE
+        y2 -= 4
+        c.setFillColor(DARK_BLUE)
+        c.rect(M, y2 - 14, usable_w, 14, fill=1, stroke=0)
+        c.setFillColor(rl_colors.white)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(M + 6, y2 - 10, "TOTAL GENERAL CTA CTE")
+        c.drawRightString(PW - M - 5, y2 - 10, fmt_ars(grand_total))
+
+        # Footer pág 2
+        c.setFillColor(rl_colors.HexColor("#555555"))
+        c.setFont("Helvetica", 6.5)
+        c.drawCentredString(
+            PW / 2, M - 4,
+            f"Beccacece Hnos SA  ·  Cierre D+1 generado: {fecha_str}  ·  Picking Orchestrator v{APP_VERSION}"
+        )
 
     c.save()
     return buf.getvalue()
@@ -10256,6 +10417,115 @@ def _cierre_d1_excel(df_d1: pd.DataFrame, totales: dict, fecha_str: str) -> byte
     col_widths = [8, 24, 22, 22, 18, 22, 26]
     for ci, w in enumerate(col_widths, 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
+
+    # ── HOJA 2: CTA CTE DETALLE ───────────────────────────────────────────────
+    if "CtaCteDetalle" in df_d1.columns:
+        ws2 = wb.create_sheet(title="CTA CTE Detalle")
+
+        ws2.merge_cells("A1:E1")
+        ws2["A1"] = f"DETALLE CTA CTE D+1 — {fecha_str}"
+        ws2["A1"].font = Font(bold=True, size=12, color="1a3a6b")
+        ws2["A1"].alignment = center_al
+        ws2.row_dimensions[1].height = 20
+
+        ws2.merge_cells("A2:E2")
+        ws2["A2"] = "Beccacece Hnos SA — Distribuidor CMQ / ABInBev"
+        ws2["A2"].font = Font(size=9, color="555555", italic=True)
+        ws2["A2"].alignment = center_al
+
+        hdr2 = ["ID Camión", "Camión", "Cód. Cliente", "Cliente (CTA CTE)", "Monto ($)"]
+        for ci2, h2 in enumerate(hdr2, 1):
+            cell2 = ws2.cell(row=4, column=ci2, value=h2)
+            cell2.fill = hdr_fill
+            cell2.font = hdr_font
+            cell2.alignment = center_al
+            cell2.border = border
+        ws2.row_dimensions[4].height = 15
+
+        r2 = 5
+        grand_cte = 0.0
+        cam_fill_h  = PatternFill("solid", fgColor="D9E4F5")   # sub-header camión
+        cam_sub_fill = PatternFill("solid", fgColor="EEF3FB")  # subtotal camión
+
+        for _, mrow in df_d1.iterrows():
+            detalle2 = mrow.get("CtaCteDetalle") or []
+            if not isinstance(detalle2, list) or not detalle2:
+                continue
+            cam_id  = int(mrow["idCns"])
+            cam_ds  = str(mrow["dsCns"])
+            cam_tot = sum(float(d.get("monto", 0)) for d in detalle2)
+
+            # Fila header de camión
+            ws2.merge_cells(f"A{r2}:B{r2}")
+            ws2[f"A{r2}"] = f"{cam_id} — {cam_ds}"
+            ws2[f"A{r2}"].font = Font(bold=True, size=9, color="1a3a6b")
+            ws2[f"A{r2}"].fill = cam_fill_h
+            ws2[f"A{r2}"].alignment = left_al
+            for ci2 in range(3, 6):
+                ws2.cell(row=r2, column=ci2).fill = cam_fill_h
+                ws2.cell(row=r2, column=ci2).border = border
+            ws2[f"A{r2}"].border = border
+            ws2.row_dimensions[r2].height = 14
+            r2 += 1
+
+            for d in detalle2:
+                monto_d = float(d.get("monto", 0))
+                row2_vals = [cam_id, cam_ds, d.get("codigo", ""), d.get("nombre", ""), monto_d]
+                row2_fill = alt_fill if (r2 % 2 == 0) else PatternFill()
+                for ci2, val2 in enumerate(row2_vals, 1):
+                    cell2 = ws2.cell(row=r2, column=ci2, value=val2)
+                    cell2.fill = row2_fill
+                    cell2.border = border
+                    if ci2 == 5:
+                        cell2.number_format = money_fmt
+                        cell2.font = red_font
+                        cell2.alignment = right_al
+                    elif ci2 == 1:
+                        cell2.alignment = center_al
+                    elif ci2 == 3:
+                        cell2.alignment = center_al
+                    else:
+                        cell2.alignment = left_al
+                ws2.row_dimensions[r2].height = 13
+                r2 += 1
+                grand_cte += monto_d
+
+            # Subtotal camión
+            ws2.merge_cells(f"A{r2}:D{r2}")
+            ws2[f"A{r2}"] = f"Subtotal {cam_id} — {cam_ds}"
+            ws2[f"A{r2}"].font = Font(bold=True, size=9, color="1a3a6b")
+            ws2[f"A{r2}"].fill = cam_sub_fill
+            ws2[f"A{r2}"].alignment = right_al
+            ws2[f"A{r2}"].border = border
+            sub_cell = ws2.cell(row=r2, column=5, value=cam_tot)
+            sub_cell.font = Font(bold=True, color="b91c1c", size=9)
+            sub_cell.number_format = money_fmt
+            sub_cell.fill = cam_sub_fill
+            sub_cell.alignment = right_al
+            sub_cell.border = border
+            ws2.row_dimensions[r2].height = 13
+            r2 += 1
+
+        # Total general
+        ws2.merge_cells(f"A{r2}:D{r2}")
+        ws2[f"A{r2}"] = "TOTAL GENERAL CTA CTE"
+        ws2[f"A{r2}"].font = Font(bold=True, size=10, color="FFFFFF")
+        ws2[f"A{r2}"].fill = hdr_fill
+        ws2[f"A{r2}"].alignment = right_al
+        ws2[f"A{r2}"].border = border
+        gtot_cell = ws2.cell(row=r2, column=5, value=grand_cte)
+        gtot_cell.font = Font(bold=True, color="FFFFFF", size=10)
+        gtot_cell.number_format = money_fmt
+        gtot_cell.fill = hdr_fill
+        gtot_cell.alignment = right_al
+        gtot_cell.border = border
+        ws2.row_dimensions[r2].height = 16
+
+        ws2.column_dimensions["A"].width = 10
+        ws2.column_dimensions["B"].width = 24
+        ws2.column_dimensions["C"].width = 14
+        ws2.column_dimensions["D"].width = 38
+        ws2.column_dimensions["E"].width = 20
 
     buf = io.BytesIO()
     wb.save(buf)
