@@ -56,7 +56,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.47.0"
+APP_VERSION = "4.48.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -6850,7 +6850,53 @@ def render_tab_boletas():
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# TAB TABLERO RUTEADOR (v4.47.0)
+# TAB TABLERO RUTEADOR (v4.42.0)
+# ════════════════════════════════════════════════════════════════════════════
+
+_TR_CAMIONES_DEFAULT = {
+    101: "AE785NJ", 102: "KDC500",  103: "",       104: "AE785NK",
+    105: "AE962OJ", 106: "AC354KB", 107: "",        108: "AC354KD",
+    109: "UFH587",  110: "DMZ947",  111: "LGH463",  112: "KCT549",
+    113: "AF483IS", 114: "DMZ947",  115: "KDC500",  117: "DJE621",
+    118: "AE962OJ", 119: "",        120: "SOB215",  121: "",
+    122: "MRP648",  123: "",        125: "DJE621",  128: "AST830",
+    129: "",
+}
+
+_TR_CAPACIDADES_DEFAULT = {
+    "AE785NJ": 10450, "KDC500": 9480,  "AE785NK": 9460, "AC354KB": 9480,
+    "AC354KD": 9440,  "UFH587": 9470,  "DMZ947":  9480, "LGH463":  9600,
+    "KCT549":  9470,  "AF483IS": 9480, "AE962OJ": 9480, "DJE621":  9470,
+    "SOB215":  9600,  "MRP648":  9630, "AST830":  10470,
+}
+
+_TR_TARGET_OCUP_BODEGA  = 300
+_TR_TARGET_FUERA_ZONA   = 0.03
+_TR_TARGET_UTIL_VEH     = 0.80
+_TR_TARGET_EFICIENCIA   = 0.70
+
+
+def _tr_parse_time_input(val_str):
+    """Convierte 'HH:MM' en datetime.time, None si vacío."""
+    import datetime
+    if not val_str or str(val_str).strip() in ("", "nan", "None"):
+        return None
+    s = str(val_str).strip()
+    for fmt in ("%H:%M", "%H:%M:%S"):
+        try:
+            return datetime.datetime.strptime(s, fmt).time()
+        except ValueError:
+            continue
+    return None
+
+
+def _tr_time_to_min(t):
+    if t is None:
+        return 0.0
+    return t.hour * 60 + t.minute + t.second / 60
+
+
+# TAB TABLERO RUTEADOR (v4.48.0)
 # ════════════════════════════════════════════════════════════════════════════
 
 _TR_CAMIONES_DEFAULT = {
@@ -6899,6 +6945,10 @@ def _tr_time_to_min(t):
 def render_tab_tablero():
     import io
     _tr_subtabs = st.tabs(["📊 Tablero del día", "📅 Histórico Mensual"])
+
+    # ══════════════════════════════════════════════════════════════════
+    # TAB 1 — TABLERO DEL DÍA
+    # ══════════════════════════════════════════════════════════════════
     with _tr_subtabs[0]:
         import pandas as pd
         import datetime
@@ -6908,64 +6958,112 @@ def render_tab_tablero():
         st.caption("Reemplaza el Excel 05-Tablero Ruteador. Fuentes: ANR (Chess) + Ventas Especiales + Licencias.")
 
         ss = st.session_state
+        anr_raw = ss.get("anr_df")
+        tc_anr  = ss.get("tc_anr")
+        ddm     = ss.get("df_ddm")
 
-        # ── FIX: leer ANR desde session_state con la key correcta ──────────────
-        anr_raw = ss.get("anr_df")        # DataFrame crudo (header=0), key del Tab Archivos
-        tc_anr  = ss.get("tc_anr")        # file object
-        ddm     = ss.get("df_ddm")        # DDM Frescura si fue cargado
+        # ── CONFIGURACIÓN FIJA (expander colapsado por defecto) ─────────────────
+        with st.expander("⚙️ Configuración fija (no cambia a diario)", expanded=False):
+            st.caption("Editá estos valores cuando haya cambios de flota, targets o SLA operativo.")
+            _cf1, _cf2, _cf3, _cf4, _cf5 = st.columns(5)
+            with _cf1:
+                total_camiones_flota = st.number_input(
+                    "Flota total (camiones)", value=ss.get("tr_cfg_flota", 15),
+                    step=1, key="tr_cfg_flota")
+            with _cf2:
+                sla_str = st.text_input(
+                    "SLA entrega target (HH:MM)",
+                    value=ss.get("tr_cfg_sla", "16:15"), key="tr_cfg_sla")
+            with _cf3:
+                ruteo_str = st.text_input(
+                    "T. ruteo target (HH:MM)",
+                    value=ss.get("tr_cfg_ruteo", "01:10"), key="tr_cfg_ruteo")
+            with _cf4:
+                ocup_target = st.number_input(
+                    "Ocup. bodega target (UP)",
+                    value=ss.get("tr_cfg_ocup", _TR_TARGET_OCUP_BODEGA),
+                    step=10, key="tr_cfg_ocup")
+            with _cf5:
+                fz_target_pct = st.number_input(
+                    "Fuera de zona target (%)",
+                    value=ss.get("tr_cfg_fz", 3.0),
+                    step=0.5, format="%.1f", key="tr_cfg_fz")
+            fz_target = fz_target_pct / 100
 
-        # ── Parámetros del día ──────────────────────────────────────────────────
-        st.markdown("### 📅 Parámetros del día")
-        c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
-        with c1:
-            fecha_dia = st.date_input("Fecha del día",
-                value=datetime.date.today(), key="tr_fecha")
-        with c2:
-            es_sabado = fecha_dia.weekday() == 5
-            sla_str = st.text_input("SLA entrega (HH:MM)",
-                value="12:30" if es_sabado else "16:15", key="tr_sla")
-        with c3:
-            ruteo_str = st.text_input("T. ruteo target (HH:MM)", value="01:10", key="tr_ruteo")
-        with c4:
-            ocup_target = st.number_input("Ocup. bodega target (UP)",
-                value=_TR_TARGET_OCUP_BODEGA, step=10, key="tr_ocup")
-        with c5:
-            fz_target_pct = st.number_input("Fuera de zona target (%)",
-                value=3.0, step=0.5, format="%.1f", key="tr_fz")
-        with c6:
-            total_camiones_flota = st.number_input("Camiones totales (flota)",
-                value=15, step=1, key="tr_flota")
-        with c7:
-            visitas_teoricas = st.number_input("Visitas teóricas",
-                value=650, step=10, key="tr_vis")
+            # Patentes y capacidades
+            st.markdown("**Patentes y capacidades de camiones**")
+            cam_data = [{"camion": k, "patente": v,
+                         "capacidad_kg": _TR_CAPACIDADES_DEFAULT.get(v, 9480)}
+                        for k, v in _TR_CAMIONES_DEFAULT.items()]
+            df_cam_edit = st.data_editor(pd.DataFrame(cam_data),
+                use_container_width=True, hide_index=True, key="tr_cam_cfg",
+                column_config={
+                    "camion": st.column_config.NumberColumn("N° Camión", disabled=True),
+                    "patente": st.column_config.TextColumn("Patente"),
+                    "capacidad_kg": st.column_config.NumberColumn("Cap. máx (kg)", step=10),
+                })
+            cam_patente = dict(zip(df_cam_edit["camion"], df_cam_edit["patente"]))
+            cam_capkg   = dict(zip(df_cam_edit["patente"], df_cam_edit["capacidad_kg"]))
 
-        fz_target = fz_target_pct / 100
-
-        # ── Registro del día ────────────────────────────────────────────────────
-        st.markdown("### ⏱️ Registro del día")
-        r1, r2, r3, r4 = st.columns(4)
-        with r1:
+        # ── CARGA DEL DÍA ──────────────────────────────────────────────────────
+        st.markdown("### 📅 Carga del día")
+        _d1, _d2, _d3, _d4, _d5, _d6, _d7 = st.columns(7)
+        with _d1:
+            fecha_dia = st.date_input("Fecha", value=datetime.date.today(), key="tr_fecha")
+        with _d2:
             hora_real_str = st.text_input("Hora entrega real (HH:MM)",
                 value="", placeholder="ej: 16:25", key="tr_hora_real")
-        with r2:
-            ruteo_real_str = st.text_input("Tiempo de ruteo real (HH:MM)",
+        with _d3:
+            ruteo_real_str = st.text_input("T. ruteo real (HH:MM)",
                 value="", placeholder="ej: 00:20", key="tr_truteo_real")
-        with r3:
-            fuera_zona_real = st.number_input("Fuera de zona (cantidad PDV)",
+        with _d4:
+            fuera_zona_real = st.number_input("Fuera de zona (PDV)",
                 value=0, step=1, key="tr_fz_real",
-                help="Cantidad de PDV fuera de zona. El % se calcula sobre pedidos ruteados.")
-        with r4:
+                help="Cantidad PDV fuera de zona")
+        with _d5:
             segundas_vueltas = st.number_input("Segundas vueltas",
                 value=0, step=1, key="tr_seg_vueltas")
-
-        c_demora, _ = st.columns([1, 3])
-        with c_demora:
-            causa_demora = st.selectbox("Causa demora (si aplica)",
+        with _d6:
+            visitas_teoricas = st.number_input("Visitas teóricas",
+                value=650, step=10, key="tr_vis")
+        with _d7:
+            causa_demora = st.selectbox("Causa demora",
                 options=["", "Chess", "Bees", "Cierre de venta",
                          "Problema sindical", "Corte de luz", "Otro"],
                 key="tr_causa_demora")
 
-        # ── Ventas Especiales — lectura automática desde CAR Hoja1 filas 2-40 ───
+        es_sabado = fecha_dia.weekday() == 5
+
+        # ── LICENCIAS ──────────────────────────────────────────────────────────
+        st.markdown("### 🪪 Licencias conductores")
+        _lc1, _lc2 = st.columns([2, 4])
+        with _lc1:
+            lic_file = st.file_uploader(
+                "Licencias.xlsx",
+                type=["xlsx", "xls"], key="tr_lic_file",
+                help="Col D = nombre corto (ej: ARANDA, COLOMBO F.) | Col I = Vencimiento Registro")
+        df_lic = pd.DataFrame()
+        if lic_file:
+            try:
+                _lic_raw = pd.read_excel(lic_file, header=0)
+                # Col D = idx 3 = (fx)Nombre/apellido corto  |  Col I = idx 8 = Vencimiento
+                if _lic_raw.shape[1] >= 9:
+                    df_lic = _lic_raw.iloc[:, [3, 8]].copy()
+                    df_lic.columns = ["nombre", "vencimiento"]
+                    df_lic = df_lic.dropna(subset=["nombre"])
+                    df_lic["nombre"] = df_lic["nombre"].astype(str).str.strip().str.upper()
+                    df_lic["vencimiento"] = pd.to_datetime(df_lic["vencimiento"], errors="coerce")
+                    df_lic = df_lic.dropna(subset=["vencimiento"])
+                    with _lc2:
+                        st.success(f"✅ {len(df_lic)} conductores cargados")
+                        _bloqueados_preview = df_lic[df_lic["vencimiento"] <= pd.Timestamp(fecha_dia)]
+                        if not _bloqueados_preview.empty:
+                            st.warning(f"⚠️ {len(_bloqueados_preview)} licencia(s) vencida(s) a la fecha seleccionada")
+            except Exception as _e_lic:
+                with _lc2:
+                    st.warning(f"No se pudo leer licencias: {_e_lic}")
+
+        # ── VENTAS ESPECIALES ──────────────────────────────────────────────────
         car_file_tr = ss.get("t1_car") or ss.get("tc_car")
         ve_auto = pd.DataFrame(columns=["camion", "sku", "bultos"])
         if car_file_tr is not None:
@@ -6973,7 +7071,6 @@ def render_tab_tablero():
                 car_file_tr.seek(0)
                 _raw_ve = pd.read_excel(car_file_tr, sheet_name=0, header=None, nrows=41)
                 car_file_tr.seek(0)
-                # Fila 0 = header, filas 1-40 = VE (líneas azules)
                 _hdr_ve = _raw_ve.iloc[0].tolist()
                 _body_ve = _raw_ve.iloc[1:41].copy()
                 _body_ve.columns = _hdr_ve
@@ -7001,49 +7098,14 @@ def render_tab_tablero():
             except Exception as _ve_err:
                 st.caption(f"⚠️ VE no leídas del CAR: {_ve_err}")
         if not ve_auto.empty:
-            with st.expander(f"🔵 Ventas Especiales — {len(ve_auto)} líneas leídas del CAR", expanded=False):
+            with st.expander(f"🔵 Ventas Especiales — {len(ve_auto)} líneas del CAR", expanded=False):
                 st.dataframe(ve_auto, use_container_width=True, hide_index=True,
                              column_config={
                                  "camion": st.column_config.NumberColumn("N° Camión", format="%d"),
                                  "sku":    st.column_config.NumberColumn("SKU", format="%d"),
                                  "bultos": st.column_config.NumberColumn("Bultos", format="%.2f"),
                              })
-        else:
-            st.caption("🔵 Ventas Especiales: no detectadas en CAR (o CAR no cargado).")
-        ve_edited = ve_auto  # compatible con el resto del código
-
-        # ── Licencias ───────────────────────────────────────────────────────────
-        st.markdown("### 🪪 Licencias conductores")
-        lic_file = st.file_uploader("Licencias.xlsx (col D=Nombre, col I=Vencimiento)",
-            type=["xlsx", "xls"], key="tr_lic_file")
-        df_lic = pd.DataFrame()
-        if lic_file:
-            try:
-                _lic = pd.read_excel(lic_file, header=0)
-                if _lic.shape[1] >= 9:
-                    df_lic = _lic.iloc[:, [3, 8]].copy()
-                    df_lic.columns = ["nombre", "vencimiento"]
-                    df_lic = df_lic.dropna(subset=["nombre"])
-                    df_lic["nombre"] = df_lic["nombre"].astype(str).str.strip().str.upper()
-                    df_lic["vencimiento"] = pd.to_datetime(df_lic["vencimiento"], errors="coerce")
-                    st.success(f"✅ Licencias: {len(df_lic)} conductores cargados")
-            except Exception as e:
-                st.warning(f"No se pudo leer licencias: {e}")
-
-        # ── Config patentes ─────────────────────────────────────────────────────
-        with st.expander("⚙️ Patentes y capacidades", expanded=False):
-            cam_data = [{"camion": k, "patente": v,
-                         "capacidad_kg": _TR_CAPACIDADES_DEFAULT.get(v, 9480)}
-                        for k, v in _TR_CAMIONES_DEFAULT.items()]
-            df_cam_edit = st.data_editor(pd.DataFrame(cam_data),
-                use_container_width=True, hide_index=True, key="tr_cam_cfg",
-                column_config={
-                    "camion": st.column_config.NumberColumn("N° Camión", disabled=True),
-                    "patente": st.column_config.TextColumn("Patente"),
-                    "capacidad_kg": st.column_config.NumberColumn("Cap. máx (kg)", step=10),
-                })
-            cam_patente = dict(zip(df_cam_edit["camion"], df_cam_edit["patente"]))
-            cam_capkg   = dict(zip(df_cam_edit["patente"], df_cam_edit["capacidad_kg"]))
+        ve_edited = ve_auto
 
         st.markdown("---")
 
@@ -7052,15 +7114,12 @@ def render_tab_tablero():
             st.warning("⚠️ Cargá el ANR en la Tab **📁 Archivos** para calcular el tablero.")
             return
 
-        # ── Cargar y parsear ANR ────────────────────────────────────────────────
-        # Estrategia: usar anr_df (ya parseado) si está disponible, sino parsear tc_anr
+        # ── PARSEAR ANR ─────────────────────────────────────────────────────────
         try:
             if anr_raw is not None:
                 anr_w = anr_raw.copy()
-                # Si la primera fila es headers reales, está OK; si no, re-leer con header=1
                 first_col = str(anr_w.columns[0]).upper()
                 if "UNNAMED" in first_col or first_col.startswith("0"):
-                    # tiene header corrido — usar fila 1 como header
                     anr_w.columns = anr_w.iloc[0].astype(str)
                     anr_w = anr_w.iloc[1:].reset_index(drop=True)
             else:
@@ -7077,7 +7136,6 @@ def render_tab_tablero():
             st.error(f"Error leyendo ANR: {e}")
             return
 
-        # ── Helper columnas ─────────────────────────────────────────────────────
         def _get_col(df, *candidates):
             cols_up = [str(c).upper().strip() for c in df.columns]
             for c in candidates:
@@ -7092,16 +7150,14 @@ def render_tab_tablero():
         col_peso     = _get_col(anr_w, "PESO KG", "AZ")
         col_hl       = _get_col(anr_w, "HL", "BB")
         col_rechazo  = _get_col(anr_w, "BULTOS RECHAZADOS", "L")
-        # Para cruce DDM: SKU (col H) y Bultos (col K) del ANR
-        col_sku_anr    = _get_col(anr_w, "ARTÍCULO", "ARTICULO", "SKU", "CÓDIGO", "CODIGO")
-        col_bultos_anr = _get_col(anr_w, "BULTOS", "K")
-        # "DESCRIPCIÓN TRANSPORTE" tiene el apellido del chofer (ej: "ARANDA" para cam 115)
+        col_sku_anr  = _get_col(anr_w, "ARTÍCULO", "ARTICULO", "SKU", "CÓDIGO", "CODIGO")
+        col_blt_anr  = _get_col(anr_w, "BULTOS", "K")
         col_chofer_d = _get_col(anr_w, "DESCRIPCIÓN TRANSPORTE", "DESCRIPCION TRANSPORTE",
                                 "DESCRIPCIÓN CHOFER", "AN", "DESCRIPCION CHOFER")
         col_cliente  = _get_col(anr_w, "CLIENTE", "W")
 
         if col_camion is None or col_fecha_a is None:
-            st.error(f"No se encontraron columnas TRANSPORTE/FECHA en el ANR. Columnas detectadas: {list(anr_w.columns[:10])}")
+            st.error(f"No se encontraron columnas TRANSPORTE/FECHA en el ANR. Cols: {list(anr_w.columns[:10])}")
             return
 
         anr_w[col_fecha_a] = pd.to_datetime(anr_w[col_fecha_a], errors="coerce")
@@ -7110,33 +7166,24 @@ def render_tab_tablero():
         if df_dia.empty:
             fechas_disp = sorted(anr_w[col_fecha_a].dropna().dt.date.unique())
             if fechas_disp:
-                # Auto-seleccionar la última fecha disponible en el ANR
                 ultima_fecha = fechas_disp[-1]
                 df_dia = anr_w[anr_w[col_fecha_a].dt.date == ultima_fecha].copy()
                 fecha_dia = ultima_fecha
-                st.info(
-                    f"ℹ️ Fecha seleccionada sin datos. "
-                    f"Cargando automáticamente la última fecha disponible: "
-                    f"**{ultima_fecha.strftime('%d/%m/%Y')}**. "
-                    f"(Disponibles: {', '.join(str(f) for f in fechas_disp[-5:])})"
-                )
+                st.info(f"ℹ️ Fecha sin datos. Cargando última disponible: **{ultima_fecha.strftime('%d/%m/%Y')}**")
             if df_dia.empty:
                 st.warning("No hay datos en el ANR para ninguna fecha.")
                 return
 
-        # ── DDM BXP/HL/Peso (cruce por SKU) ───────────────────────────────────
-        # Columnas DDM relevantes (hojas Frescura):
-        # col A/ARTÍCULO=SKU, col F o G=BXP, col P=VALOR HL, col Q=PESO por bulto
+        # ── DDM: HL y PESO por SKU ──────────────────────────────────────────────
         sku_bxp = {}; sku_hl_u = {}; sku_peso_u = {}
+        _ddm_disponible = False
         if ddm is not None:
             try:
                 ddm_n = ddm.copy()
                 ddm_n.columns = [str(c).upper().strip() for c in ddm_n.columns]
                 cod_c = _get_col(ddm_n, "CÓDIGO", "CODIGO", "ARTÍCULO", "ARTICULO", "COD") or ddm_n.columns[0]
                 bxp_c = _get_col(ddm_n, "BULTOS X PALLET", "BXP", "AT")
-                # VALOR HL: col P (idx 15) — HL por bulto
                 val_c = _get_col(ddm_n, "VALOR HL", "VALOR", "HL/BULTO", "AE")
-                # PESO: col Q (idx 16) — kg por bulto
                 pes_c = _get_col(ddm_n, "PESO KG", "KG/BULTO", "PESO", "AF")
                 for _, r in ddm_n.iterrows():
                     try:
@@ -7149,11 +7196,11 @@ def render_tab_tablero():
                             sku_peso_u[sid] = float(r[pes_c])
                     except Exception:
                         pass
+                _ddm_disponible = bool(sku_hl_u or sku_peso_u)
             except Exception:
                 pass
 
-        # ── Métricas por camión ─────────────────────────────────────────────────
-        # Pedidos = clientes únicos via AY=1
+        # ── MÉTRICAS POR CAMIÓN ─────────────────────────────────────────────────
         if col_clientes is not None:
             df_dia[col_clientes] = pd.to_numeric(df_dia[col_clientes], errors="coerce").fillna(0)
             pedidos_por_cam = df_dia[df_dia[col_clientes] == 1].groupby(col_camion).size()
@@ -7162,37 +7209,30 @@ def render_tab_tablero():
         else:
             pedidos_por_cam = df_dia.groupby(col_camion).size()
 
-        up_por_cam      = df_dia.groupby(col_camion)[col_up].sum()       if col_up      else pd.Series(dtype=float)
-        rechazo_por_cam = df_dia.groupby(col_camion)[col_rechazo].sum()  if col_rechazo else pd.Series(dtype=float)
+        up_por_cam      = df_dia.groupby(col_camion)[col_up].sum()      if col_up      else pd.Series(dtype=float)
+        rechazo_por_cam = df_dia.groupby(col_camion)[col_rechazo].sum() if col_rechazo else pd.Series(dtype=float)
 
-        # ── HL y PESO: cruce DDM × bultos ANR ─────────────────────────────────
-        # Para cada línea del ANR: HL = sku_hl_u[sku] × bultos_linea
-        #                          Peso = sku_peso_u[sku] × bultos_linea
+        # HL y Peso via cruce DDM × bultos ANR
         hl_por_cam   = pd.Series(dtype=float)
         peso_por_cam = pd.Series(dtype=float)
-        if col_sku_anr is not None and col_bultos_anr is not None and (sku_hl_u or sku_peso_u):
-            _df_ddm_calc = df_dia[[col_camion, col_sku_anr, col_bultos_anr]].copy()
-            _df_ddm_calc.columns = ["_cam", "_sku", "_blt"]
-            _df_ddm_calc["_sku"] = pd.to_numeric(_df_ddm_calc["_sku"], errors="coerce")
-            _df_ddm_calc["_blt"] = pd.to_numeric(_df_ddm_calc["_blt"], errors="coerce").fillna(0)
-            _df_ddm_calc = _df_ddm_calc.dropna(subset=["_cam", "_sku"])
+        if col_sku_anr and col_blt_anr and _ddm_disponible:
+            _dc = df_dia[[col_camion, col_sku_anr, col_blt_anr]].copy()
+            _dc.columns = ["_cam", "_sku", "_blt"]
+            _dc["_sku"] = pd.to_numeric(_dc["_sku"], errors="coerce")
+            _dc["_blt"] = pd.to_numeric(_dc["_blt"], errors="coerce").fillna(0)
+            _dc = _dc.dropna(subset=["_cam", "_sku"])
             if sku_hl_u:
-                _df_ddm_calc["_hl_u"]  = _df_ddm_calc["_sku"].map(sku_hl_u).fillna(0)
-                _df_ddm_calc["_hl"]    = _df_ddm_calc["_hl_u"] * _df_ddm_calc["_blt"]
-                hl_por_cam = _df_ddm_calc.groupby("_cam")["_hl"].sum()
+                _dc["_hl"] = _dc["_sku"].map(sku_hl_u).fillna(0) * _dc["_blt"]
+                hl_por_cam = _dc.groupby("_cam")["_hl"].sum()
             if sku_peso_u:
-                _df_ddm_calc["_kg_u"]  = _df_ddm_calc["_sku"].map(sku_peso_u).fillna(0)
-                _df_ddm_calc["_kg"]    = _df_ddm_calc["_kg_u"] * _df_ddm_calc["_blt"]
-                peso_por_cam = _df_ddm_calc.groupby("_cam")["_kg"].sum()
-        # Fallback: si DDM no disponible, usar columnas ANR directas
+                _dc["_kg"] = _dc["_sku"].map(sku_peso_u).fillna(0) * _dc["_blt"]
+                peso_por_cam = _dc.groupby("_cam")["_kg"].sum()
         if hl_por_cam.empty and col_hl is not None:
             hl_por_cam   = df_dia.groupby(col_camion)[col_hl].sum()
         if peso_por_cam.empty and col_peso is not None:
             peso_por_cam = df_dia.groupby(col_camion)[col_peso].sum()
 
-        _ddm_disponible = bool(sku_hl_u or sku_peso_u)
-
-        # ── Ventas Especiales ───────────────────────────────────────────────────
+        # Ventas Especiales → añadir a series
         ve_clean = ve_edited.dropna(subset=["camion","sku","bultos"]) if not ve_edited.empty else pd.DataFrame()
         if not ve_clean.empty:
             for _, r in ve_clean.iterrows():
@@ -7200,220 +7240,180 @@ def render_tab_tablero():
                     cam = int(r["camion"]); sku = int(r["sku"]); blt = float(r["bultos"])
                     bxp = sku_bxp.get(sku, 50)
                     up_por_cam[cam]  = up_por_cam.get(cam, 0) + blt / bxp
-                    if sku in sku_peso_u:  peso_por_cam[cam] = peso_por_cam.get(cam, 0) + sku_peso_u[sku]*blt
-                    if sku in sku_hl_u:    hl_por_cam[cam]   = hl_por_cam.get(cam, 0) + sku_hl_u[sku]*blt
+                    if sku in sku_hl_u:   hl_por_cam[cam]   = hl_por_cam.get(cam, 0)   + sku_hl_u[sku]*blt
+                    if sku in sku_peso_u: peso_por_cam[cam] = peso_por_cam.get(cam, 0) + sku_peso_u[sku]*blt
                 except Exception:
                     pass
 
-        # ── Totales ─────────────────────────────────────────────────────────────
-        # Lista de camiones a excluir del informe (session_state)
-        _todos_cams = sorted(
-            [cam for cam in set(list(pedidos_por_cam.index) + list(cam_patente.keys()))
-             if int(pedidos_por_cam.get(cam, 0)) > 0]
-        )
+        # ── EXCLUSIÓN DE CAMIONES ──────────────────────────────────────────────
+        _todos_cams = sorted([c for c in set(list(pedidos_por_cam.index) + list(cam_patente.keys()))
+                              if int(pedidos_por_cam.get(c, 0)) > 0])
         if "tr_excluidos" not in ss:
             ss["tr_excluidos"] = []
-        # Limpiar excluidos que ya no están activos
         ss["tr_excluidos"] = [c for c in ss["tr_excluidos"] if c in _todos_cams]
 
-        camiones_en_reparto = int((pedidos_por_cam > 0).sum()) if not pedidos_por_cam.empty else 0
-        total_pedidos       = int(pedidos_por_cam.sum()) if not pedidos_por_cam.empty else 0
-        total_up            = float(up_por_cam.sum()) if not up_por_cam.empty else 0.0
-        total_peso_kg       = float(peso_por_cam.sum()) if not peso_por_cam.empty else 0.0
-        total_hl            = float(hl_por_cam.sum()) if not hl_por_cam.empty else 0.0
-        total_rechazos_up   = float(rechazo_por_cam.sum()) if not rechazo_por_cam.empty else 0.0
-        paletas_total       = total_up / 50
-        prom_paletas        = paletas_total / camiones_en_reparto if camiones_en_reparto > 0 else 0.0
-        drop_size           = total_up / total_pedidos if total_pedidos > 0 else 0.0
-        conversion_eq       = total_up * 2.4
-        eficiencia          = total_pedidos / visitas_teoricas if visitas_teoricas > 0 else 0.0
-        util_vehiculos      = camiones_en_reparto / total_camiones_flota if total_camiones_flota > 0 else 0.0
+        # ── TOTALES BASE ────────────────────────────────────────────────────────
+        def _calc_totales(excl):
+            _mask = [c for c in _todos_cams if c not in excl]
+            _ped  = pedidos_por_cam[pedidos_por_cam.index.isin(_mask)] if not pedidos_por_cam.empty else pd.Series(dtype=float)
+            _up   = up_por_cam[up_por_cam.index.isin(_mask)]     if not up_por_cam.empty     else pd.Series(dtype=float)
+            _hl_s = hl_por_cam[hl_por_cam.index.isin(_mask)]     if not hl_por_cam.empty     else pd.Series(dtype=float)
+            _kg   = peso_por_cam[peso_por_cam.index.isin(_mask)] if not peso_por_cam.empty   else pd.Series(dtype=float)
+            _rec  = rechazo_por_cam[rechazo_por_cam.index.isin(_mask)] if not rechazo_por_cam.empty else pd.Series(dtype=float)
+            c_rep  = int((_ped > 0).sum())
+            t_pdv  = int(_ped.sum())
+            t_up   = float(_up.sum())
+            t_hl   = float(_hl_s.sum())
+            t_kg   = float(_kg.sum())
+            t_rec  = float(_rec.sum())
+            t_pal  = t_up / 50
+            _denom = c_rep + segundas_vueltas
+            t_ocup = (t_up - t_rec) / _denom if _denom > 0 else 0.0
+            t_fzpct = fuera_zona_real / t_pdv if t_pdv > 0 else 0.0
+            t_efic  = t_pdv / visitas_teoricas if visitas_teoricas > 0 else 0.0
+            t_util  = c_rep / total_camiones_flota if total_camiones_flota > 0 else 0.0
+            t_drop  = t_up / t_pdv if t_pdv > 0 else 0.0
+            t_ppal  = t_pal / c_rep if c_rep > 0 else 0.0
+            return dict(c_rep=c_rep, t_pdv=t_pdv, t_up=t_up, t_hl=t_hl, t_kg=t_kg,
+                        t_rec=t_rec, t_pal=t_pal, t_ocup=t_ocup, t_fzpct=t_fzpct,
+                        t_efic=t_efic, t_util=t_util, t_drop=t_drop, t_ppal=t_ppal)
 
-        # ── FÓRMULA CORRECTA: Ocupación bodega ─────────────────────────────────
-        # Excel: (F81 + F196 - F165) / (F19 + F20)
-        # = (BultosUP + BultosUP_pendientes - Rechazos_UP) / (camiones_reparto + segundas_vueltas)
-        denominador_ocup = camiones_en_reparto + segundas_vueltas
-        ocup_bodega = (total_up - total_rechazos_up) / denominador_ocup if denominador_ocup > 0 else 0.0
+        tv = _calc_totales(set(ss["tr_excluidos"]))
+        camiones_en_reparto = tv["c_rep"]; total_pedidos = tv["t_pdv"]
+        total_up = tv["t_up"]; total_hl = tv["t_hl"]; total_peso_kg = tv["t_kg"]
+        total_rechazos_up = tv["t_rec"]; paletas_total = tv["t_pal"]
+        ocup_bodega = tv["t_ocup"]; fuera_zona_pct = tv["t_fzpct"]
+        eficiencia = tv["t_efic"]; util_vehiculos = tv["t_util"]
+        drop_size = tv["t_drop"]; prom_paletas = tv["t_ppal"]
+        conversion_eq = total_up * 2.4
 
-        # ── FÓRMULA CORRECTA: Fuera de zona % ──────────────────────────────────
-        # Excel: cantidad_PDV_fuera / total_pedidos_ruteados
-        fuera_zona_pct = fuera_zona_real / total_pedidos if total_pedidos > 0 else 0.0
-
-        # Tiempos
         sla_t       = _tr_parse_time_input(sla_str)
         ruteo_tgt_t = _tr_parse_time_input(ruteo_str)
         hora_real_t = _tr_parse_time_input(hora_real_str)
         ruteo_rlt   = _tr_parse_time_input(ruteo_real_str)
-
         sla_min     = _tr_time_to_min(sla_t)
         ruteo_tgt_m = _tr_time_to_min(ruteo_tgt_t)
         hora_rlt_m  = _tr_time_to_min(hora_real_t) if hora_real_t else None
         ruteo_rlt_m = _tr_time_to_min(ruteo_rlt)   if ruteo_rlt  else None
-
         sla_ok   = (hora_rlt_m <= sla_min) if hora_rlt_m is not None else None
         ruteo_ok = (ruteo_rlt_m <= ruteo_tgt_m) if ruteo_rlt_m is not None else None
         ocup_ok  = ocup_bodega >= ocup_target
         fz_ok    = fuera_zona_pct <= fz_target
         util_ok  = util_vehiculos >= _TR_TARGET_UTIL_VEH
         efic_ok  = eficiencia >= _TR_TARGET_EFICIENCIA
-
         kpi_vals = [v for v in [sla_ok, ruteo_ok, ocup_ok, fz_ok, util_ok] if v is not None]
         prod_ruteo = sum(kpi_vals) / max(len(kpi_vals), 1)
 
-
-        # ── DISPLAY PROFESIONAL ────────────────────────────────────────────────
+        # ══ DISPLAY ═══════════════════════════════════════════════════════════
         _sabado_tag = "&nbsp;·&nbsp;🗓 Sábado" if es_sabado else ""
-        _prod_color = "#00C853" if prod_ruteo >= 0.7 else "#FF4B4B"
         _hdr_html = (
             '<div style="background:linear-gradient(90deg,#1F3864 0%,#2e5fa3 100%);'
-            'padding:12px 20px;border-radius:8px;margin:8px 0 16px 0;'
-            'color:white;display:flex;align-items:center;gap:12px;">'
-            f'<div style="font-size:20px;font-weight:700;">📊 Tablero — '
+            'padding:14px 22px;border-radius:10px;margin:8px 0 18px 0;'
+            'color:white;display:flex;align-items:center;gap:14px;">'
+            f'<div style="font-size:22px;font-weight:800;letter-spacing:0.5px;">📊 Tablero — '
             f'{fecha_dia.strftime("%A %d/%m/%Y").capitalize()}{_sabado_tag}</div>'
-            f'<div style="margin-left:auto;font-size:14px;font-weight:600;'
-            f'background:{_prod_color};padding:4px 10px;border-radius:20px;">'
+            f'<div style="margin-left:auto;font-size:15px;font-weight:700;'
+            f'background:{"#00C853" if prod_ruteo >= 0.7 else "#FF4B4B"};'
+            f'padding:5px 14px;border-radius:20px;">'
             f'Prod. Ruteo: {prod_ruteo:.0%}</div>'
             '</div>'
         )
         st.markdown(_hdr_html, unsafe_allow_html=True)
 
-        # ── Fila métricas principales ───────────────────────────────────────────
-        m1,m2,m3,m4,m5,m6,m7 = st.columns(7)
-        m1.metric("🚚 Camiones", f"{camiones_en_reparto}/{total_camiones_flota}",
-                  help="En reparto / Flota total")
-        m2.metric("📦 Pedidos", total_pedidos,
-                  delta=f"{eficiencia:.1%} efic." if total_pedidos > 0 else None)
-        m3.metric("🏋 Bultos UP", f"{total_up:.1f}")
-        m4.metric("📐 Paletas", f"{paletas_total:.2f}",
-                  delta=f"{prom_paletas:.2f} x cam")
-        m5.metric("💧 HL", f"{total_hl:.2f}" if total_hl > 0 else "—")
-        m6.metric("⚖️ Peso (kg)", f"{total_peso_kg:,.0f}")
-        m7.metric("📈 Prod. Ruteo", f"{prod_ruteo:.0%}",
-                  delta_color="normal" if prod_ruteo >= 0.7 else "inverse")
-
-        # ── KPIs cards con color ────────────────────────────────────────────────
+        # KPI cards
         def _kpi_html(icon, label, real, target, ok):
-            if ok is True:
-                bg, badge, txt = "#d4edda", "✓ OK", "#155724"
-            elif ok is False:
-                bg, badge, txt = "#f8d7da", "✗ NO", "#721c24"
-            else:
-                bg, badge, txt = "#fff3cd", "– S/D", "#856404"
+            if ok is True:   bg, badge, txt = "#d4edda", "✓ OK", "#155724"
+            elif ok is False: bg, badge, txt = "#f8d7da", "✗ NO", "#721c24"
+            else:             bg, badge, txt = "#fff3cd", "– S/D", "#856404"
             return f"""
-            <div style="background:{bg};border-radius:8px;padding:10px 14px;margin:2px;
-                        min-height:70px;display:flex;flex-direction:column;justify-content:space-between;">
-                <div style="font-size:11px;color:{txt};font-weight:600;">{icon} {label}</div>
-                <div style="font-size:16px;font-weight:700;color:{txt};">{real}</div>
-                <div style="font-size:10px;color:{txt};opacity:0.8;">
-                    Target: {target} &nbsp;<span style="font-weight:700;">{badge}</span>
+            <div style="background:{bg};border-radius:10px;padding:12px 16px;margin:2px;
+                        min-height:78px;display:flex;flex-direction:column;justify-content:space-between;
+                        border:1px solid {'#c3e6cb' if ok is True else ('#f5c6cb' if ok is False else '#ffeeba')}">
+                <div style="font-size:12px;color:{txt};font-weight:700;">{icon} {label}</div>
+                <div style="font-size:18px;font-weight:800;color:{txt};">{real}</div>
+                <div style="font-size:11px;color:{txt};opacity:0.85;">
+                    Target: {target} &nbsp;<span style="font-weight:800;">{badge}</span>
                 </div>
             </div>"""
 
         k_cols = st.columns(6)
         kpi_cards = [
-            ("🕐", "SLA Entrega",    hora_real_str or "Sin dato",   sla_str,                              sla_ok),
-            ("⏱️", "T. Ruteo",       ruteo_real_str or "Sin dato",  ruteo_str,                             ruteo_ok),
-            ("🏠", "Ocup. Bodega",   f"{ocup_bodega:.1f} UP",       f"≥{ocup_target} UP",                  ocup_ok),
-            ("📍", "Fuera Zona",     f"{fuera_zona_real} ({fuera_zona_pct:.1%})", f"≤{fz_target:.0%}",  fz_ok),
-            ("🚗", "Util. Vehículos",f"{util_vehiculos:.0%}",       f"≥{_TR_TARGET_UTIL_VEH:.0%}",        util_ok),
-            ("📊", "Eficiencia",     f"{eficiencia:.1%}",           f"≥{_TR_TARGET_EFICIENCIA:.0%}",      efic_ok),
+            ("🕐", "SLA Entrega",     hora_real_str or "Sin dato",              sla_str,                             sla_ok),
+            ("⏱️", "T. Ruteo",        ruteo_real_str or "Sin dato",             ruteo_str,                            ruteo_ok),
+            ("🏠", "Ocup. Bodega",    f"{ocup_bodega:.1f} UP",                  f"≥{ocup_target} UP",                 ocup_ok),
+            ("📍", "Fuera Zona",      f"{fuera_zona_real} ({fuera_zona_pct:.1%})", f"≤{fz_target:.0%}",             fz_ok),
+            ("🚗", "Util. Vehículos", f"{util_vehiculos:.0%}",                  f"≥{_TR_TARGET_UTIL_VEH:.0%}",       util_ok),
+            ("📊", "Eficiencia",      f"{eficiencia:.1%}",                      f"≥{_TR_TARGET_EFICIENCIA:.0%}",     efic_ok),
         ]
         for col, (icon, label, real, target, ok) in zip(k_cols, kpi_cards):
             col.markdown(_kpi_html(icon, label, real, target, ok), unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # ── Indicadores secundarios ─────────────────────────────────────────────
-        ia1,ia2,ia3,ia4,ia5 = st.columns(5)
-        ia1.metric("Drop Size (UP/PDV)", f"{drop_size:.2f}")
-        ia2.metric("Prom. Paletas/Cam", f"{prom_paletas:.2f}")
-        ia3.metric("Conversión Eq. (kg)", f"{conversion_eq:,.0f}")
-        ia4.metric("Ocup. Bodega UP", f"{ocup_bodega:.1f}",
-                   help="(Bultos UP − Rechazos) / (Camiones + 2das vueltas)")
-        ia5.metric("Camiones en reparto", f"{camiones_en_reparto}/{total_camiones_flota}",
-                   delta=f"Util: {util_vehiculos:.0%}")
+        # Métricas secundarias
+        _ms = st.columns(6)
+        _ms[0].metric("🚚 Camiones",        f"{camiones_en_reparto}/{total_camiones_flota}")
+        _ms[1].metric("📦 PDV",             total_pedidos)
+        _ms[2].metric("🏋 Bultos UP",       f"{total_up:.1f}")
+        _ms[3].metric("📐 Paletas",         f"{paletas_total:.2f}", f"{prom_paletas:.2f}/cam")
+        _ms[4].metric("💧 HL",              f"{total_hl:.2f}" if total_hl > 0 else "—")
+        _ms[5].metric("⚖️ Peso (kg)",       f"{total_peso_kg:,.0f}")
+
+        _ms2 = st.columns(3)
+        _ms2[0].metric("📈 Drop Size",       f"{drop_size:.2f}")
+        _ms2[1].metric("🔄 Conversión (kg)", f"{conversion_eq:,.0f}")
+        _ms2[2].metric("📈 Prod. Ruteo",     f"{prod_ruteo:.0%}")
 
         if total_rechazos_up > 0:
             st.warning(f"⚠️ Rechazos del día: **{total_rechazos_up:.1f}** bultos UP")
         if causa_demora:
-            st.info(f"📌 Causa de demora registrada: **{causa_demora}**")
+            st.info(f"📌 Causa de demora: **{causa_demora}**")
+        if not _ddm_disponible:
+            st.caption("⚠️ Frescura no cargada — HL/Peso desde ANR directo (menos preciso). Cargá Frescura 3.0 para valores exactos.")
 
-        # ── Tabla detalle por camión ────────────────────────────────────────────
+        # ── TABLA DETALLE POR CAMIÓN ───────────────────────────────────────────
         st.markdown("---")
         st.markdown("#### 🚛 Detalle por Camión")
 
-        # ── UI: Eliminar camiones del informe ──────────────────────────────────
-        _ec1, _ec2 = st.columns([3, 1])
-        with _ec1:
+        # UI exclusión
+        _ue1, _ue2 = st.columns([4, 1])
+        with _ue1:
             _excl_sel = st.multiselect(
-                "🗑️ Excluir camiones del informe (se recalculan KPIs y totales)",
-                options=_todos_cams,
-                default=ss["tr_excluidos"],
-                format_func=lambda c: f"Cam {c}",
-                key="tr_excl_multiselect",
-                help="Los camiones seleccionados se omiten de tabla, KPIs, PDF y Excel. Podés revertir quitándolos de la lista."
-            )
-        with _ec2:
-            if st.button("↩️ Revertir exclusiones", key="tr_revert_excl",
-                         use_container_width=True, help="Restaura todos los camiones"):
+                "🗑️ Excluir camiones del informe (KPIs, tabla, PDF y Excel se recalculan)",
+                options=_todos_cams, default=ss["tr_excluidos"],
+                format_func=lambda c: f"Cam {c}", key="tr_excl_ms")
+        with _ue2:
+            if st.button("↩️ Revertir", key="tr_revert_excl",
+                         use_container_width=True):
                 ss["tr_excluidos"] = []
                 st.rerun()
-
-        # Actualizar lista y recalcular si cambió
         if set(_excl_sel) != set(ss["tr_excluidos"]):
             ss["tr_excluidos"] = list(_excl_sel)
             st.rerun()
 
         _excluidos = set(ss["tr_excluidos"])
-
-        # ── Recalcular totales excluyendo camiones seleccionados ───────────────
         if _excluidos:
-            _cams_activos = [c for c in _todos_cams if c not in _excluidos]
-            _ped_f  = pedidos_por_cam[pedidos_por_cam.index.isin(_cams_activos)]
-            _up_f   = up_por_cam[up_por_cam.index.isin(_cams_activos)]     if not up_por_cam.empty   else pd.Series(dtype=float)
-            _peso_f = peso_por_cam[peso_por_cam.index.isin(_cams_activos)] if not peso_por_cam.empty else pd.Series(dtype=float)
-            _hl_f   = hl_por_cam[hl_por_cam.index.isin(_cams_activos)]     if not hl_por_cam.empty   else pd.Series(dtype=float)
-            _rec_f  = rechazo_por_cam[rechazo_por_cam.index.isin(_cams_activos)] if not rechazo_por_cam.empty else pd.Series(dtype=float)
-            camiones_en_reparto = int((_ped_f > 0).sum())
-            total_pedidos   = int(_ped_f.sum())
-            total_up        = float(_up_f.sum())
-            total_peso_kg   = float(_peso_f.sum())
-            total_hl        = float(_hl_f.sum())
-            total_rechazos_up = float(_rec_f.sum())
-            paletas_total   = total_up / 50
-            prom_paletas    = paletas_total / camiones_en_reparto if camiones_en_reparto > 0 else 0.0
-            drop_size       = total_up / total_pedidos if total_pedidos > 0 else 0.0
-            conversion_eq   = total_up * 2.4
-            eficiencia      = total_pedidos / visitas_teoricas if visitas_teoricas > 0 else 0.0
-            util_vehiculos  = camiones_en_reparto / total_camiones_flota if total_camiones_flota > 0 else 0.0
-            denominador_ocup = camiones_en_reparto + segundas_vueltas
-            ocup_bodega     = (total_up - total_rechazos_up) / denominador_ocup if denominador_ocup > 0 else 0.0
-            fuera_zona_pct  = fuera_zona_real / total_pedidos if total_pedidos > 0 else 0.0
-            ocup_ok  = ocup_bodega >= ocup_target
-            fz_ok    = fuera_zona_pct <= fz_target
-            util_ok  = util_vehiculos >= _TR_TARGET_UTIL_VEH
-            efic_ok  = eficiencia >= _TR_TARGET_EFICIENCIA
-            kpi_vals = [v for v in [sla_ok, ruteo_ok, ocup_ok, fz_ok, util_ok] if v is not None]
-            prod_ruteo = sum(kpi_vals) / max(len(kpi_vals), 1)
-            if _excluidos:
-                st.info(f"ℹ️ **{len(_excluidos)} camión(es) excluido(s)**: {', '.join(str(c) for c in sorted(_excluidos))} — KPIs y totales recalculados.")
+            tv = _calc_totales(_excluidos)
+            camiones_en_reparto = tv["c_rep"]; total_pedidos = tv["t_pdv"]
+            total_up = tv["t_up"]; total_hl = tv["t_hl"]; total_peso_kg = tv["t_kg"]
+            total_rechazos_up = tv["t_rec"]; paletas_total = tv["t_pal"]
+            ocup_bodega = tv["t_ocup"]; fuera_zona_pct = tv["t_fzpct"]
+            eficiencia = tv["t_efic"]; util_vehiculos = tv["t_util"]
+            drop_size = tv["t_drop"]; prom_paletas = tv["t_ppal"]
+            st.info(f"ℹ️ {len(_excluidos)} camión(es) excluido(s): {', '.join(str(c) for c in sorted(_excluidos))}")
 
-        if ddm is None or not _ddm_disponible:
-            st.caption("⚠️ Frescura no cargada — HL y Peso calculados desde ANR directo (menos preciso). Cargá Frescura 3.0 para valores exactos vía DDM.")
-
+        # Construir tabla
         tabla_rows = []
         for cam in sorted(set(list(pedidos_por_cam.index) + list(cam_patente.keys()))):
-            pdv = int(pedidos_por_cam.get(cam, 0))
-            if pdv == 0:
-                continue
-            if cam in _excluidos:
-                continue
-            bup    = float(up_por_cam.get(cam, 0.0))
-            pals   = bup / 50
-            peso_c = float(peso_por_cam.get(cam, 0.0))
-            pate   = str(cam_patente.get(cam, ""))
+            if int(pedidos_por_cam.get(cam, 0)) == 0: continue
+            if cam in _excluidos: continue
+            bup  = float(up_por_cam.get(cam, 0.0))
+            pals = bup / 50
+            hl_c = float(hl_por_cam.get(cam, 0.0))  if not hl_por_cam.empty   else 0.0
+            kg_c = float(peso_por_cam.get(cam, 0.0)) if not peso_por_cam.empty else 0.0
+            rec_c = float(rechazo_por_cam.get(cam, 0.0))
+            pate  = str(cam_patente.get(cam, ""))
             cap_kg = cam_capkg.get(pate, 0) if pate else 0
-            rec_c  = float(rechazo_por_cam.get(cam, 0.0))
 
             chofer = ""
             if col_chofer_d is not None:
@@ -7422,32 +7422,35 @@ def render_tab_tablero():
                     vals = df_dia.loc[mask, col_chofer_d].dropna().unique()
                     if len(vals) > 0:
                         ch = str(vals[0]).strip()
-                        # Formato "000115 - ARANDA" → "ARANDA"  |  "ARANDA" → "ARANDA"
                         if " - " in ch:
                             ch = ch.split(" - ", 1)[-1].strip()
-                        # Capitalizar: "ARANDA" → "Aranda"
                         chofer = ch.title() if ch.upper() == ch else ch
-                        # Ignorar valores sin información real
                         if chofer.upper() in ("SIN CHOFER ASIGNADO", "SIN ASIGNAR", ""):
                             chofer = ""
 
             venc_lic = ""; val_lic = ""
             if not df_lic.empty and chofer:
-                m = df_lic[df_lic["nombre"].str.contains(chofer[:6].upper(), na=False, case=False)]
+                # Match por apellido corto (col D del archivo licencias)
+                chofer_up = chofer.upper().strip()
+                # Intentar match exacto primero, luego parcial con al menos 4 chars
+                m = df_lic[df_lic["nombre"].str.upper() == chofer_up]
+                if m.empty and len(chofer_up) >= 4:
+                    m = df_lic[df_lic["nombre"].str.upper().str.startswith(chofer_up[:6])]
+                if m.empty and len(chofer_up) >= 4:
+                    m = df_lic[df_lic["nombre"].str.upper().str.contains(chofer_up[:5], na=False)]
                 if not m.empty:
                     venc = m.iloc[0]["vencimiento"]
                     if pd.notna(venc):
                         venc_lic = venc.strftime("%d/%m/%Y")
                         val_lic  = "BLOQUEADO" if pd.Timestamp(fecha_dia) >= venc else "OK"
 
-            hl_c = float(hl_por_cam.get(cam, 0.0))
             tabla_rows.append({
-                "N° Cam": cam, "Chofer": chofer, "PDV": pdv,
+                "N° Cam": cam, "Chofer": chofer, "PDV": int(pedidos_por_cam.get(cam, 0)),
                 "Bultos UP": round(bup, 2), "Paletas": round(pals, 2),
                 "Patente": pate,
                 "Cap. Kg": int(cap_kg) if cap_kg else 0,
                 "HL": round(hl_c, 2),
-                "Peso (kg)": round(peso_c, 2),
+                "Peso (kg)": round(kg_c, 2),
                 "Rechazos": round(rec_c, 2),
                 "Venc. Lic.": venc_lic,
                 "Validación": val_lic,
@@ -7456,68 +7459,60 @@ def render_tab_tablero():
         if tabla_rows:
             df_tab = pd.DataFrame(tabla_rows)
 
-            # Fix applymap → use map (pandas ≥ 2.1) with fallback
-            def _style_validacion(val):
+            def _style_val(val):
                 if val == "BLOQUEADO":
                     return "background-color:#ff4b4b;color:white;font-weight:bold"
                 if val == "OK":
                     return "background-color:#00c853;color:white;font-weight:bold"
                 return ""
-
             try:
-                styled = df_tab.style.map(_style_validacion, subset=["Validación"])
+                styled = df_tab.style.map(_style_val, subset=["Validación"])
             except AttributeError:
-                styled = df_tab.style.applymap(_style_validacion, subset=["Validación"])
+                styled = df_tab.style.applymap(_style_val, subset=["Validación"])
 
-            # Column config para mejor presentación
-            st.dataframe(
-                styled,
-                use_container_width=True,
-                hide_index=True,
+            st.dataframe(styled, use_container_width=True, hide_index=True,
                 column_config={
-                    "N° Cam":    st.column_config.NumberColumn("N° Cam", format="%d"),
-                    "PDV":       st.column_config.NumberColumn("PDV", format="%d"),
-                    "Bultos UP": st.column_config.NumberColumn("Bultos UP", format="%.2f"),
-                    "Paletas":   st.column_config.NumberColumn("Paletas", format="%.2f"),
-                    "Cap. Kg":   st.column_config.NumberColumn("Cap. (kg)", format="%d"),
-                    "HL":        st.column_config.NumberColumn("HL", format="%.2f"),
-                    "Peso (kg)": st.column_config.NumberColumn("Peso (kg)", format="%.0f"),
+                    "N° Cam":    st.column_config.NumberColumn("N° Cam",   format="%d"),
+                    "PDV":       st.column_config.NumberColumn("PDV",      format="%d"),
+                    "Bultos UP": st.column_config.NumberColumn("Bultos UP",format="%.2f"),
+                    "Paletas":   st.column_config.NumberColumn("Paletas",  format="%.2f"),
+                    "Cap. Kg":   st.column_config.NumberColumn("Cap.(kg)", format="%d"),
+                    "HL":        st.column_config.NumberColumn("HL",       format="%.2f"),
+                    "Peso (kg)": st.column_config.NumberColumn("Peso(kg)", format="%.0f"),
                     "Rechazos":  st.column_config.NumberColumn("Rechazos", format="%.1f"),
                 },
-                height=min(400, 45 + 35 * len(df_tab)),
-            )
+                height=min(500, 55 + 38 * len(df_tab)))
 
-            # Fila de totales destacada
             _hl_tot = df_tab["HL"].sum() if "HL" in df_tab.columns else 0
             st.markdown(f"""
-            <div style="background:#1F3864;color:white;border-radius:6px;
-                        padding:8px 16px;margin:4px 0;display:flex;gap:20px;
-                        font-size:13px;font-weight:600;">
+            <div style="background:#1F3864;color:white;border-radius:8px;
+                        padding:10px 18px;margin:6px 0;display:flex;gap:22px;
+                        font-size:14px;font-weight:700;">
                 <span>TOTAL</span>
-                <span>🚚 {len(df_tab)} camiones</span>
+                <span>🚚 {len(df_tab)} cams</span>
                 <span>📦 {df_tab['PDV'].sum()} PDV</span>
                 <span>🏋 {df_tab['Bultos UP'].sum():.2f} UP</span>
-                <span>📐 {df_tab['Paletas'].sum():.2f} paletas</span>
+                <span>📐 {df_tab['Paletas'].sum():.2f} pal</span>
                 <span>💧 {_hl_tot:.2f} HL</span>
                 <span>⚖️ {df_tab['Peso (kg)'].sum():,.0f} kg</span>
-                <span>❌ {df_tab['Rechazos'].sum():.1f} rechazos</span>
+                <span>❌ {df_tab['Rechazos'].sum():.1f} rec</span>
             </div>
             """, unsafe_allow_html=True)
         else:
             st.info("No hay camiones activos para la fecha seleccionada.")
             df_tab = pd.DataFrame()
 
-        # ── EXPORTACIONES — siempre visibles ────────────────────────────────────
+        # ══ EXPORTACIONES ═════════════════════════════════════════════════════
         st.markdown("---")
         st.markdown("#### 📤 Exportar")
 
-        _exc1, _exc2, _exc3 = st.columns(3)
+        _ex1, _ex2, _ex3 = st.columns(3)
 
-        # ── Excel 1: Exportación completa del día ──────────────────────────────
-        with _exc1:
+        # ── Excel 1: Exportación completa ─────────────────────────────────────
+        with _ex1:
             st.markdown("**📊 Excel del día** (exportación completa)")
             _buf_xl = io.BytesIO()
-            with pd.ExcelWriter(_buf_xl, engine="openpyxl") as _writer:
+            with pd.ExcelWriter(_buf_xl, engine="openpyxl") as _wr:
                 pd.DataFrame({
                     "KPI": ["Fecha","Camiones reparto","Total PDV","Bultos UP","Paletas",
                              "HL","Peso (kg)","Drop Size","Eficiencia","Util. Vehículos",
@@ -7531,231 +7526,138 @@ def render_tab_tablero():
                                round(ocup_bodega,2), round(prod_ruteo,4),
                                causa_demora, segundas_vueltas],
                     "Target": ["—","—","—","—","—","—","—","—",
-                                f"≥{_TR_TARGET_EFICIENCIA:.0%}",
-                                f"≥{_TR_TARGET_UTIL_VEH:.0%}",
-                                "—", f"≤{fz_target:.0%}",
-                                f"≥{ocup_target}", "≥70%","—","—"],
+                                f"≥{_TR_TARGET_EFICIENCIA:.0%}", f"≥{_TR_TARGET_UTIL_VEH:.0%}",
+                                "—", f"≤{fz_target:.0%}", f"≥{ocup_target}", "≥70%","—","—"],
                     "Status": ["—","—","—","—","—","—","—","—",
-                                "OK" if efic_ok else "NO",
-                                "OK" if util_ok else "NO",
+                                "OK" if efic_ok else "NO", "OK" if util_ok else "NO",
                                 "—", "OK" if fz_ok else "NO",
-                                "OK" if ocup_ok else "NO",
-                                f"{prod_ruteo:.0%}","—","—"],
-                }).to_excel(_writer, sheet_name="KPIs", index=False)
+                                "OK" if ocup_ok else "NO", f"{prod_ruteo:.0%}","—","—"],
+                }).to_excel(_wr, sheet_name="KPIs", index=False)
                 if tabla_rows:
-                    # Hoja Detalle Camiones — todos los campos incluyendo HL
-                    pd.DataFrame(tabla_rows).to_excel(_writer, sheet_name="Detalle Camiones", index=False)
-                    # Hoja Resumen por camión (compacto para análisis)
-                    _df_res = pd.DataFrame(tabla_rows)[["N° Cam","Chofer","PDV","Bultos UP","Paletas","HL","Peso (kg)","Rechazos"]]
-                    _df_res.to_excel(_writer, sheet_name="Resumen Camiones", index=False)
-                _ve_clean = ve_edited.dropna(subset=["camion","sku","bultos"]) if not ve_edited.empty else pd.DataFrame()
-                if not _ve_clean.empty:
-                    _ve_clean.to_excel(_writer, sheet_name="Ventas Especiales", index=False)
+                    pd.DataFrame(tabla_rows).to_excel(_wr, sheet_name="Detalle Camiones", index=False)
+                    pd.DataFrame(tabla_rows)[["N° Cam","Chofer","PDV","Bultos UP","Paletas","HL","Peso (kg)","Rechazos"]].to_excel(
+                        _wr, sheet_name="Resumen Camiones", index=False)
+                _ve_cl = ve_edited.dropna(subset=["camion","sku","bultos"]) if not ve_edited.empty else pd.DataFrame()
+                if not _ve_cl.empty:
+                    _ve_cl.to_excel(_wr, sheet_name="Ventas Especiales", index=False)
                 if _excluidos:
-                    pd.DataFrame({"Camiones excluidos": sorted(_excluidos)}).to_excel(
-                        _writer, sheet_name="Excluidos", index=False)
+                    pd.DataFrame({"Cam excluidos": sorted(_excluidos)}).to_excel(_wr, sheet_name="Excluidos", index=False)
             _buf_xl.seek(0)
-            st.download_button(
-                label="⬇️ Descargar Excel completo",
-                data=_buf_xl.getvalue(),
+            st.download_button("⬇️ Descargar Excel completo", data=_buf_xl.getvalue(),
                 file_name=f"{fecha_dia.strftime('%d%m%Y')}_tablero_ruteador_bkcc.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="tr_dl_xl",
-                use_container_width=True,
-            )
+                key="tr_dl_xl", use_container_width=True)
 
-        # ── Excel 2: Réplica del PDF con formato/colores ───────────────────────
-        with _exc2:
-            st.markdown("**📋 Excel réplica PDF** (diseño formateado)")
+        # ── Excel 2: Réplica PDF con formato ──────────────────────────────────
+        with _ex2:
+            st.markdown("**📋 Excel réplica PDF**")
             if st.button("🖨️ Generar Excel PDF", key="tr_btn_xl2", use_container_width=True):
                 try:
                     from openpyxl import Workbook
-                    from openpyxl.styles import (PatternFill, Font, Alignment,
-                                                  Border, Side, numbers)
+                    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
                     from openpyxl.utils import get_column_letter
 
-                    _wb2 = Workbook()
-                    _ws2 = _wb2.active
-                    _ws2.title = "Tablero Ruteador"
-
-                    # Colores
-                    _NAVY_XL  = "1F3864"
-                    _GOLD_XL  = "C9A84C"
-                    _GREEN_XL = "00C853"
-                    _RED_XL   = "FF4B4B"
-                    _LGREY_XL = "F5F5F5"
-                    _BLUE2_XL = "2e5fa3"
-                    _HDR_TXT  = "FFFFFF"
-
-                    def _fill(hex_c):
-                        return PatternFill("solid", fgColor=hex_c)
-                    def _font(bold=False, color="000000", size=10):
-                        return Font(bold=bold, color=color, size=size, name="Arial")
-                    def _align(h="left", v="center", wrap=False):
-                        return Alignment(horizontal=h, vertical=v, wrap_text=wrap)
-                    def _border_thin():
+                    _wb2 = Workbook(); _ws2 = _wb2.active; _ws2.title = "Tablero Ruteador"
+                    _NX = "1F3864"; _GX = "C9A84C"; _GRX = "00C853"; _RX = "FF4B4B"; _LGX = "F2F2F2"
+                    def _fx(h): return PatternFill("solid", fgColor=h)
+                    def _fo(bold=False, color="000000", sz=10): return Font(bold=bold, color=color, size=sz, name="Arial")
+                    def _al(h="center", v="center", w=False): return Alignment(horizontal=h, vertical=v, wrap_text=w)
+                    def _bd():
                         s = Side(style="thin", color="CCCCCC")
                         return Border(left=s, right=s, top=s, bottom=s)
-
                     row = 1
-                    # ── Header ──────────────────────────────────────────────
-                    _ws2.merge_cells(f"A{row}:K{row}")
-                    _c = _ws2.cell(row, 1,
-                        f"TABLERO RUTEADOR — {fecha_dia.strftime('%A %d/%m/%Y').upper()}   |   "
-                        f"Prod. Ruteo: {prod_ruteo:.0%}   |   "
-                        f"Beccacece Hnos SA · DPO 2.1 · v{APP_VERSION}")
-                    _c.fill = _fill(_NAVY_XL); _c.font = _font(True, _HDR_TXT, 12)
-                    _c.alignment = _align("center")
-                    _ws2.row_dimensions[row].height = 22
+                    # Header
+                    _ws2.merge_cells(f"A{row}:L{row}")
+                    _c = _ws2.cell(row, 1, f"TABLERO RUTEADOR — {fecha_dia.strftime('%A %d/%m/%Y').upper()}   |   Prod. Ruteo: {prod_ruteo:.0%}   |   Beccacece Hnos SA · DPO 2.1 · v{APP_VERSION}")
+                    _c.fill = _fx(_NX); _c.font = _fo(True, "FFFFFF", 13); _c.alignment = _al(); _ws2.row_dimensions[row].height = 24
                     row += 1
-
-                    # ── KPIs ────────────────────────────────────────────────
-                    _kpi_heads = ["SLA Entrega","T. Ruteo","Ocup. Bodega","Fuera Zona","Util. Veh.","Eficiencia"]
-                    _kpi_reals = [hora_real_str or "—", ruteo_real_str or "—",
-                                  f"{ocup_bodega:.1f} UP", f"{fuera_zona_real} ({fuera_zona_pct:.1%})",
-                                  f"{util_vehiculos:.0%}", f"{eficiencia:.1%}"]
-                    _kpi_tgts  = [sla_str, ruteo_str, f"≥{ocup_target}",
-                                  f"≤{fz_target:.0%}", f"≥{_TR_TARGET_UTIL_VEH:.0%}", f"≥{_TR_TARGET_EFICIENCIA:.0%}"]
-                    _kpi_oks   = [sla_ok, ruteo_ok, ocup_ok, fz_ok, util_ok, efic_ok]
-                    _kpi_cols  = [1, 2, 3, 4, 5, 6]
-                    for _ki, (_kh, _kr, _kt, _ko, _kc) in enumerate(zip(_kpi_heads, _kpi_reals, _kpi_tgts, _kpi_oks, _kpi_cols)):
-                        _ck = _ws2.cell(row, _kc, f"{_kh}\n{_kr}\nTarget: {_kt}")
-                        _kfill = _GREEN_XL if _ko is True else (_RED_XL if _ko is False else "FFC107")
-                        _ck.fill = _fill(_kfill)
-                        _ck.font = _font(True, _HDR_TXT if _ko is not None else "000000", 9)
-                        _ck.alignment = _align("center", wrap=True)
-                        _ck.border = _border_thin()
-                    _ws2.row_dimensions[row].height = 42
-                    row += 1
-
-                    # ── Totales globales ─────────────────────────────────────
-                    _tot_labels = ["Camiones","PDV","Bultos UP","Paletas","HL","Peso kg","Drop Size","Rechazos"]
-                    _tot_vals   = [f"{camiones_en_reparto}/{total_camiones_flota}",
-                                   str(total_pedidos), f"{total_up:.1f}", f"{paletas_total:.2f}",
-                                   f"{total_hl:.2f}", f"{total_peso_kg:,.0f}", f"{drop_size:.2f}",
-                                   f"{total_rechazos_up:.1f}"]
-                    for _ti, (_tl, _tv) in enumerate(zip(_tot_labels, _tot_vals)):
-                        _cl = _ws2.cell(row, _ti+1, _tl)
-                        _cl.fill = _fill("E8EAF6"); _cl.font = _font(True, _NAVY_XL, 8)
-                        _cl.alignment = _align("center")
-                        _cv = _ws2.cell(row+1, _ti+1, _tv)
-                        _cv.font = _font(True, size=10); _cv.alignment = _align("center")
-                        _cl.border = _border_thin(); _cv.border = _border_thin()
-                    _ws2.row_dimensions[row].height = 14
-                    _ws2.row_dimensions[row+1].height = 16
-                    row += 2
-
-                    # Spacer
-                    row += 1
-
-                    # ── Tabla detalle camiones ───────────────────────────────
+                    # KPIs
+                    _kh = ["SLA Entrega","T. Ruteo","Ocup. Bodega","Fuera Zona","Util. Veh.","Eficiencia"]
+                    _kr = [hora_real_str or "—", ruteo_real_str or "—", f"{ocup_bodega:.1f} UP",
+                           f"{fuera_zona_real} ({fuera_zona_pct:.1%})", f"{util_vehiculos:.0%}", f"{eficiencia:.1%}"]
+                    _kt = [sla_str, ruteo_str, f"≥{ocup_target}", f"≤{fz_target:.0%}", f"≥{_TR_TARGET_UTIL_VEH:.0%}", f"≥{_TR_TARGET_EFICIENCIA:.0%}"]
+                    _ko = [sla_ok, ruteo_ok, ocup_ok, fz_ok, util_ok, efic_ok]
+                    for i, (kh, kr, kt, ko) in enumerate(zip(_kh, _kr, _kt, _ko)):
+                        _cell = _ws2.cell(row, i+1, f"{kh}\n{kr}\nTarget: {kt}")
+                        _kfill = _GRX if ko is True else (_RX if ko is False else "FFC107")
+                        _cell.fill = _fx(_kfill); _cell.font = _fo(True, "FFFFFF" if ko is not None else "000000", 10)
+                        _cell.alignment = _al(w=True); _cell.border = _bd()
+                    _ws2.row_dimensions[row].height = 46; row += 1
+                    # Totales globales
+                    _tlbls = ["Camiones","PDV","Bultos UP","Paletas","HL","Peso kg","Drop Size","Rechazos"]
+                    _tvals = [f"{camiones_en_reparto}/{total_camiones_flota}", str(total_pedidos),
+                              f"{total_up:.1f}", f"{paletas_total:.2f}", f"{total_hl:.2f}",
+                              f"{total_peso_kg:,.0f}", f"{drop_size:.2f}", f"{total_rechazos_up:.1f}"]
+                    for i, (tl, tv2) in enumerate(zip(_tlbls, _tvals)):
+                        _cl = _ws2.cell(row, i+1, tl); _cl.fill = _fx("E8EAF6"); _cl.font = _fo(True, _NX, 9); _cl.alignment = _al(); _cl.border = _bd()
+                        _cv = _ws2.cell(row+1, i+1, tv2); _cv.font = _fo(True, size=11); _cv.alignment = _al(); _cv.border = _bd()
+                    _ws2.row_dimensions[row].height = 15; _ws2.row_dimensions[row+1].height = 18; row += 3
+                    # Tabla camiones
                     if tabla_rows:
-                        _cols_det = ["N°","Chofer","PDV","Bultos UP","Paletas","Patente","Cap. kg","HL","Peso (kg)","Rechazos","Venc. Lic.","Validación"]
-                        for _ci, _ch in enumerate(_cols_det, 1):
-                            _cell = _ws2.cell(row, _ci, _ch)
-                            _cell.fill = _fill(_NAVY_XL); _cell.font = _font(True, _HDR_TXT, 8)
-                            _cell.alignment = _align("center"); _cell.border = _border_thin()
-                        _ws2.row_dimensions[row].height = 14
-                        row += 1
-
-                        for _ri, _r2 in enumerate(tabla_rows):
-                            _row_fill = _fill(_LGREY_XL) if _ri % 2 == 1 else _fill("FFFFFF")
-                            _vals_det = [str(_r2["N° Cam"]), _r2["Chofer"] or "—", _r2["PDV"],
-                                         _r2["Bultos UP"], _r2["Paletas"], _r2["Patente"],
-                                         _r2.get("Cap. Kg","—"), round(_r2.get("HL",0),2),
-                                         round(_r2.get("Peso (kg)",0),0), _r2["Rechazos"],
-                                         _r2["Venc. Lic."] or "—", _r2["Validación"] or "—"]
-                            for _ci2, _vv in enumerate(_vals_det, 1):
-                                _cell2 = _ws2.cell(row, _ci2, _vv)
-                                _cell2.border = _border_thin()
-                                _cell2.alignment = _align("center")
-                                _cell2.font = _font(size=8)
-                                _cell2.fill = _row_fill
-                            # Color columna Validación
-                            _vc = _ws2.cell(row, 12)
-                            if _r2["Validación"] == "BLOQUEADO":
-                                _vc.fill = _fill(_RED_XL); _vc.font = _font(True, _HDR_TXT, 8)
-                            elif _r2["Validación"] == "OK":
-                                _vc.fill = _fill(_GREEN_XL); _vc.font = _font(True, _HDR_TXT, 8)
-                            _ws2.row_dimensions[row].height = 13
-                            row += 1
-
-                        # Fila totales
-                        _tot_row_vals = ["TOTAL","",
-                                         sum(r["PDV"] for r in tabla_rows),
-                                         round(sum(r["Bultos UP"] for r in tabla_rows),1),
-                                         round(sum(r["Paletas"] for r in tabla_rows),2),
-                                         "","","",
-                                         round(sum(r.get("HL",0) for r in tabla_rows),2),
-                                         round(sum(r.get("Peso (kg)",0) for r in tabla_rows),0),
-                                         round(sum(r["Rechazos"] for r in tabla_rows),1),"",""]
-                        # Nota: orden = N°, Chofer, PDV, BUP, Pal, Pat, Cap, HL, Peso, Rec, Venc, Val
-                        _tot_row_vals = ["TOTAL","",
-                                         sum(r["PDV"] for r in tabla_rows),
-                                         round(sum(r["Bultos UP"] for r in tabla_rows),1),
-                                         round(sum(r["Paletas"] for r in tabla_rows),2),
-                                         "","",
-                                         round(sum(r.get("HL",0) for r in tabla_rows),2),
-                                         round(sum(r.get("Peso (kg)",0) for r in tabla_rows),0),
-                                         round(sum(r["Rechazos"] for r in tabla_rows),1),"",""]
-                        for _ci3, _tv2 in enumerate(_tot_row_vals, 1):
-                            _tc = _ws2.cell(row, _ci3, _tv2)
-                            _tc.fill = _fill("E8EAF6"); _tc.font = _font(True, _NAVY_XL, 8)
-                            _tc.alignment = _align("center"); _tc.border = _border_thin()
-                        _ws2.row_dimensions[row].height = 14
-                        row += 1
-
+                        _cols_h = ["N°","Chofer","PDV","Bultos UP","Paletas","Patente","Cap.kg","HL","Peso(kg)","Rechazos","Venc.Lic.","Validación"]
+                        for ci, ch in enumerate(_cols_h, 1):
+                            _c2 = _ws2.cell(row, ci, ch); _c2.fill = _fx(_NX); _c2.font = _fo(True, "FFFFFF", 10); _c2.alignment = _al(); _c2.border = _bd()
+                        _ws2.row_dimensions[row].height = 16; row += 1
+                        for ri, rr in enumerate(tabla_rows):
+                            _rf = _fx(_LGX) if ri % 2 else _fx("FFFFFF")
+                            _vv = [str(rr["N° Cam"]), rr["Chofer"] or "—", rr["PDV"],
+                                   rr["Bultos UP"], rr["Paletas"], rr["Patente"],
+                                   rr.get("Cap. Kg","—"), round(rr.get("HL",0),2),
+                                   round(rr.get("Peso (kg)",0),0), rr["Rechazos"],
+                                   rr["Venc. Lic."] or "—", rr["Validación"] or "—"]
+                            for ci2, vv2 in enumerate(_vv, 1):
+                                _c3 = _ws2.cell(row, ci2, vv2); _c3.fill = _rf; _c3.font = _fo(sz=10); _c3.alignment = _al(); _c3.border = _bd()
+                            if rr["Validación"] == "BLOQUEADO":
+                                _ws2.cell(row, 12).fill = _fx(_RX); _ws2.cell(row, 12).font = _fo(True, "FFFFFF", 10)
+                            elif rr["Validación"] == "OK":
+                                _ws2.cell(row, 12).fill = _fx(_GRX); _ws2.cell(row, 12).font = _fo(True, "FFFFFF", 10)
+                            _ws2.row_dimensions[row].height = 15; row += 1
+                        # Fila total
+                        _totv = ["TOTAL","", sum(r["PDV"] for r in tabla_rows),
+                                 round(sum(r["Bultos UP"] for r in tabla_rows),1),
+                                 round(sum(r["Paletas"] for r in tabla_rows),2),
+                                 "","", round(sum(r.get("HL",0) for r in tabla_rows),2),
+                                 round(sum(r.get("Peso (kg)",0) for r in tabla_rows),0),
+                                 round(sum(r["Rechazos"] for r in tabla_rows),1),"",""]
+                        for ci3, tv3 in enumerate(_totv, 1):
+                            _c4 = _ws2.cell(row, ci3, tv3); _c4.fill = _fx("E8EAF6"); _c4.font = _fo(True, _NX, 10); _c4.alignment = _al(); _c4.border = _bd()
+                        _ws2.row_dimensions[row].height = 16; row += 2
                     # Footer
-                    row += 1
-                    _ws2.merge_cells(f"A{row}:K{row}")
-                    _ft = _ws2.cell(row, 1,
-                        f"Generado: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')} · "
-                        f"Picking Orchestrator v{APP_VERSION} · Beccacece Hnos SA — DPO 2.1")
-                    _ft.font = _font(False, "888888", 7); _ft.alignment = _align("center")
-
-                    # Anchos columna
-                    _col_widths = [6, 14, 5, 9, 7, 8, 8, 7, 9, 8, 10, 11]
-                    for _ci4, _cw in enumerate(_col_widths, 1):
-                        _ws2.column_dimensions[get_column_letter(_ci4)].width = _cw
-
-                    _buf_xl2 = io.BytesIO()
-                    _wb2.save(_buf_xl2)
-                    _buf_xl2.seek(0)
+                    _ws2.merge_cells(f"A{row}:L{row}")
+                    _ws2.cell(row, 1, f"Generado: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')} · Picking Orchestrator v{APP_VERSION} · Beccacece Hnos SA — DPO 2.1").font = _fo(False, "888888", 8)
+                    # Col widths
+                    for ci4, cw in enumerate([6,15,5,10,7,8,8,7,9,8,11,12], 1):
+                        _ws2.column_dimensions[get_column_letter(ci4)].width = cw
+                    _buf_xl2 = io.BytesIO(); _wb2.save(_buf_xl2); _buf_xl2.seek(0)
                     ss["tr_xl2_bytes"] = _buf_xl2.getvalue()
-                    ss["tr_xl2_fname"] = f"{fecha_dia.strftime('%d%m%Y')}_tablero_pdf_replica.xlsx"
+                    ss["tr_xl2_fname"] = f"{fecha_dia.strftime('%d%m%Y')}_tablero_replica.xlsx"
                     st.success("✅ Excel réplica generado")
                 except Exception as _xe2:
                     import traceback
-                    st.error(f"Error Excel réplica: {_xe2}")
-                    with st.expander("Detalle"):
-                        st.code(traceback.format_exc())
-
+                    st.error(f"Error: {_xe2}")
+                    with st.expander("Detalle"): st.code(traceback.format_exc())
             if ss.get("tr_xl2_bytes"):
-                st.download_button(
-                    label="⬇️ Descargar Excel réplica",
-                    data=ss["tr_xl2_bytes"],
+                st.download_button("⬇️ Descargar réplica", data=ss["tr_xl2_bytes"],
                     file_name=ss.get("tr_xl2_fname","tablero_replica.xlsx"),
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="tr_dl_xl2",
-                    use_container_width=True,
-                )
+                    key="tr_dl_xl2", use_container_width=True)
 
-        with _exc3:
+        # ── PDF del día ────────────────────────────────────────────────────────
+        with _ex3:
             st.markdown("**📄 PDF del día**")
             if st.button("🖨️ Generar PDF", key="tr_btn_pdf", use_container_width=True):
                 try:
-                    import base64, math
+                    import base64
                     from reportlab.lib.pagesizes import A4, landscape
                     from reportlab.lib import colors
                     from reportlab.lib.units import mm
                     from reportlab.platypus import (SimpleDocTemplate, Table,
                         TableStyle, Paragraph, Spacer, Image as RLImage)
-                    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-                    from reportlab.graphics.shapes import Drawing, Rect, String
-                    from reportlab.graphics import renderPDF
-                    from reportlab.graphics.charts.barcharts import VerticalBarChart
+                    from reportlab.lib.styles import ParagraphStyle
+                    from reportlab.graphics.shapes import Drawing, Rect, String, Line
 
                     _buf_pdf = io.BytesIO()
+                    _PW, _PH = landscape(A4)
                     _doc = SimpleDocTemplate(_buf_pdf, pagesize=landscape(A4),
                         topMargin=8*mm, bottomMargin=8*mm,
                         leftMargin=10*mm, rightMargin=10*mm)
@@ -7764,255 +7666,240 @@ def render_tab_tablero():
                     _GOLD  = colors.HexColor("#C9A84C")
                     _GREEN = colors.HexColor("#00C853")
                     _RED   = colors.HexColor("#FF4B4B")
-                    _ORANGE = colors.HexColor("#FF8C00")
                     _LGREY = colors.HexColor("#F5F5F5")
                     _BLUE2 = colors.HexColor("#2e5fa3")
-                    _PW, _PH = landscape(A4)  # page width/height
-                    _usable_w = _PW - 20*mm   # usable width
+                    _usable_w = _PW - 20*mm
 
-                    def _p(txt, sz=8, bold=False, color=colors.black):
+                    def _p(txt, sz=10, bold=False, color=colors.black):
                         return Paragraph(txt, ParagraphStyle("_px",
                             fontSize=sz, fontName="Helvetica-Bold" if bold else "Helvetica",
-                            textColor=color, spaceAfter=0, leading=sz+2))
+                            textColor=color, spaceAfter=0, leading=sz+3))
 
                     _story = []
 
-                    # ── Logo ─────────────────────────────────────────────────
+                    # Logo
                     try:
                         _logo_bytes = base64.b64decode(_LOGO_B64)
-                        _logo_buf = io.BytesIO(_logo_bytes)
-                        _logo_img = RLImage(_logo_buf, width=28*mm, height=14*mm)
+                        _logo_img = RLImage(io.BytesIO(_logo_bytes), width=30*mm, height=15*mm)
                     except Exception:
-                        _logo_img = _p("BKCC", 10, True, _GOLD)
+                        _logo_img = _p("BKCC", 11, True, _GOLD)
 
-                    # ── Header ────────────────────────────────────────────────
-                    _prod_color_pdf = _GREEN if prod_ruteo >= 0.7 else _RED
+                    # Header
                     _hdr = Table([[
                         _logo_img,
-                        _p(f"TABLERO RUTEADOR — {fecha_dia.strftime('%A %d/%m/%Y').upper()}", 13, True, colors.white),
-                        _p(f"Beccacece Hnos SA · DPO 2.1 · v{APP_VERSION}", 7, False, colors.HexColor("#BDD5EA")),
-                        _p(f"Prod. Ruteo<br/><b>{prod_ruteo:.0%}</b>", 9, False,
+                        _p(f"TABLERO RUTEADOR — {fecha_dia.strftime('%A %d/%m/%Y').upper()}", 14, True, colors.white),
+                        _p(f"Beccacece Hnos SA · DPO 2.1 · v{APP_VERSION}", 8, False, colors.HexColor("#BDD5EA")),
+                        _p(f"Prod. Ruteo<br/><b>{prod_ruteo:.0%}</b>", 11, False,
                            _GREEN if prod_ruteo >= 0.7 else _RED),
-                    ]], colWidths=[32*mm, "48%", "28%", "14%"])
+                    ]], colWidths=[34*mm, "47%", "27%", "14%"])
                     _hdr.setStyle(TableStyle([
                         ("BACKGROUND",(0,0),(2,0),_NAVY),
                         ("BACKGROUND",(3,0),(3,0),colors.HexColor("#1a1a2e")),
                         ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
                         ("ALIGN",(3,0),(3,0),"CENTER"),
-                        ("LEFTPADDING",(0,0),(-1,-1),6),
-                        ("TOPPADDING",(0,0),(-1,-1),5),
-                        ("BOTTOMPADDING",(0,0),(-1,-1),5),
+                        ("LEFTPADDING",(0,0),(-1,-1),7),
+                        ("TOPPADDING",(0,0),(-1,-1),6),
+                        ("BOTTOMPADDING",(0,0),(-1,-1),6),
                     ]))
-                    _story.append(_hdr)
-                    _story.append(Spacer(1,3*mm))
+                    _story.append(_hdr); _story.append(Spacer(1,4*mm))
 
-                    # ── KPI cards ─────────────────────────────────────────────
+                    # KPI cards
                     def _kpi_cell(label, real, target, ok):
                         _bg = _GREEN if ok is True else (_RED if ok is False else colors.HexColor("#FFC107"))
                         _icon = "✓" if ok is True else ("✗" if ok is False else "–")
                         _tc = colors.white if ok is not None else colors.black
-                        return (_p(f"<b>{label}</b><br/>{_icon} {real}<br/><font size=6>Target: {target}</font>",
-                                   7, color=_tc), _bg)
+                        return (_p(f"<b>{label}</b><br/>{_icon} {real}<br/><font size=8>Target: {target}</font>",
+                                   9, color=_tc), _bg)
 
                     _kpi_data = [
-                        _kpi_cell("SLA Entrega", hora_real_str or "Sin dato", sla_str, sla_ok),
-                        _kpi_cell("T. Ruteo", ruteo_real_str or "Sin dato", ruteo_str, ruteo_ok),
-                        _kpi_cell("Ocup. Bodega", f"{ocup_bodega:.1f} UP", f"≥{ocup_target}", ocup_ok),
-                        _kpi_cell("Fuera Zona", f"{fuera_zona_real} ({fuera_zona_pct:.1%})", f"≤{fz_target:.0%}", fz_ok),
-                        _kpi_cell("Util. Veh.", f"{util_vehiculos:.0%}", f"≥{_TR_TARGET_UTIL_VEH:.0%}", util_ok),
-                        _kpi_cell("Eficiencia", f"{eficiencia:.1%}", f"≥{_TR_TARGET_EFICIENCIA:.0%}", efic_ok),
+                        _kpi_cell("SLA Entrega",     hora_real_str or "Sin dato",              sla_str,                            sla_ok),
+                        _kpi_cell("T. Ruteo",        ruteo_real_str or "Sin dato",             ruteo_str,                           ruteo_ok),
+                        _kpi_cell("Ocup. Bodega",    f"{ocup_bodega:.1f} UP",                  f"≥{ocup_target}",                   ocup_ok),
+                        _kpi_cell("Fuera Zona",      f"{fuera_zona_real} ({fuera_zona_pct:.1%})", f"≤{fz_target:.0%}",             fz_ok),
+                        _kpi_cell("Util. Veh.",      f"{util_vehiculos:.0%}",                  f"≥{_TR_TARGET_UTIL_VEH:.0%}",      util_ok),
+                        _kpi_cell("Eficiencia",      f"{eficiencia:.1%}",                      f"≥{_TR_TARGET_EFICIENCIA:.0%}",    efic_ok),
                     ]
                     _kpi_tbl = Table([[c[0] for c in _kpi_data]], colWidths=["16.66%"]*6)
-                    _kpi_style = [("GRID",(0,0),(-1,-1),0.5,colors.white),
-                                   ("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5),
-                                   ("LEFTPADDING",(0,0),(-1,-1),5)]
-                    for _i, _c in enumerate(_kpi_data):
-                        _kpi_style.append(("BACKGROUND",(_i,0),(_i,0),_c[1]))
-                    _kpi_tbl.setStyle(TableStyle(_kpi_style))
-                    _story.append(_kpi_tbl)
-                    _story.append(Spacer(1,3*mm))
+                    _ks = [("GRID",(0,0),(-1,-1),0.5,colors.white),
+                           ("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6),
+                           ("LEFTPADDING",(0,0),(-1,-1),6)]
+                    for _i2, _c2 in enumerate(_kpi_data):
+                        _ks.append(("BACKGROUND",(_i2,0),(_i2,0),_c2[1]))
+                    _kpi_tbl.setStyle(TableStyle(_ks))
+                    _story.append(_kpi_tbl); _story.append(Spacer(1,4*mm))
 
-                    # ── Totales globales ──────────────────────────────────────
+                    # Totales globales
                     _tot = Table([[
-                        _p("Camiones", 7, True, _NAVY), _p(f"{camiones_en_reparto}/{total_camiones_flota}", 9, True),
-                        _p("PDV", 7, True, _NAVY), _p(str(total_pedidos), 9, True),
-                        _p("Bultos UP", 7, True, _NAVY), _p(f"{total_up:.1f}", 9, True),
-                        _p("Paletas", 7, True, _NAVY), _p(f"{paletas_total:.2f}", 9, True),
-                        _p("HL", 7, True, _NAVY), _p(f"{total_hl:.2f}", 9, True),
-                        _p("Peso kg", 7, True, _NAVY), _p(f"{total_peso_kg:,.0f}", 9, True),
-                        _p("Drop Size", 7, True, _NAVY), _p(f"{drop_size:.2f}", 9, True),
-                        _p("Rechazos", 7, True, _RED), _p(f"{total_rechazos_up:.1f}", 9, True, _RED if total_rechazos_up > 0 else colors.black),
+                        _p("Camiones",7,True,_NAVY), _p(f"{camiones_en_reparto}/{total_camiones_flota}",11,True),
+                        _p("PDV",7,True,_NAVY),      _p(str(total_pedidos),11,True),
+                        _p("Bultos UP",7,True,_NAVY), _p(f"{total_up:.1f}",11,True),
+                        _p("Paletas",7,True,_NAVY),  _p(f"{paletas_total:.2f}",11,True),
+                        _p("HL",7,True,_NAVY),       _p(f"{total_hl:.2f}",11,True),
+                        _p("Peso kg",7,True,_NAVY),  _p(f"{total_peso_kg:,.0f}",11,True),
+                        _p("Drop Size",7,True,_NAVY),_p(f"{drop_size:.2f}",11,True),
+                        _p("Rechazos",7,True,_RED),  _p(f"{total_rechazos_up:.1f}",11,True,_RED if total_rechazos_up > 0 else colors.black),
                     ]])
                     _tot.setStyle(TableStyle([
                         ("GRID",(0,0),(-1,-1),0.3,colors.lightgrey),
                         *[("BACKGROUND",(i*2,0),(i*2,0),colors.HexColor("#E8EAF6")) for i in range(8)],
-                        ("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),3),
-                        ("LEFTPADDING",(0,0),(-1,-1),4),
+                        ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
+                        ("LEFTPADDING",(0,0),(-1,-1),5),
                     ]))
-                    _story.append(_tot)
-                    _story.append(Spacer(1,3*mm))
+                    _story.append(_tot); _story.append(Spacer(1,4*mm))
 
-                    # ── Gráfico de barras: Bultos UP por camión ───────────────
+                    # Gráfico barras
                     if tabla_rows:
                         try:
                             _cam_labels = [str(r["N° Cam"]) for r in tabla_rows]
                             _cam_vals   = [r["Bultos UP"] for r in tabla_rows]
                             _n = len(_cam_labels)
                             _chart_w = float(_usable_w)
-                            _chart_h = 48.0 * mm
-                            _bar_w = min(18.0 * mm, (_chart_w - 20*mm) / max(_n, 1))
-                            _max_val = max(_cam_vals) if _cam_vals else 1
-
-                            _d = Drawing(_chart_w, _chart_h + 6*mm)
-                            # Título
-                            _d.add(String(_chart_w/2, _chart_h + 3*mm,
-                                          "Bultos UP por Camión",
-                                          fontSize=9, fontName="Helvetica-Bold",
-                                          fillColor=_NAVY, textAnchor="middle"))
-                            # Barras
-                            _margin_l = 14*mm
-                            _margin_b = 10*mm
+                            _chart_h = 52.0 * mm
+                            _margin_l = 14*mm; _margin_b = 11*mm
                             _plot_w = _chart_w - _margin_l - 6*mm
-                            _plot_h = _chart_h - _margin_b - 4*mm
+                            _plot_h = _chart_h - _margin_b - 5*mm
                             _x_step = _plot_w / max(_n, 1)
+                            _max_val = max(_cam_vals) if _cam_vals else 1
+                            _d = Drawing(_chart_w, _chart_h + 7*mm)
+                            _d.add(String(_chart_w/2, _chart_h + 4*mm, "Bultos UP por Camión",
+                                          fontSize=11, fontName="Helvetica-Bold",
+                                          fillColor=_NAVY, textAnchor="middle"))
                             for _bi, (_lbl, _val) in enumerate(zip(_cam_labels, _cam_vals)):
                                 _bx = _margin_l + _bi * _x_step + _x_step * 0.1
                                 _bw = _x_step * 0.8
                                 _bh = (_val / _max_val) * _plot_h if _max_val > 0 else 0
-                                _col_bar = _BLUE2
                                 _d.add(Rect(_bx, _margin_b, _bw, max(_bh, 1),
-                                            fillColor=_col_bar, strokeColor=colors.white, strokeWidth=0.5))
-                                # Valor encima de barra
-                                _d.add(String(_bx + _bw/2, _margin_b + _bh + 1.5*mm,
-                                              f"{_val:.0f}",
-                                              fontSize=5.5, fontName="Helvetica",
+                                            fillColor=_BLUE2, strokeColor=colors.white, strokeWidth=0.5))
+                                _d.add(String(_bx + _bw/2, _margin_b + _bh + 2*mm,
+                                              f"{_val:.0f}", fontSize=7, fontName="Helvetica",
                                               fillColor=_NAVY, textAnchor="middle"))
-                                # Label camión
-                                _d.add(String(_bx + _bw/2, _margin_b - 4*mm,
-                                              _lbl, fontSize=5.5,
-                                              fontName="Helvetica", fillColor=_NAVY,
-                                              textAnchor="middle"))
-                            # Eje Y línea de referencia
-                            from reportlab.graphics.shapes import Line
+                                _d.add(String(_bx + _bw/2, _margin_b - 4.5*mm,
+                                              _lbl, fontSize=7, fontName="Helvetica",
+                                              fillColor=_NAVY, textAnchor="middle"))
                             _d.add(Line(_margin_l, _margin_b, _margin_l, _margin_b + _plot_h,
                                         strokeColor=_NAVY, strokeWidth=0.8))
                             _d.add(Line(_margin_l, _margin_b, _margin_l + _plot_w, _margin_b,
                                         strokeColor=_NAVY, strokeWidth=0.8))
-                            _story.append(_d)
-                            _story.append(Spacer(1, 2*mm))
+                            _story.append(_d); _story.append(Spacer(1, 2*mm))
                         except Exception as _ge:
-                            _story.append(_p(f"[Gráfico no disponible: {_ge}]", 6, color=colors.grey))
+                            _story.append(_p(f"[Gráfico no disponible: {_ge}]", 7, color=colors.grey))
 
-                    # ── Tabla detalle por camión ──────────────────────────────
+                    # Tabla detalle por camión (12 cols)
                     if tabla_rows:
-                        # 12 columnas: N°|Chofer|PDV|BUP|Pal|Pat|Cap.kg|HL|Peso|Rec|Venc.Lic.|Val
-                        _det_hdr = ["N°","Chofer","PDV","Bultos UP","Paletas","Patente","Cap. kg","HL","Peso (kg)","Rechazos","Venc. Lic.","Validación"]
+                        _det_hdr = ["N°","Chofer","PDV","Bultos UP","Paletas","Patente","Cap.kg","HL","Peso(kg)","Rechazos","Venc.Lic.","Validación"]
                         _det_data = [_det_hdr] + [
-                            [str(r["N° Cam"]),
-                             r["Chofer"] if r["Chofer"] else "—",
-                             str(r["PDV"]),
-                             f"{r['Bultos UP']:.1f}",
-                             f"{r['Paletas']:.2f}",
+                            [str(r["N° Cam"]), r["Chofer"] or "—", str(r["PDV"]),
+                             f"{r['Bultos UP']:.1f}", f"{r['Paletas']:.2f}",
                              r["Patente"],
                              f"{r['Cap. Kg']:,}" if r.get("Cap. Kg") else "—",
                              f"{r.get('HL',0):.2f}",
-                             f"{r['Peso (kg)']:,.0f}",
+                             f"{r.get('Peso (kg)',0):,.0f}",
                              f"{r['Rechazos']:.1f}",
                              r["Venc. Lic."] or "—",
                              r["Validación"] or "—"]
                             for r in tabla_rows
-                        ] + [["TOTAL", "",
+                        ] + [["TOTAL","",
                                str(sum(r["PDV"] for r in tabla_rows)),
                                f"{sum(r['Bultos UP'] for r in tabla_rows):.1f}",
                                f"{sum(r['Paletas'] for r in tabla_rows):.2f}",
                                "","",
                                f"{sum(r.get('HL',0) for r in tabla_rows):.2f}",
                                f"{sum(r.get('Peso (kg)',0) for r in tabla_rows):,.0f}",
-                               f"{sum(r['Rechazos'] for r in tabla_rows):.1f}",
-                               "","" ]]
+                               f"{sum(r['Rechazos'] for r in tabla_rows):.1f}","",""]]
 
-                        # colWidths 12 cols sumando ~100%
+                        # Col widths 12 cols en landscape A4
                         _det_tbl = Table(_det_data, repeatRows=1,
-                            colWidths=["5%","13%","5%","8%","6%","7%","6%","7%","8%","7%","10%","8%"])
+                            colWidths=[
+                                _usable_w * 0.045,  # N°
+                                _usable_w * 0.125,  # Chofer
+                                _usable_w * 0.045,  # PDV
+                                _usable_w * 0.08,   # BUP
+                                _usable_w * 0.06,   # Pal
+                                _usable_w * 0.07,   # Pat
+                                _usable_w * 0.065,  # Cap
+                                _usable_w * 0.065,  # HL
+                                _usable_w * 0.08,   # Peso
+                                _usable_w * 0.065,  # Rec
+                                _usable_w * 0.09,   # Venc
+                                _usable_w * 0.075,  # Val
+                            ])
+
                         _ds = [
                             ("BACKGROUND",(0,0),(-1,0),_NAVY),
                             ("TEXTCOLOR",(0,0),(-1,0),colors.white),
                             ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),
-                            ("FONTSIZE",(0,0),(-1,-1),7),
+                            ("FONTSIZE",(0,0),(-1,0),9),
+                            ("FONTSIZE",(0,1),(-1,-1),9),
                             ("FONTNAME",(0,1),(-1,-1),"Helvetica"),
                             ("ROWBACKGROUNDS",(0,1),(-1,-2),[colors.white, _LGREY]),
                             ("BACKGROUND",(0,-1),(-1,-1),colors.HexColor("#E8EAF6")),
                             ("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),
+                            ("FONTSIZE",(0,-1),(-1,-1),9),
                             ("GRID",(0,0),(-1,-1),0.3,colors.lightgrey),
-                            ("TOPPADDING",(0,0),(-1,-1),2),
-                            ("BOTTOMPADDING",(0,0),(-1,-1),2),
-                            ("LEFTPADDING",(0,0),(-1,-1),3),
+                            ("TOPPADDING",(0,0),(-1,-1),3),
+                            ("BOTTOMPADDING",(0,0),(-1,-1),3),
+                            ("LEFTPADDING",(0,0),(-1,-1),4),
+                            ("ALIGN",(0,0),(-1,-1),"CENTER"),
+                            ("ALIGN",(1,1),(1,-1),"LEFT"),  # Chofer left-aligned
                         ]
-                        # Colorear Validación (col 11) + alertas licencias
                         _alertas_lic = []
-                        for _i2, _r2 in enumerate(tabla_rows, 1):
-                            if _r2["Validación"] == "BLOQUEADO":
-                                _ds += [("BACKGROUND",(11,_i2),(11,_i2),_RED),
-                                        ("TEXTCOLOR",(11,_i2),(11,_i2),colors.white),
-                                        ("FONTNAME",(11,_i2),(11,_i2),"Helvetica-Bold")]
-                                _alertas_lic.append(f"⚠ CAMIÓN {_r2['N° Cam']} — {_r2['Chofer'] or 'Sin chofer'}: LICENCIA VENCIDA ({_r2['Venc. Lic.']})")
-                            elif _r2["Validación"] == "OK":
-                                _ds += [("BACKGROUND",(11,_i2),(11,_i2),_GREEN),
-                                        ("TEXTCOLOR",(11,_i2),(11,_i2),colors.white)]
+                        for _i3, _r3 in enumerate(tabla_rows, 1):
+                            if _r3["Validación"] == "BLOQUEADO":
+                                _ds += [("BACKGROUND",(11,_i3),(11,_i3),_RED),
+                                        ("TEXTCOLOR",(11,_i3),(11,_i3),colors.white),
+                                        ("FONTNAME",(11,_i3),(11,_i3),"Helvetica-Bold")]
+                                _alertas_lic.append(f"⚠ CAM {_r3['N° Cam']} — {_r3['Chofer'] or 'S/N'}: LICENCIA VENCIDA ({_r3['Venc. Lic.']})")
+                            elif _r3["Validación"] == "OK":
+                                _ds += [("BACKGROUND",(11,_i3),(11,_i3),_GREEN),
+                                        ("TEXTCOLOR",(11,_i3),(11,_i3),colors.white)]
                         _det_tbl.setStyle(TableStyle(_ds))
                         _story.append(_det_tbl)
 
-                        # ── Alertas licencias vencidas ────────────────────────
                         if _alertas_lic:
-                            _story.append(Spacer(1,2*mm))
-                            _alerta_rows = [[_p("⚠️ ALERTAS LICENCIAS", 8, True, colors.white)]]
+                            _story.append(Spacer(1,3*mm))
+                            _at_rows = [[_p("⚠️ ALERTAS LICENCIAS VENCIDAS", 9, True, colors.white)]]
                             for _al in _alertas_lic:
-                                _alerta_rows.append([_p(_al, 7, True, _RED)])
-                            _at = Table(_alerta_rows, colWidths=[_usable_w])
+                                _at_rows.append([_p(_al, 9, True, _RED)])
+                            _at = Table(_at_rows, colWidths=[_usable_w])
                             _at.setStyle(TableStyle([
                                 ("BACKGROUND",(0,0),(0,0),_RED),
                                 ("BACKGROUND",(0,1),(-1,-1),colors.HexColor("#FFF3CD")),
-                                ("TOPPADDING",(0,0),(-1,-1),3),
-                                ("BOTTOMPADDING",(0,0),(-1,-1),3),
-                                ("LEFTPADDING",(0,0),(-1,-1),6),
-                                ("GRID",(0,0),(-1,-1),0.3,_RED),
+                                ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
+                                ("LEFTPADDING",(0,0),(-1,-1),7),("GRID",(0,0),(-1,-1),0.3,_RED),
                             ]))
                             _story.append(_at)
 
-                    # ── Pie de página ─────────────────────────────────────────
-                    _story.append(Spacer(1,2*mm))
-                    _footer_parts = [
-                        f"Generado: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')}",
-                        f"Picking Orchestrator v{APP_VERSION}",
-                        "Beccacece Hnos SA — DPO 2.1",
-                    ]
+                    # Footer
+                    _story.append(Spacer(1,3*mm))
+                    _fp = [f"Generado: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')}",
+                           f"Picking Orchestrator v{APP_VERSION}",
+                           "Beccacece Hnos SA — DPO 2.1"]
                     if causa_demora:
-                        _footer_parts.append(f"Causa demora: {causa_demora}")
-                    _story.append(_p("  ·  ".join(_footer_parts), 6, color=colors.grey))
+                        _fp.append(f"Causa demora: {causa_demora}")
+                    if _excluidos:
+                        _fp.append(f"Camiones excluidos: {', '.join(str(c) for c in sorted(_excluidos))}")
+                    _story.append(_p("  ·  ".join(_fp), 7, color=colors.grey))
 
                     _doc.build(_story)
                     _buf_pdf.seek(0)
                     _fname_pdf = f"{fecha_dia.strftime('%d%m%Y')}_tablero_ruteador_bkcc.pdf"
                     ss["tr_pdf_bytes"] = _buf_pdf.getvalue()
                     ss["tr_pdf_fname"] = _fname_pdf
-                    st.success(f"✅ PDF listo: **{_fname_pdf}**")
+                    st.success(f"✅ PDF listo")
                 except Exception as _e_pdf:
                     import traceback
                     st.error(f"Error PDF: {_e_pdf}")
-                    with st.expander("Detalle error"):
-                        st.code(traceback.format_exc())
+                    with st.expander("Detalle"): st.code(traceback.format_exc())
 
             if ss.get("tr_pdf_bytes"):
-                st.download_button(
-                    label="⬇️ Descargar PDF",
-                    data=ss["tr_pdf_bytes"],
+                st.download_button("⬇️ Descargar PDF", data=ss["tr_pdf_bytes"],
                     file_name=ss.get("tr_pdf_fname","tablero.pdf"),
-                    mime="application/pdf",
-                    key="tr_dl_pdf",
-                    use_container_width=True,
-                )
+                    mime="application/pdf", key="tr_dl_pdf",
+                    use_container_width=True)
 
-
+    # ══════════════════════════════════════════════════════════════════
+    # TAB 2 — HISTÓRICO MENSUAL
+    # ══════════════════════════════════════════════════════════════════
     with _tr_subtabs[1]:
         import pandas as pd
         import datetime
@@ -8025,319 +7912,564 @@ def render_tab_tablero():
         except ImportError:
             HAS_PLOTLY = False
 
-        st.markdown("## 📅 Histórico Mensual — Dashboard")
-        st.caption(
-            "Subí los Excel diarios generados desde el Tablero Ruteador para conformar "
-            "el dashboard mensual. Cada archivo agrega un día al historial."
-        )
-
         ss = st.session_state
         if "hist_data" not in ss:
-            ss["hist_data"] = []   # lista de dicts con los KPIs de cada día
+            ss["hist_data"] = []
 
-        # ── Upload de archivos diarios ──────────────────────────────────────────
-        uploaded = st.file_uploader(
-            "📁 Subir Excel(s) diarios del Tablero Ruteador",
-            type=["xlsx"], accept_multiple_files=True, key="hist_uploader",
-        )
+        st.markdown("## 📅 Histórico Mensual — Dashboard")
+        st.caption("Subí los Excel diarios generados desde el Tablero Ruteador. Cada archivo agrega un día.")
+
+        # Upload
+        _hu1, _hu2 = st.columns([3, 1])
+        with _hu1:
+            uploaded = st.file_uploader("📁 Excel(s) diarios del Tablero Ruteador",
+                type=["xlsx"], accept_multiple_files=True, key="hist_uploader")
+        with _hu2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("🗑️ Limpiar histórico", key="hist_clear", use_container_width=True):
+                ss["hist_data"] = []
+                st.rerun()
 
         if uploaded:
             nuevos = 0
             for f in uploaded:
                 try:
                     df_kpi = pd.read_excel(f, sheet_name="KPIs", header=0)
-                    # Convertir tabla KPI key-value a dict
                     kv = dict(zip(df_kpi["KPI"].astype(str), df_kpi["Valor"].astype(str)))
-                    fecha_str = kv.get("Fecha", "")
-                    if not fecha_str:
-                        continue
+                    fecha_str = kv.get("Fecha","")
+                    if not fecha_str: continue
                     fecha = pd.to_datetime(fecha_str, dayfirst=True, errors="coerce")
-                    if pd.isna(fecha):
-                        continue
-                    # Evitar duplicados por fecha
-                    fechas_existentes = [r["fecha"] for r in ss["hist_data"]]
-                    if fecha in fechas_existentes:
-                        continue
-
-                    row = {
+                    if pd.isna(fecha): continue
+                    if fecha in [r["fecha"] for r in ss["hist_data"]]: continue
+                    ss["hist_data"].append({
                         "fecha": fecha,
-                        "camiones": _safe_int(kv.get("Camiones reparto", 0)),
-                        "pedidos": _safe_int(kv.get("Total PDV", 0)),
-                        "bultos_up": _safe_float(kv.get("Bultos UP", 0)),
-                        "paletas": _safe_float(kv.get("Paletas", 0)),
-                        "hl": _safe_float(kv.get("HL", 0)),
-                        "peso_kg": _safe_float(kv.get("Peso (kg)", 0)),
-                        "drop_size": _safe_float(kv.get("Drop Size", 0)),
-                        "eficiencia": _safe_float(kv.get("Eficiencia", 0)),
-                        "util_vehiculos": _safe_float(kv.get("Util. Vehículos", 0)),
-                        "fuera_zona_pct": _safe_float(kv.get("Fuera de zona (%)", 0)),
-                        "ocup_bodega": _safe_float(kv.get("Ocup. bodega", 0)),
-                        "prod_ruteo": _safe_float(kv.get("Productividad ruteo", 0)),
-                        "causa_demora": kv.get("Causa demora", ""),
-                        "sla_status": kv.get("Status_SLA", ""),
-                    }
-                    ss["hist_data"].append(row)
+                        "camiones":      _safe_int(kv.get("Camiones reparto",0)),
+                        "pedidos":       _safe_int(kv.get("Total PDV",0)),
+                        "bultos_up":     _safe_float(kv.get("Bultos UP",0)),
+                        "paletas":       _safe_float(kv.get("Paletas",0)),
+                        "hl":            _safe_float(kv.get("HL",0)),
+                        "peso_kg":       _safe_float(kv.get("Peso (kg)",0)),
+                        "drop_size":     _safe_float(kv.get("Drop Size",0)),
+                        "eficiencia":    _safe_float(kv.get("Eficiencia",0)),
+                        "util_vehiculos":_safe_float(kv.get("Util. Vehículos",0)),
+                        "fuera_zona_pct":_safe_float(kv.get("Fuera de zona (%)",0)),
+                        "ocup_bodega":   _safe_float(kv.get("Ocup. bodega",0)),
+                        "prod_ruteo":    _safe_float(kv.get("Productividad ruteo",0)),
+                        "causa_demora":  kv.get("Causa demora",""),
+                    })
                     nuevos += 1
                 except Exception:
                     pass
             if nuevos > 0:
                 ss["hist_data"].sort(key=lambda x: x["fecha"])
-                st.success(f"✅ {nuevos} día(s) agregado(s) al histórico.")
-
-        # ── Botón limpiar ───────────────────────────────────────────────────────
-        col_c, col_exp = st.columns([1, 5])
-        with col_c:
-            if st.button("🗑️ Limpiar histórico", key="hist_clear"):
-                ss["hist_data"] = []
-                st.rerun()
+                st.success(f"✅ {nuevos} día(s) agregado(s).")
 
         if not ss["hist_data"]:
-            st.info("Aún no hay datos cargados. Subí al menos un Excel diario del Tablero Ruteador.")
+            st.info("Aún sin datos. Subí al menos un Excel diario del Tablero Ruteador.")
             st.markdown("""
-            **¿Cómo usar este módulo?**
-            1. Cada día, en el Tab **🚚 Tablero Ruteador**, generá el Excel del día y descargalo.
-            2. Acumulá esos archivos en una carpeta local (ej: `Tablero_Ruteador/Mayo_2026/`).
-            3. Subí todos los archivos aquí de una vez — el dashboard se arma automáticamente.
-            4. Exportá el consolidado mensual desde el botón al pie.
-            """)
+**¿Cómo usar?**
+1. Cada día generá el **Excel del día** desde el Tablero del día.
+2. Acumulá los archivos en una carpeta local.
+3. Subí todos aquí — el dashboard se arma automáticamente.
+4. Exportá el consolidado mensual con PDF y Excel.
+""")
             return
 
         df_h = pd.DataFrame(ss["hist_data"]).sort_values("fecha").reset_index(drop=True)
         df_h["fecha_str"] = df_h["fecha"].dt.strftime("%d/%m")
         df_h["dia_semana"] = df_h["fecha"].dt.day_name()
         n_dias = len(df_h)
-
-        # ── Resumen ejecutivo ───────────────────────────────────────────────────
         mes_str = df_h["fecha"].dt.strftime("%B %Y").mode()[0] if n_dias > 0 else "—"
-        st.markdown(f"### 📊 Resumen ejecutivo — {mes_str} ({n_dias} días)")
 
-        r1,r2,r3,r4,r5,r6 = st.columns(6)
-        r1.metric("Días registrados", n_dias)
-        r2.metric("Prom. PDV/día", f"{df_h['pedidos'].mean():.0f}", f"Total: {df_h['pedidos'].sum():.0f}")
-        r3.metric("Prom. Bultos UP/día", f"{df_h['bultos_up'].mean():.0f}")
-        r4.metric("Prom. Eficiencia", f"{df_h['eficiencia'].mean():.1%}")
-        r5.metric("Prom. Drop Size", f"{df_h['drop_size'].mean():.2f}")
-        r6.metric("Prom. Util. Vehículos", f"{df_h['util_vehiculos'].mean():.1%}")
+        # ── HEADER MENSUAL ─────────────────────────────────────────────────────
+        _prod_prom = df_h["prod_ruteo"].mean()
+        _efic_prom = df_h["eficiencia"].mean()
+        st.markdown(
+            f'<div style="background:linear-gradient(90deg,#1F3864 0%,#2e5fa3 100%);'
+            f'padding:14px 22px;border-radius:10px;margin:8px 0 18px 0;'
+            f'color:white;display:flex;align-items:center;gap:14px;">'
+            f'<div style="font-size:22px;font-weight:800;">📅 Dashboard Mensual — {mes_str}</div>'
+            f'<div style="margin-left:auto;font-size:14px;font-weight:700;'
+            f'background:{"#00C853" if _prod_prom >= 0.7 else "#FF4B4B"};'
+            f'padding:5px 14px;border-radius:20px;">'
+            f'Prod. Ruteo prom: {_prod_prom:.0%}</div>'
+            f'</div>', unsafe_allow_html=True)
 
-        # ── Alertas automáticas ─────────────────────────────────────────────────
+        # ── MÉTRICAS RESUMEN ───────────────────────────────────────────────────
+        _rm = st.columns(7)
+        _rm[0].metric("📆 Días", n_dias)
+        _rm[1].metric("📦 PDV prom/día", f"{df_h['pedidos'].mean():.0f}", f"Total: {df_h['pedidos'].sum():.0f}")
+        _rm[2].metric("🏋 UP prom/día",  f"{df_h['bultos_up'].mean():.0f}")
+        _rm[3].metric("💧 HL prom/día",  f"{df_h['hl'].mean():.2f}")
+        _rm[4].metric("📊 Eficiencia",   f"{_efic_prom:.1%}")
+        _rm[5].metric("🚗 Util. Veh.",   f"{df_h['util_vehiculos'].mean():.1%}")
+        _rm[6].metric("📈 Drop Size",    f"{df_h['drop_size'].mean():.2f}")
+
+        # ── ALERTAS ────────────────────────────────────────────────────────────
         alertas = []
-        if df_h["eficiencia"].mean() < _TR_TARGET_EFICIENCIA:
-            alertas.append(f"🔴 Eficiencia promedio **{df_h['eficiencia'].mean():.1%}** < target {_TR_TARGET_EFICIENCIA:.0%}")
+        if _efic_prom < _TR_TARGET_EFICIENCIA:
+            alertas.append(f"🔴 Eficiencia promedio **{_efic_prom:.1%}** < target {_TR_TARGET_EFICIENCIA:.0%}")
         if df_h["util_vehiculos"].mean() < _TR_TARGET_UTIL_VEH:
-            alertas.append(f"🔴 Utilización vehículos promedio **{df_h['util_vehiculos'].mean():.1%}** < target {_TR_TARGET_UTIL_VEH:.0%}")
+            alertas.append(f"🔴 Util. vehículos **{df_h['util_vehiculos'].mean():.1%}** < target {_TR_TARGET_UTIL_VEH:.0%}")
         if (df_h["fuera_zona_pct"] > _TR_TARGET_FUERA_ZONA).any():
             dias_fz = (df_h["fuera_zona_pct"] > _TR_TARGET_FUERA_ZONA).sum()
             alertas.append(f"⚠️ **{dias_fz}** día(s) con fuera de zona > {_TR_TARGET_FUERA_ZONA:.0%}")
         if (df_h["ocup_bodega"] < _TR_TARGET_OCUP_BODEGA).any():
-            dias_ob = (df_h["ocup_bodega"] < _TR_TARGET_OCUP_BODEGA).sum()
-            alertas.append(f"⚠️ **{dias_ob}** día(s) con ocupación bodega < target {_TR_TARGET_OCUP_BODEGA} UP")
-        # Tendencia Drop Size
+            alertas.append(f"⚠️ **{(df_h['ocup_bodega'] < _TR_TARGET_OCUP_BODEGA).sum()}** día(s) con ocup. bodega < {_TR_TARGET_OCUP_BODEGA} UP")
         if n_dias >= 5:
-            trend = df_h["drop_size"].iloc[-3:].mean() - df_h["drop_size"].iloc[:3].mean()
-            if trend < -0.5:
-                alertas.append(f"📉 Drop Size en caída: promedio últimos 3 días {df_h['drop_size'].iloc[-3:].mean():.2f} vs primeros 3 días {df_h['drop_size'].iloc[:3].mean():.2f}")
-        # Demoras recurrentes
+            _trend = df_h["drop_size"].iloc[-3:].mean() - df_h["drop_size"].iloc[:3].mean()
+            if _trend < -0.5:
+                alertas.append(f"📉 Drop Size en caída: últimos 3 días {df_h['drop_size'].iloc[-3:].mean():.2f} vs primeros 3 días {df_h['drop_size'].iloc[:3].mean():.2f}")
+            elif _trend > 0.5:
+                alertas.append(f"📈 Drop Size en alza: últimos 3 días {df_h['drop_size'].iloc[-3:].mean():.2f} ✅")
         if df_h["causa_demora"].ne("").sum() >= 2:
-            top_demora = df_h["causa_demora"].value_counts().idxmax()
-            n_demora = df_h["causa_demora"].value_counts().max()
-            alertas.append(f"⚠️ Causa de demora recurrente: **{top_demora}** ({n_demora} días)")
+            _td = df_h[df_h["causa_demora"].ne("")]["causa_demora"].value_counts()
+            alertas.append(f"⚠️ Demora recurrente: **{_td.index[0]}** ({_td.iloc[0]} días)")
 
         if alertas:
             with st.expander("🚨 Alertas del período", expanded=True):
                 for a in alertas:
                     st.markdown(f"- {a}")
         else:
-            st.success("✅ Sin alertas críticas para el período analizado.")
+            st.success("✅ Sin alertas críticas en el período.")
 
         if not HAS_PLOTLY:
-            st.warning("Plotly no disponible — instalar para ver gráficos: `pip install plotly`")
-            _render_historico_tablas(df_h)
+            st.warning("Plotly no disponible. `pip install plotly`")
             return
 
-        # ── Gráficos ────────────────────────────────────────────────────────────
-        tab_kpi, tab_vol, tab_ops, tab_tabla = st.tabs([
-            "📈 KPIs de servicio", "📦 Volumen", "🚚 Operación", "📋 Tabla"
+        # ── GRÁFICOS ───────────────────────────────────────────────────────────
+        NAVY_H = "#1F3864"; GOLD_H = "#C9A84C"; GREEN_H = "#00C853"; RED_H = "#FF4B4B"
+
+        tab_kpi, tab_vol, tab_ops, tab_anal, tab_tabla = st.tabs([
+            "📈 KPIs Servicio", "📦 Volumen", "🚚 Operación", "🔍 Análisis", "📋 Tabla"
         ])
 
-        NAVY_H = "#1F3864"
-        GOLD_H = "#C9A84C"
-        GREEN_H= "#00C853"
-        RED_H  = "#FF4B4B"
-
         with tab_kpi:
-            st.markdown("#### Indicadores de servicio por día")
+            st.markdown("#### Indicadores de servicio diarios")
             fig = make_subplots(rows=2, cols=2,
                 subplot_titles=("Eficiencia (%)", "Utilización Vehículos (%)",
                                 "Fuera de Zona (%)", "Productividad de Ruteo (%)"),
-                shared_xaxes=True)
-
-            # Eficiencia
+                shared_xaxes=False)
             fig.add_trace(go.Bar(x=df_h["fecha_str"], y=df_h["eficiencia"]*100,
-                marker_color=[GREEN_H if v >= _TR_TARGET_EFICIENCIA*100 else RED_H
-                              for v in df_h["eficiencia"]*100],
-                name="Eficiencia"), row=1, col=1)
-            fig.add_hline(y=_TR_TARGET_EFICIENCIA*100, line_dash="dash",
-                line_color=NAVY_H, row=1, col=1)
-
-            # Utilización
+                marker_color=[GREEN_H if v>=_TR_TARGET_EFICIENCIA*100 else RED_H for v in df_h["eficiencia"]*100],
+                text=[f"{v:.0f}%" for v in df_h["eficiencia"]*100], textposition="outside",
+                textfont_size=9, name="Eficiencia"), row=1, col=1)
+            fig.add_hline(y=_TR_TARGET_EFICIENCIA*100, line_dash="dash", line_color=NAVY_H, row=1, col=1)
             fig.add_trace(go.Bar(x=df_h["fecha_str"], y=df_h["util_vehiculos"]*100,
-                marker_color=[GREEN_H if v >= _TR_TARGET_UTIL_VEH*100 else RED_H
-                              for v in df_h["util_vehiculos"]*100],
-                name="Util. Veh."), row=1, col=2)
-            fig.add_hline(y=_TR_TARGET_UTIL_VEH*100, line_dash="dash",
-                line_color=NAVY_H, row=1, col=2)
-
-            # Fuera de zona
+                marker_color=[GREEN_H if v>=_TR_TARGET_UTIL_VEH*100 else RED_H for v in df_h["util_vehiculos"]*100],
+                text=[f"{v:.0f}%" for v in df_h["util_vehiculos"]*100], textposition="outside",
+                textfont_size=9, name="Util. Veh."), row=1, col=2)
+            fig.add_hline(y=_TR_TARGET_UTIL_VEH*100, line_dash="dash", line_color=NAVY_H, row=1, col=2)
             fig.add_trace(go.Bar(x=df_h["fecha_str"], y=df_h["fuera_zona_pct"]*100,
-                marker_color=[RED_H if v > _TR_TARGET_FUERA_ZONA*100 else GREEN_H
-                              for v in df_h["fuera_zona_pct"]*100],
-                name="Fuera Zona"), row=2, col=1)
-            fig.add_hline(y=_TR_TARGET_FUERA_ZONA*100, line_dash="dash",
-                line_color=NAVY_H, row=2, col=1)
-
-            # Prod ruteo
+                marker_color=[RED_H if v>_TR_TARGET_FUERA_ZONA*100 else GREEN_H for v in df_h["fuera_zona_pct"]*100],
+                text=[f"{v:.1f}%" for v in df_h["fuera_zona_pct"]*100], textposition="outside",
+                textfont_size=9, name="FZ%"), row=2, col=1)
+            fig.add_hline(y=_TR_TARGET_FUERA_ZONA*100, line_dash="dash", line_color=NAVY_H, row=2, col=1)
             fig.add_trace(go.Scatter(x=df_h["fecha_str"], y=df_h["prod_ruteo"]*100,
-                mode="lines+markers+text", text=[f"{v:.0%}" for v in df_h["prod_ruteo"]],
-                textposition="top center", marker_color=NAVY_H,
-                line=dict(color=NAVY_H, width=2), name="Prod. Ruteo"), row=2, col=2)
+                mode="lines+markers+text", text=[f"{v:.0f}%" for v in df_h["prod_ruteo"]*100],
+                textposition="top center", textfont_size=9,
+                marker=dict(color=NAVY_H, size=8), line=dict(color=NAVY_H, width=2),
+                name="Prod. Ruteo"), row=2, col=2)
             fig.add_hline(y=70, line_dash="dash", line_color=NAVY_H, row=2, col=2)
-
-            fig.update_layout(height=450, showlegend=False,
+            fig.update_layout(height=500, showlegend=False,
                 plot_bgcolor="white", paper_bgcolor="white",
-                font=dict(family="Arial", size=10))
+                font=dict(family="Arial", size=11),
+                margin=dict(t=40, b=20))
             fig.update_yaxes(ticksuffix="%")
             st.plotly_chart(fig, use_container_width=True)
 
         with tab_vol:
-            st.markdown("#### Volumen diario")
-            fig2 = make_subplots(rows=2, cols=2,
-                subplot_titles=("PDV Ruteados", "Bultos UP", "Drop Size (UP/PDV)", "HL Ruteados"))
-
-            fig2.add_trace(go.Bar(x=df_h["fecha_str"], y=df_h["pedidos"],
-                marker_color=NAVY_H, name="PDV"), row=1, col=1)
-            # Línea promedio
+            st.markdown("#### Volumen operativo diario")
+            fig2 = make_subplots(rows=2, cols=3,
+                subplot_titles=("PDV Ruteados","Bultos UP","HL Ruteados",
+                                "Drop Size (UP/PDV)","Paletas","Peso Total (kg)"))
             avg_pdv = df_h["pedidos"].mean()
+            fig2.add_trace(go.Bar(x=df_h["fecha_str"], y=df_h["pedidos"], marker_color=NAVY_H,
+                text=df_h["pedidos"], textposition="outside", textfont_size=9), row=1, col=1)
             fig2.add_hline(y=avg_pdv, line_dash="dot", line_color=GOLD_H,
-                annotation_text=f"Prom: {avg_pdv:.0f}", row=1, col=1)
-
-            fig2.add_trace(go.Bar(x=df_h["fecha_str"], y=df_h["bultos_up"],
-                marker_color=GOLD_H, name="Bultos UP"), row=1, col=2)
-
+                annotation_text=f"Prom:{avg_pdv:.0f}", row=1, col=1)
+            fig2.add_trace(go.Bar(x=df_h["fecha_str"], y=df_h["bultos_up"], marker_color=GOLD_H,
+                text=df_h["bultos_up"].round(0), textposition="outside", textfont_size=9), row=1, col=2)
+            fig2.add_trace(go.Bar(x=df_h["fecha_str"], y=df_h["hl"], marker_color="#4CAF50",
+                text=df_h["hl"].round(2), textposition="outside", textfont_size=9), row=1, col=3)
             fig2.add_trace(go.Scatter(x=df_h["fecha_str"], y=df_h["drop_size"],
-                mode="lines+markers", marker_color="#2196F3", line_color="#2196F3",
-                name="Drop Size"), row=2, col=1)
-
-            fig2.add_trace(go.Bar(x=df_h["fecha_str"], y=df_h["hl"],
-                marker_color="#4CAF50", name="HL"), row=2, col=2)
-
-            fig2.update_layout(height=450, showlegend=False,
+                mode="lines+markers", marker=dict(color="#2196F3", size=8),
+                line=dict(color="#2196F3", width=2)), row=2, col=1)
+            fig2.add_trace(go.Bar(x=df_h["fecha_str"], y=df_h["paletas"], marker_color="#9C27B0",
+                text=df_h["paletas"].round(1), textposition="outside", textfont_size=9), row=2, col=2)
+            fig2.add_trace(go.Bar(x=df_h["fecha_str"], y=df_h["peso_kg"], marker_color="#FF9800"), row=2, col=3)
+            fig2.update_layout(height=520, showlegend=False,
                 plot_bgcolor="white", paper_bgcolor="white",
-                font=dict(family="Arial", size=10))
+                font=dict(family="Arial", size=11))
             st.plotly_chart(fig2, use_container_width=True)
 
         with tab_ops:
-            st.markdown("#### Operación — Camiones y bodega")
+            st.markdown("#### Operación — camiones y bodega")
             fig3 = make_subplots(rows=1, cols=3,
-                subplot_titles=("Camiones en reparto", "Ocupación bodega (UP)", "Peso total (kg)"))
-
+                subplot_titles=("Camiones en reparto","Ocup. Bodega (UP)","Rechazos"))
             fig3.add_trace(go.Bar(x=df_h["fecha_str"], y=df_h["camiones"],
-                marker_color=NAVY_H, name="Camiones"), row=1, col=1)
-
+                marker_color=NAVY_H, text=df_h["camiones"],
+                textposition="outside", textfont_size=9), row=1, col=1)
             fig3.add_trace(go.Scatter(x=df_h["fecha_str"], y=df_h["ocup_bodega"],
-                mode="lines+markers",
-                marker_color=[GREEN_H if v >= _TR_TARGET_OCUP_BODEGA else RED_H
-                              for v in df_h["ocup_bodega"]],
-                line=dict(color=NAVY_H, width=2), name="Ocup. Bodega"), row=1, col=2)
-            fig3.add_hline(y=_TR_TARGET_OCUP_BODEGA, line_dash="dash",
-                line_color=RED_H, row=1, col=2)
-
-            fig3.add_trace(go.Bar(x=df_h["fecha_str"], y=df_h["peso_kg"],
-                marker_color=GOLD_H, name="Peso"), row=1, col=3)
-
-            fig3.update_layout(height=320, showlegend=False,
+                mode="lines+markers+text", text=df_h["ocup_bodega"].round(1),
+                textposition="top center", textfont_size=9,
+                marker=dict(color=[GREEN_H if v>=_TR_TARGET_OCUP_BODEGA else RED_H for v in df_h["ocup_bodega"]], size=9),
+                line=dict(color=NAVY_H, width=2)), row=1, col=2)
+            fig3.add_hline(y=_TR_TARGET_OCUP_BODEGA, line_dash="dash", line_color=RED_H, row=1, col=2)
+            if "rechazos" in df_h.columns:
+                fig3.add_trace(go.Bar(x=df_h["fecha_str"], y=df_h["rechazos"],
+                    marker_color=RED_H), row=1, col=3)
+            fig3.update_layout(height=330, showlegend=False,
                 plot_bgcolor="white", paper_bgcolor="white",
-                font=dict(family="Arial", size=10))
+                font=dict(family="Arial", size=11))
             st.plotly_chart(fig3, use_container_width=True)
 
-            # Análisis causas demora
-            demoras_validas = df_h[df_h["causa_demora"].ne("")]["causa_demora"]
-            if len(demoras_validas) > 0:
-                st.markdown("##### Causas de demora registradas")
-                dm_counts = demoras_validas.value_counts().reset_index()
-                dm_counts.columns = ["Causa", "Días"]
-                fig_dm = px.bar(dm_counts, x="Causa", y="Días",
-                    color_discrete_sequence=[NAVY_H], text="Días")
-                fig_dm.update_layout(height=220, plot_bgcolor="white",
-                    showlegend=False, font=dict(size=10))
-                st.plotly_chart(fig_dm, use_container_width=True)
+            # Causas de demora
+            _dm = df_h[df_h["causa_demora"].ne("")]["causa_demora"]
+            if len(_dm) > 0:
+                st.markdown("##### Causas de demora")
+                _dmc = _dm.value_counts().reset_index(); _dmc.columns = ["Causa","Días"]
+                _figdm = px.bar(_dmc, x="Causa", y="Días",
+                    color_discrete_sequence=[NAVY_H], text="Días",
+                    title="Frecuencia de causas de demora")
+                _figdm.update_layout(height=250, plot_bgcolor="white",
+                    font=dict(family="Arial", size=11), showlegend=False)
+                _figdm.update_traces(textposition="outside")
+                st.plotly_chart(_figdm, use_container_width=True)
+
+        with tab_anal:
+            st.markdown("#### Análisis de tendencias y correlaciones")
+            if n_dias >= 3:
+                # Tendencia eficiencia con línea de tendencia
+                _fig_t = go.Figure()
+                _fig_t.add_trace(go.Scatter(x=df_h["fecha_str"], y=df_h["eficiencia"]*100,
+                    mode="lines+markers", name="Eficiencia",
+                    line=dict(color=NAVY_H, width=2),
+                    marker=dict(color=[GREEN_H if v>=_TR_TARGET_EFICIENCIA*100 else RED_H
+                                       for v in df_h["eficiencia"]*100], size=10)))
+                _fig_t.add_hline(y=_TR_TARGET_EFICIENCIA*100, line_dash="dash",
+                    line_color=RED_H, annotation_text=f"Target {_TR_TARGET_EFICIENCIA:.0%}")
+                # Media móvil si hay suficientes días
+                if n_dias >= 5:
+                    _ma = df_h["eficiencia"].rolling(3, min_periods=1).mean()
+                    _fig_t.add_trace(go.Scatter(x=df_h["fecha_str"], y=_ma*100,
+                        mode="lines", name="Media móvil 3d",
+                        line=dict(color=GOLD_H, width=2, dash="dot")))
+                _fig_t.update_layout(height=280, plot_bgcolor="white", paper_bgcolor="white",
+                    font=dict(family="Arial", size=11), legend=dict(orientation="h", y=1.1),
+                    title="Evolución de Eficiencia + Media Móvil")
+                _fig_t.update_yaxes(ticksuffix="%")
+                st.plotly_chart(_fig_t, use_container_width=True)
+
+                # Drop size vs pedidos
+                _fig_c = px.scatter(df_h, x="pedidos", y="drop_size",
+                    text="fecha_str", size_max=12,
+                    color=[GREEN_H if v>=_TR_TARGET_EFICIENCIA else RED_H for v in df_h["eficiencia"]],
+                    labels={"pedidos":"PDV Ruteados","drop_size":"Drop Size (UP/PDV)"},
+                    title="Drop Size vs PDV (color = OK/NO eficiencia)")
+                _fig_c.update_traces(textposition="top center", textfont_size=8)
+                _fig_c.update_layout(height=300, plot_bgcolor="white", paper_bgcolor="white",
+                    font=dict(family="Arial", size=11), showlegend=False)
+                st.plotly_chart(_fig_c, use_container_width=True)
+
+            else:
+                st.info("Se necesitan al menos 3 días de datos para análisis de tendencias.")
+
+            # Tabla de promedios por día de semana
+            if n_dias >= 5:
+                st.markdown("##### Rendimiento por día de semana")
+                _dow = df_h.groupby("dia_semana").agg(
+                    PDV=("pedidos","mean"), UP=("bultos_up","mean"),
+                    Eficiencia=("eficiencia","mean"), Prod_Ruteo=("prod_ruteo","mean"),
+                    Dias=("pedidos","count")
+                ).round(2)
+                _dow["Eficiencia"] = _dow["Eficiencia"].map(lambda x: f"{x:.1%}")
+                _dow["Prod_Ruteo"] = _dow["Prod_Ruteo"].map(lambda x: f"{x:.1%}")
+                st.dataframe(_dow, use_container_width=True)
 
         with tab_tabla:
             st.markdown("#### Datos diarios completos")
-            disp_cols = {
-                "fecha_str": "Fecha", "dia_semana": "Día",
-                "camiones": "Camiones", "pedidos": "PDV",
-                "bultos_up": "Bultos UP", "paletas": "Paletas",
-                "hl": "HL", "peso_kg": "Peso (kg)",
-                "drop_size": "Drop Size", "eficiencia": "Eficiencia %",
-                "util_vehiculos": "Util. Veh. %", "fuera_zona_pct": "Fuera Zona %",
-                "ocup_bodega": "Ocup. Bodega", "prod_ruteo": "Prod. Ruteo %",
-                "causa_demora": "Causa Demora",
+            _disp_cols = {
+                "fecha_str":"Fecha","dia_semana":"Día","camiones":"Cams",
+                "pedidos":"PDV","bultos_up":"Bultos UP","paletas":"Paletas",
+                "hl":"HL","peso_kg":"Peso(kg)","drop_size":"Drop Size",
+                "eficiencia":"Eficiencia","util_vehiculos":"Util.Veh.",
+                "fuera_zona_pct":"FZ%","ocup_bodega":"Ocup.Bod.",
+                "prod_ruteo":"Prod.Ruteo","causa_demora":"Demora",
             }
-            df_disp = df_h[list(disp_cols.keys())].rename(columns=disp_cols)
-            for col_pct in ["Eficiencia %", "Util. Veh. %", "Fuera Zona %", "Prod. Ruteo %"]:
-                df_disp[col_pct] = df_disp[col_pct].map(lambda x: f"{x:.1%}")
+            df_disp = df_h[list(_disp_cols.keys())].rename(columns=_disp_cols)
+            for _cp in ["Eficiencia","Util.Veh.","FZ%","Prod.Ruteo"]:
+                df_disp[_cp] = df_disp[_cp].map(lambda x: f"{x:.1%}")
 
-            def _highlight_row(row):
+            def _hl_row(row):
                 styles = [""] * len(row)
                 try:
-                    ef = float(str(row["Eficiencia %"]).replace("%","")) / 100
+                    ef = float(str(row["Eficiencia"]).replace("%","")) / 100
                     if ef < _TR_TARGET_EFICIENCIA:
-                        styles[df_disp.columns.get_loc("Eficiencia %")] = "background-color:#FFE0E0"
+                        styles[df_disp.columns.get_loc("Eficiencia")] = "background-color:#FFE0E0"
                 except Exception:
                     pass
                 return styles
 
-            st.dataframe(df_disp.style.apply(_highlight_row, axis=1),
+            st.dataframe(df_disp.style.apply(_hl_row, axis=1),
                          use_container_width=True, hide_index=True)
 
-            # Exportar consolidado
-            st.markdown("---")
-            if st.button("📊 Exportar histórico mensual (Excel)", key="hist_export"):
-                buf_h = io.BytesIO()
-                with pd.ExcelWriter(buf_h, engine="openpyxl") as writer:
-                    df_disp.to_excel(writer, sheet_name="Histórico", index=False)
+        # ── EXPORTAR MENSUAL ───────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### 📤 Exportar Histórico Mensual")
+        _em1, _em2 = st.columns(2)
+
+        with _em1:
+            st.markdown("**📊 Excel consolidado mensual**")
+            if st.button("📊 Generar Excel mensual", key="hist_gen_xl", use_container_width=True):
+                try:
+                    from openpyxl import Workbook
+                    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+                    from openpyxl.utils import get_column_letter
+
+                    _wbm = Workbook()
+                    _wsm = _wbm.active; _wsm.title = "Histórico"
+                    _NX2 = "1F3864"; _GRX2 = "00C853"; _RX2 = "FF4B4B"
+                    def _fx2(h): return PatternFill("solid", fgColor=h)
+                    def _fo2(bold=False, color="000000", sz=10): return Font(bold=bold, color=color, size=sz, name="Arial")
+                    def _al2(h="center"): return Alignment(horizontal=h, vertical="center")
+                    def _bd2():
+                        s = Side(style="thin", color="CCCCCC")
+                        return Border(left=s, right=s, top=s, bottom=s)
+
+                    # Header
+                    _wsm.merge_cells(f"A1:O1")
+                    _hc = _wsm.cell(1,1,f"HISTÓRICO MENSUAL — {mes_str}   |   {n_dias} días   |   Beccacece Hnos SA · DPO 2.1")
+                    _hc.fill = _fx2(_NX2); _hc.font = _fo2(True, "FFFFFF", 13); _hc.alignment = _al2()
+                    _wsm.row_dimensions[1].height = 22
+
+                    # Headers tabla
+                    _hdr_m = ["Fecha","Día","Cams","PDV","Bultos UP","Paletas","HL","Peso(kg)",
+                               "Drop Size","Eficiencia","Util.Veh.","FZ%","Ocup.Bod.","Prod.Ruteo","Demora"]
+                    for ci, ch in enumerate(_hdr_m, 1):
+                        _c = _wsm.cell(2, ci, ch); _c.fill = _fx2("2e5fa3"); _c.font = _fo2(True,"FFFFFF",10); _c.alignment = _al2(); _c.border = _bd2()
+                    _wsm.row_dimensions[2].height = 16
+
+                    # Datos
+                    for ri, row_d in enumerate(ss["hist_data"], 3):
+                        _ef = row_d["eficiencia"]
+                        _rfill = _fx2("FFE8E8") if _ef < _TR_TARGET_EFICIENCIA else _fx2("FFFFFF") if ri % 2 == 0 else _fx2("F5F5F5")
+                        _vals_m = [
+                            row_d["fecha"].strftime("%d/%m/%Y"),
+                            row_d["fecha"].strftime("%A"),
+                            row_d["camiones"], row_d["pedidos"],
+                            round(row_d["bultos_up"],1), round(row_d["paletas"],2),
+                            round(row_d["hl"],2), round(row_d["peso_kg"],0),
+                            round(row_d["drop_size"],2),
+                            f"{row_d['eficiencia']:.1%}", f"{row_d['util_vehiculos']:.1%}",
+                            f"{row_d['fuera_zona_pct']:.1%}", round(row_d["ocup_bodega"],1),
+                            f"{row_d['prod_ruteo']:.1%}", row_d["causa_demora"] or "—"
+                        ]
+                        for ci, vv in enumerate(_vals_m, 1):
+                            _c = _wsm.cell(ri, ci, vv); _c.fill = _rfill; _c.font = _fo2(sz=10); _c.alignment = _al2(); _c.border = _bd2()
+                        _wsm.row_dimensions[ri].height = 14
+
+                    # Col widths
+                    for ci4, cw4 in enumerate([12,12,6,6,9,8,7,9,9,10,9,7,9,10,14], 1):
+                        _wsm.column_dimensions[get_column_letter(ci4)].width = cw4
+
                     # Hoja resumen
-                    resumen = pd.DataFrame({
-                        "Indicador": ["Días registrados", "Prom. PDV/día", "Prom. Bultos UP/día",
-                                       "Prom. HL/día", "Prom. Peso/día (kg)", "Prom. Drop Size",
-                                       "Prom. Eficiencia", "Prom. Util. Vehículos",
-                                       "Prom. Productividad Ruteo", "Días con SLA incumplido",
-                                       "Días con fuera de zona > target"],
-                        "Valor": [n_dias,
-                                   f"{df_h['pedidos'].mean():.0f}",
-                                   f"{df_h['bultos_up'].mean():.0f}",
-                                   f"{df_h['hl'].mean():.2f}",
-                                   f"{df_h['peso_kg'].mean():,.0f}",
-                                   f"{df_h['drop_size'].mean():.2f}",
-                                   f"{df_h['eficiencia'].mean():.1%}",
-                                   f"{df_h['util_vehiculos'].mean():.1%}",
-                                   f"{df_h['prod_ruteo'].mean():.1%}",
-                                   str((df_h["eficiencia"] < _TR_TARGET_EFICIENCIA).sum()),
-                                   str((df_h["fuera_zona_pct"] > _TR_TARGET_FUERA_ZONA).sum())],
-                    })
-                    resumen.to_excel(writer, sheet_name="Resumen", index=False)
-                buf_h.seek(0)
-                mes_nombre = df_h["fecha"].dt.strftime("%Y-%m").mode()[0]
-                fname_h = f"{mes_nombre}_historico_mensual_bkcc.xlsx"
-                st.download_button("⬇️ Descargar", data=buf_h.getvalue(),
-                    file_name=fname_h,
+                    _wsr = _wbm.create_sheet("Resumen")
+                    _wsr.merge_cells("A1:C1")
+                    _rc = _wsr.cell(1,1,f"RESUMEN MENSUAL — {mes_str}")
+                    _rc.fill = _fx2(_NX2); _rc.font = _fo2(True,"FFFFFF",12); _rc.alignment = _al2()
+                    _wsr.row_dimensions[1].height = 20
+                    _res_data = [
+                        ("Indicador","Valor","Target"),
+                        ("Días registrados", n_dias, "—"),
+                        ("PDV promedio/día", f"{df_h['pedidos'].mean():.0f}", "—"),
+                        ("Bultos UP promedio/día", f"{df_h['bultos_up'].mean():.0f}", "—"),
+                        ("HL promedio/día", f"{df_h['hl'].mean():.2f}", "—"),
+                        ("Peso promedio/día (kg)", f"{df_h['peso_kg'].mean():,.0f}", "—"),
+                        ("Drop Size promedio", f"{df_h['drop_size'].mean():.2f}", "—"),
+                        ("Eficiencia promedio", f"{df_h['eficiencia'].mean():.1%}", f"≥{_TR_TARGET_EFICIENCIA:.0%}"),
+                        ("Util. Vehículos promedio", f"{df_h['util_vehiculos'].mean():.1%}", f"≥{_TR_TARGET_UTIL_VEH:.0%}"),
+                        ("Productividad Ruteo promedio", f"{df_h['prod_ruteo'].mean():.1%}", "≥70%"),
+                        ("Días con eficiencia < target", str((df_h["eficiencia"] < _TR_TARGET_EFICIENCIA).sum()), "0"),
+                        ("Días con fuera de zona > target", str((df_h["fuera_zona_pct"] > _TR_TARGET_FUERA_ZONA).sum()), "0"),
+                        ("Días con ocup. bodega < target", str((df_h["ocup_bodega"] < _TR_TARGET_OCUP_BODEGA).sum()), "0"),
+                    ]
+                    for ri2, rrow2 in enumerate(_res_data, 2):
+                        for ci2, vv2 in enumerate(rrow2, 1):
+                            _c2 = _wsr.cell(ri2, ci2, vv2)
+                            if ri2 == 2:
+                                _c2.fill = _fx2("2e5fa3"); _c2.font = _fo2(True,"FFFFFF",10)
+                            else:
+                                _c2.fill = _fx2("F5F5F5") if ri2 % 2 == 0 else _fx2("FFFFFF")
+                                _c2.font = _fo2(sz=10)
+                            _c2.alignment = _al2("left" if ci2 == 1 else "center")
+                            _c2.border = _bd2()
+                        _wsr.row_dimensions[ri2].height = 15
+                    for ci3, cw3 in enumerate([32,14,10], 1):
+                        _wsr.column_dimensions[get_column_letter(ci3)].width = cw3
+
+                    _buf_hm = io.BytesIO(); _wbm.save(_buf_hm); _buf_hm.seek(0)
+                    _mes_nom = df_h["fecha"].dt.strftime("%Y-%m").mode()[0]
+                    ss["hist_xl_bytes"] = _buf_hm.getvalue()
+                    ss["hist_xl_fname"] = f"{_mes_nom}_historico_mensual_bkcc.xlsx"
+                    st.success("✅ Excel mensual generado")
+                except Exception as _exm:
+                    import traceback; st.error(f"Error: {_exm}")
+                    with st.expander("Detalle"): st.code(traceback.format_exc())
+
+            if ss.get("hist_xl_bytes"):
+                st.download_button("⬇️ Descargar Excel mensual", data=ss["hist_xl_bytes"],
+                    file_name=ss.get("hist_xl_fname","historico.xlsx"),
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="hist_dl")
+                    key="hist_dl_xl", use_container_width=True)
 
+        with _em2:
+            st.markdown("**📄 PDF resumen mensual**")
+            if st.button("📄 Generar PDF mensual", key="hist_gen_pdf", use_container_width=True):
+                try:
+                    from reportlab.lib.pagesizes import A4, landscape
+                    from reportlab.lib import colors
+                    from reportlab.lib.units import mm
+                    from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle,
+                        Paragraph, Spacer)
+                    from reportlab.lib.styles import ParagraphStyle
 
+                    _buf_pm = io.BytesIO()
+                    _PW2, _PH2 = landscape(A4)
+                    _docm = SimpleDocTemplate(_buf_pm, pagesize=landscape(A4),
+                        topMargin=8*mm, bottomMargin=8*mm,
+                        leftMargin=10*mm, rightMargin=10*mm)
+                    _usw2 = _PW2 - 20*mm
+                    _NAVY2  = colors.HexColor("#1F3864")
+                    _GREEN2 = colors.HexColor("#00C853")
+                    _RED2   = colors.HexColor("#FF4B4B")
+                    _LGREY2 = colors.HexColor("#F5F5F5")
 
+                    def _p2(txt, sz=10, bold=False, color=colors.black):
+                        return Paragraph(txt, ParagraphStyle("_p2",
+                            fontSize=sz, fontName="Helvetica-Bold" if bold else "Helvetica",
+                            textColor=color, spaceAfter=0, leading=sz+3))
 
+                    _sm = []
+                    # Header
+                    _hdrm = Table([[
+                        _p2(f"HISTÓRICO MENSUAL — {mes_str.upper()}   |   {n_dias} días   |   Beccacece Hnos SA · DPO 2.1", 13, True, colors.white),
+                        _p2(f"Prod. Ruteo:<br/><b>{df_h['prod_ruteo'].mean():.0%}</b>", 11, False,
+                            _GREEN2 if df_h['prod_ruteo'].mean()>=0.7 else _RED2),
+                    ]], colWidths=["82%","18%"])
+                    _hdrm.setStyle(TableStyle([
+                        ("BACKGROUND",(0,0),(0,0),_NAVY2),
+                        ("BACKGROUND",(1,0),(1,0),colors.HexColor("#1a1a2e")),
+                        ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+                        ("ALIGN",(1,0),(1,0),"CENTER"),
+                        ("LEFTPADDING",(0,0),(-1,-1),8),
+                        ("TOPPADDING",(0,0),(-1,-1),7),("BOTTOMPADDING",(0,0),(-1,-1),7),
+                    ]))
+                    _sm.append(_hdrm); _sm.append(Spacer(1,4*mm))
 
+                    # Resumen métricas
+                    _met_data = [
+                        ("Días", str(n_dias)),
+                        ("PDV prom/día", f"{df_h['pedidos'].mean():.0f}"),
+                        ("UP prom/día", f"{df_h['bultos_up'].mean():.0f}"),
+                        ("HL prom/día", f"{df_h['hl'].mean():.2f}"),
+                        ("Eficiencia prom", f"{df_h['eficiencia'].mean():.1%}"),
+                        ("Util. Veh. prom", f"{df_h['util_vehiculos'].mean():.1%}"),
+                        ("Drop Size prom", f"{df_h['drop_size'].mean():.2f}"),
+                        ("Prod. Ruteo prom", f"{df_h['prod_ruteo'].mean():.1%}"),
+                    ]
+                    _met_tbl = Table([[_p2(k,8,True,_NAVY2) for k,_ in _met_data],
+                                      [_p2(v,11,True) for _,v in _met_data]])
+                    _met_tbl.setStyle(TableStyle([
+                        ("GRID",(0,0),(-1,-1),0.3,colors.lightgrey),
+                        *[("BACKGROUND",(i,0),(i,0),colors.HexColor("#E8EAF6")) for i in range(len(_met_data))],
+                        ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
+                        ("LEFTPADDING",(0,0),(-1,-1),5),("ALIGN",(0,0),(-1,-1),"CENTER"),
+                    ]))
+                    _sm.append(_met_tbl); _sm.append(Spacer(1,4*mm))
+
+                    # Alertas
+                    if alertas:
+                        _al_rows = [[_p2("🚨 ALERTAS DEL PERÍODO", 10, True, colors.white)]]
+                        for _al2b in alertas:
+                            _al2b_clean = _al2b.replace("**","").replace("*","")
+                            _al_rows.append([_p2(f"• {_al2b_clean}", 9)])
+                        _alt = Table(_al_rows, colWidths=[_usw2])
+                        _alt.setStyle(TableStyle([
+                            ("BACKGROUND",(0,0),(0,0),_RED2),
+                            ("BACKGROUND",(0,1),(-1,-1),colors.HexColor("#FFF3CD")),
+                            ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
+                            ("LEFTPADDING",(0,0),(-1,-1),8),("GRID",(0,0),(-1,-1),0.3,_RED2),
+                        ]))
+                        _sm.append(_alt); _sm.append(Spacer(1,4*mm))
+
+                    # Tabla datos diarios
+                    _hdr_td = ["Fecha","Día","Cams","PDV","Bultos UP","Paletas","HL",
+                               "Drop Size","Eficiencia","Util.Veh.","FZ%","Ocup.Bod.","Prod.Ruteo"]
+                    _td_rows = [_hdr_td]
+                    for row_td in ss["hist_data"]:
+                        _ef2 = row_td["eficiencia"]
+                        _td_rows.append([
+                            row_td["fecha"].strftime("%d/%m/%y"),
+                            row_td["fecha"].strftime("%a"),
+                            str(row_td["camiones"]), str(row_td["pedidos"]),
+                            f"{row_td['bultos_up']:.0f}", f"{row_td['paletas']:.1f}",
+                            f"{row_td['hl']:.2f}", f"{row_td['drop_size']:.2f}",
+                            f"{_ef2:.0%}", f"{row_td['util_vehiculos']:.0%}",
+                            f"{row_td['fuera_zona_pct']:.1%}", f"{row_td['ocup_bodega']:.0f}",
+                            f"{row_td['prod_ruteo']:.0%}",
+                        ])
+                    # Fila promedio
+                    _td_rows.append([
+                        "PROM.", "—", f"{df_h['camiones'].mean():.1f}", f"{df_h['pedidos'].mean():.0f}",
+                        f"{df_h['bultos_up'].mean():.0f}", f"{df_h['paletas'].mean():.1f}",
+                        f"{df_h['hl'].mean():.2f}", f"{df_h['drop_size'].mean():.2f}",
+                        f"{df_h['eficiencia'].mean():.0%}", f"{df_h['util_vehiculos'].mean():.0%}",
+                        f"{df_h['fuera_zona_pct'].mean():.1%}", f"{df_h['ocup_bodega'].mean():.0f}",
+                        f"{df_h['prod_ruteo'].mean():.0%}",
+                    ])
+
+                    _cwm = [_usw2*v for v in [0.08,0.07,0.055,0.055,0.075,0.065,
+                                               0.055,0.07,0.08,0.07,0.065,0.07,0.08]]
+                    _tbl_td = Table(_td_rows, repeatRows=1, colWidths=_cwm)
+                    _ds_td = [
+                        ("BACKGROUND",(0,0),(-1,0),_NAVY2),
+                        ("TEXTCOLOR",(0,0),(-1,0),colors.white),
+                        ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),
+                        ("FONTSIZE",(0,0),(-1,-1),9),
+                        ("FONTNAME",(0,1),(-1,-1),"Helvetica"),
+                        ("ROWBACKGROUNDS",(0,1),(-1,-2),[colors.white, _LGREY2]),
+                        ("BACKGROUND",(0,-1),(-1,-1),colors.HexColor("#E8EAF6")),
+                        ("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),
+                        ("GRID",(0,0),(-1,-1),0.3,colors.lightgrey),
+                        ("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),3),
+                        ("LEFTPADDING",(0,0),(-1,-1),4),("ALIGN",(0,0),(-1,-1),"CENTER"),
+                    ]
+                    # Colorear filas con eficiencia < target
+                    for _ri4, _rd4 in enumerate(ss["hist_data"], 1):
+                        if _rd4["eficiencia"] < _TR_TARGET_EFICIENCIA:
+                            _ds_td.append(("BACKGROUND",(8,_ri4),(8,_ri4),colors.HexColor("#FFE0E0")))
+                    _tbl_td.setStyle(TableStyle(_ds_td))
+                    _sm.append(_tbl_td)
+
+                    # Footer
+                    _sm.append(Spacer(1,3*mm))
+                    _sm.append(_p2(f"Generado: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')} · Picking Orchestrator v{APP_VERSION} · Beccacece Hnos SA — DPO 2.1", 7, color=colors.grey))
+
+                    _docm.build(_sm)
+                    _buf_pm.seek(0)
+                    _mes_nom2 = df_h["fecha"].dt.strftime("%Y-%m").mode()[0]
+                    ss["hist_pdf_bytes"] = _buf_pm.getvalue()
+                    ss["hist_pdf_fname"] = f"{_mes_nom2}_historico_mensual_bkcc.pdf"
+                    st.success("✅ PDF mensual generado")
+                except Exception as _epm:
+                    import traceback; st.error(f"Error PDF mensual: {_epm}")
+                    with st.expander("Detalle"): st.code(traceback.format_exc())
+
+            if ss.get("hist_pdf_bytes"):
+                st.download_button("⬇️ Descargar PDF mensual", data=ss["hist_pdf_bytes"],
+                    file_name=ss.get("hist_pdf_fname","historico.pdf"),
+                    mime="application/pdf", key="hist_dl_pdf", use_container_width=True)
 
 def main():
     st.set_page_config(
