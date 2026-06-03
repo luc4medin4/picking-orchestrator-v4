@@ -1678,7 +1678,7 @@ def render_tab_archivos():
     with col_a:
         st.markdown("#### 🗂️ CAR.xlsx")
         car_file = st.file_uploader(
-            "CAR.xlsx (export Chess) *",
+            "CAR.xlsx *",
             type=["xlsx"],
             key="arch_car",
             accept_multiple_files=False,
@@ -1716,7 +1716,7 @@ def render_tab_archivos():
     with col_c:
         st.markdown("#### 📊 ANR.xlsx")
         anr_file = st.file_uploader(
-            "ANR.xlsx (Análisis de Rechazos / venta del día)",
+            "ANR.xlsx",
             type=["xlsx"],
             key="arch_anr",
             accept_multiple_files=False,
@@ -1742,12 +1742,12 @@ def render_tab_archivos():
         elif st.session_state.get("tc_anr"):
             st.info(f"📎 En uso: {st.session_state['tc_anr'].name}")
         else:
-            st.info("Opcional — requerido para 🏷️ Clasificación, Top SKUs y 💰 Cierre")
+            st.info("Opcional — Cierre D+1")
 
     with col_d:
         st.markdown("#### 💰 SR.xlsx")
         sr_file = st.file_uploader(
-            "SR.xlsx (resumen Chess por camión)",
+            "SR.xlsx",
             type=["xlsx"],
             key="arch_sr",
             accept_multiple_files=False,
@@ -1758,12 +1758,12 @@ def render_tab_archivos():
         elif st.session_state.get("cierre_sr"):
             st.info(f"📎 En uso: {st.session_state['cierre_sr'].name}")
         else:
-            st.info("Requerido para 💰 Cierre — cols A (idCns), B (dsCns), F (TotVal)")
+            st.info("Requerido para 💰 Cierre")
 
     with col_e:
         st.markdown("#### 📅 SR D+1.xlsx")
         sr_d1_file = st.file_uploader(
-            "SR Actualizado (día siguiente — col F TotVal real)",
+            "SR D+1.xlsx",
             type=["xlsx"],
             key="arch_sr_d1",
             accept_multiple_files=False,
@@ -1779,7 +1779,7 @@ def render_tab_archivos():
     with col_f:
         st.markdown("#### 📊 ANR -1.xlsx")
         anr_m1_file = st.file_uploader(
-            "ANR del día anterior (para CTA CTE en Cierre D+1)",
+            "ANR -1.xlsx",
             type=["xlsx"],
             key="arch_anr_m1",
             accept_multiple_files=False,
