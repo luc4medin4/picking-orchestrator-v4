@@ -123,7 +123,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.56.0"
+APP_VERSION = "4.57.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -3701,19 +3701,28 @@ def render_tab_proyeccion():
     _pre_fin_global = max(v["fin_dt"] for v in _pre_fin_por_cancha.values())
 
     def _semaforo_delta_pre(fin_dt, fin_global_dt, bultos):
+        """
+        Semáforo comparativo entre cancha y FIN GLOBAL.
+        delta_min > 0 → cancha termina ANTES que el global (holgura, puede recibir más)
+        delta_min < 0 → cancha termina DESPUÉS (sobrecargada, debería ceder carga)
+        delta_min ≈ 0 → emparejada con el global
+        """
         if bultos <= 0:
             return "off", "sin carga"
         delta_min = (fin_global_dt - fin_dt).total_seconds() / 60.0
         if delta_min >= 15:
-            return "normal", f"✅ {delta_min:.0f}' holgura"
+            # Termina mucho antes → tiene holgura, puede absorber más carga
+            return "normal", f"✅ {delta_min:.0f}' holgura — puede recibir carga"
         elif delta_min >= 5:
             return "off", f"🟡 {delta_min:.0f}' holgura"
         elif delta_min >= -5:
-            return "off", "🎯 emparejada"
+            # Emparejada: muy cerca del fin global → bien balanceada
+            return "off", "🎯 al tope del global"
         elif delta_min >= -15:
-            return "inverse", f"⚠ {-delta_min:.0f}' tarde"
+            # Sobrecargada: termina más tarde → es la cancha crítica
+            return "inverse", f"⚠ {-delta_min:.0f}' sobre el global — redistribuir carga"
         else:
-            return "inverse", f"🔴 {-delta_min:.0f}' tarde"
+            return "inverse", f"🔴 {-delta_min:.0f}' sobre el global — redistribuir urgente"
 
     _pre_totales_pall_c = totales_calc_pre["total"]
 
@@ -3733,8 +3742,7 @@ def render_tab_proyeccion():
         _ini_s    = _fp_pre["inicio"].strftime("%H:%M")
         _dc, _dm  = _semaforo_delta_pre(_fp_pre["fin_dt"], _pre_fin_global, _fp_pre["bultos"])
         _sub_top  = (
-            f"{_dm} · {_ini_s} → {_fp_pre['bultos']:.0f} bult · "
-            f"{_pre_totales_pall_c.get(_cn, 0):.2f} pall"
+            f"{_dm} | inicio {_ini_s} → {_fp_pre['bultos']:.0f} bult"
         )
         _fin_cols_top[_i].metric(f"FIN {_short_cn}", _fin_s, _sub_top, delta_color=_dc)
     _fin_cols_top[-1].metric("🏁 FIN GLOBAL", _pre_fin_global.strftime("%H:%M"),
@@ -3743,10 +3751,9 @@ def render_tab_proyeccion():
     st.divider()
 
     st.caption(
-        "**UP** = `(bultos + sueltas / un_bulto) / BXP`. "
-        "AE = `floor(UP)` (paletas enteras). Picking = fracción restante por cancha (DDM col O). "
-        "Columnas **ASIGN.** editables: escribí la cancha destino (CI/CII/CIII/CIV/MKPL) para reasignar. "
-        "Barras UP: 🟢 <0.5 · 🟡 0.5–1.0 · 🔴 >1.0 pall."
+        "**Bult CX** = bultos reales de picking por cancha × camión. "
+        "AE = paletas enteras (autoelevador). **ASIGN →CX** = reasignar carga de esa fila a otra cancha. "
+        "TOT PALL = pallets totales (AE + picking). Barras rojas = bultos picking · barra verde = PALL total."
     )
 
     cam_list = sorted(df_display["Camión"].tolist())
@@ -3757,14 +3764,20 @@ def render_tab_proyeccion():
 
     edit_rows = []
     max_bult_pick = 0.0
+    max_bult_cn   = 0.0   # para escala de ProgressColumn por cancha
     for _, row in df_display.iterrows():
         cam = int(row["Camión"])
         sr  = status_rows_pre.get(cam, {})
         rec = {"#": cam_to_num.get(cam, "—"), "Camión": cam}
         for cn in _T4_CANCHAS:
             short = cn.replace("CANCHA ", "C")
-            up_val = round(float(row.get(f"_up_{cn}", 0.0)), 3)
-            rec[f"UP {short}"]    = up_val
+            # v4.57: mostrar BULTOS reales de picking por cancha (no UP fraccionario)
+            # La columna `cn` del df tiene bult_pick; `_up_cn` tiene el valor UP fracción.
+            bult_cn = round(float(row.get(cn, 0.0)), 1)   # bultos reales de picking
+            up_cn   = round(float(row.get(f"_up_{cn}", 0.0)), 3)  # guardado oculto para tooltip
+            max_bult_cn = max(max_bult_cn, bult_cn)
+            rec[f"Bult {short}"]   = bult_cn
+            rec[f"_up_{short}"]    = up_cn   # columna oculta — se excluye del editor visible
             cur_asign = _current_asign.get((cam, cn), "")
             rec[f"ASIGN {short}"] = cur_asign if cur_asign else ""
         bp = round(float(row.get("TOTAL_PICK", 0.0)), 1)
@@ -3772,7 +3785,7 @@ def render_tab_proyeccion():
         rec["Bult Pick"] = bp
         rec["AE Pall"]   = round(float(row.get("AE_PALL", 0.0)), 2)
         rec["TOT PALL"]  = round(float(sr.get("total_pall", 0.0)), 2)
-        # STATUS con emoji visual (v4.36)
+        # STATUS con emoji visual
         raw_status = sr.get("status", "—")
         if raw_status == "OK":
             rec["STATUS"] = "✅ OK"
@@ -3784,47 +3797,63 @@ def render_tab_proyeccion():
 
     df_editor_in = pd.DataFrame(edit_rows)
 
-    # Tope dinámico de las barras (escala de magnitud)
-    bp_max_scale = max(100.0, max_bult_pick * 1.05)  # +5% headroom
+    # v4.57: escalas dinámicas para columnas de bultos por cancha
+    bp_max_scale  = max(100.0, max_bult_pick * 1.05)   # escala Bult Pick total
+    bcn_max_scale = max(50.0,  max_bult_cn  * 1.05)    # escala Bult por cancha
 
-    # Construir column_config con ProgressColumn para TOT PALL y Bult Pick (v4.36)
+    # ── column_config v4.57 ──────────────────────────────────────────────────
+    # Principios de diseño:
+    #  • Bult CI/CII/…: NumberColumn con barra roja (diferente al verde de TOT PALL)
+    #  • TOT PALL: ProgressColumn verde (pallets AE + pick)
+    #  • Anchos: small para #/STATUS/AE; medium para el resto → sin scroll horizontal
     col_cfg = {
         "#":         st.column_config.NumberColumn("#", disabled=True, width="small"),
-        "Camión":    st.column_config.NumberColumn("Camión", disabled=True),
-        "Bult Pick": st.column_config.ProgressColumn(
-            "Bult Pick",
-            help="Bultos totales de picking por camión. Barra ∝ magnitud.",
-            format="%.1f", min_value=0.0, max_value=bp_max_scale,
+        "Camión":    st.column_config.NumberColumn("Cam.", disabled=True, width="small"),
+        "Bult Pick": st.column_config.NumberColumn(
+            "Tot.Bult",
+            help="Bultos totales picking (suma todas las canchas).",
+            format="%.0f", disabled=True, width="small",
         ),
-        "AE Pall":   st.column_config.NumberColumn("AE Pall",  disabled=True, format="%.2f"),
+        "AE Pall":   st.column_config.NumberColumn(
+            "AE Pall", disabled=True, format="%.1f", width="small",
+        ),
         "TOT PALL":  st.column_config.ProgressColumn(
             "TOT PALL",
-            help="Total pallets por camión (verde<8, ámbar 8–9, rojo>9).",
-            format="%.2f", min_value=0.0, max_value=12.0,
+            help="Pallets totales por camión (barra verde: escala 0–12).",
+            format="%.1f", min_value=0.0, max_value=12.0,
+            width="medium",
         ),
-        "STATUS":    st.column_config.TextColumn("STATUS", disabled=True),
+        "STATUS":    st.column_config.TextColumn("OK?", disabled=True, width="small"),
     }
-    # v4.55: UP columns → ProgressColumn con umbral dinámico.
-    # max_value=2.0 → escala consistente entre canchas (🟢<0.5 · 🟡0.5-1.0 · 🔴>1.0)
+    # Bult por cancha: NumberColumn con barra — color rojo/naranja (distinto a TOT PALL verde)
+    # ASIGN: SelectboxColumn compacta
     for cn in _T4_CANCHAS:
         short = cn.replace("CANCHA ", "C")
-        col_cfg[f"UP {short}"] = st.column_config.ProgressColumn(
-            f"UP {short}",
-            help=f"Pallets UP picking en {cn}. 🟢 <0.5 · 🟡 0.5-1.0 · 🔴 >1.0",
-            format="%.3f",
+        col_cfg[f"Bult {short}"] = st.column_config.ProgressColumn(
+            f"B.{short}",
+            help=f"Bultos de picking en {cn} por camión.",
+            format="%.0f",
             min_value=0.0,
-            max_value=2.0,
+            max_value=bcn_max_scale,
+            width="small",
+        )
+        # Columna UP oculta (guardada en df pero no se muestra al usuario)
+        col_cfg[f"_up_{short}"] = st.column_config.NumberColumn(
+            f"_up_{short}", disabled=True, width="small",
         )
         col_cfg[f"ASIGN {short}"] = st.column_config.SelectboxColumn(
-            f"ASIGN {short}", options=_ASIGN_OPTS, default="", required=False,
+            f"→{short}", options=_ASIGN_OPTS, default="", required=False,
+            width="small",
         )
 
-    # Ordenar columnas
+    # Ordenar columnas: mostrar Bult+ASIGN por cancha, luego totales
+    # Las columnas _up_X se excluyen del editor (se guardan en df pero no se renderizan)
     ordered_cols = ["#", "Camión"]
     for cn in _T4_CANCHAS:
         short = cn.replace("CANCHA ", "C")
-        ordered_cols += [f"UP {short}", f"ASIGN {short}"]
+        ordered_cols += [f"Bult {short}", f"ASIGN {short}"]
     ordered_cols += ["Bult Pick", "AE Pall", "TOT PALL", "STATUS"]
+    # _up_ cols se excluyen explícitamente del display (no van en ordered_cols)
     df_editor_in = df_editor_in[ordered_cols]
 
     edited_df = st.data_editor(
@@ -3953,19 +3982,20 @@ def render_tab_proyeccion():
     # Sirve para identificar canchas atrasadas (rojo) o con holgura (verde
     # con tiempo sobrante) para decidir reasignar.
     def _semaforo_delta(fin_dt, fin_global_dt, bultos):
+        """Semáforo POST-tabla (idéntica lógica al PRE)."""
         if bultos <= 0:
             return "off", "sin carga"
         delta_min = (fin_global_dt - fin_dt).total_seconds() / 60.0
         if delta_min >= 15:
-            return "normal", f"✅ {delta_min:.0f}' holgura"   # verde (mucha holgura → puede recibir carga)
+            return "normal", f"✅ {delta_min:.0f}' holgura — puede recibir carga"
         elif delta_min >= 5:
-            return "off", f"🟡 {delta_min:.0f}' holgura"      # neutro (poca holgura)
+            return "off", f"🟡 {delta_min:.0f}' holgura"
         elif delta_min >= -5:
-            return "off", "🎯 emparejada"                     # neutral (cerca del fin global)
+            return "off", "🎯 al tope del global"
         elif delta_min >= -15:
-            return "inverse", f"⚠ {-delta_min:.0f}' tarde"   # ámbar (algo tarde)
+            return "inverse", f"⚠ {-delta_min:.0f}' sobre el global — redistribuir carga"
         else:
-            return "inverse", f"🔴 {-delta_min:.0f}' tarde"   # rojo (muy tarde → enviar carga a otra cancha)
+            return "inverse", f"🔴 {-delta_min:.0f}' sobre el global — redistribuir urgente"
 
     # ── Cabecera PICKING (detalle) ────────────────────────────────────────────
     st.divider()
@@ -3985,8 +4015,7 @@ def render_tab_proyeccion():
         ini_s = fp["inicio"].strftime("%H:%M")
         delta_color, delta_msg = _semaforo_delta(fp["fin_dt"], fin_global_dt, fp["bultos"])
         sub_line = (
-            f"{delta_msg} · {ini_s} → {fp['bultos']:.0f} bult · "
-            f"{totales_pall_c.get(cn, 0):.2f} pall"
+            f"{delta_msg} | inicio {ini_s} → {fp['bultos']:.0f} bult"
         )
         fin_cols[i].metric(f"FIN {short}", fin_s, sub_line, delta_color=delta_color)
     fin_cols[-1].metric("🏁 FIN GLOBAL", fin_global_dt.strftime("%H:%M"),
