@@ -1,5 +1,5 @@
 """
-Picking Orchestrator v4.54.0 — Beccacece Hnos SA
+Picking Orchestrator v4.55.1 — Beccacece Hnos SA
 
 CAMBIOS v4.54.0:
   - 🔧 HL y Peso — estrategia híbrida completa:
@@ -104,7 +104,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.54.0"
+APP_VERSION = "4.55.1"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -3612,17 +3612,111 @@ def render_tab_proyeccion():
     if "t4_asign" not in st.session_state:
         st.session_state["t4_asign"] = {}
 
-    # ── Calcular totales con ASIGN actual (para poblar la tabla del editor) ──
-    totales_calc_pre = _t4_calcular_pall_por_cancha(df_display, st.session_state["t4_asign"])
+    # ── v4.55.1: Reconstruir live_asign desde el estado interno del editor ────
+    # Streamlit actualiza st.session_state["t4_main_editor"] ANTES de ejecutar
+    # el script (al inicio del rerun), por lo que ya tiene las edits del ciclo
+    # actual. Esto elimina el lag de un ciclo en el header de horarios.
+    def _rebuild_live_asign_from_editor_state() -> dict:
+        raw = st.session_state.get("t4_main_editor")
+        if not raw or not isinstance(raw, dict):
+            return st.session_state.get("t4_asign", {})
+        edits = raw.get("edited_rows", {})
+        if not edits:
+            return st.session_state.get("t4_asign", {})
+        # Reconstruir: partir del session_state y aplicar los deltas del editor
+        result = dict(st.session_state.get("t4_asign", {}))
+        # Los índices de edited_rows son índices de fila del df_editor_in
+        cam_list_ordered = sorted(df_display["Camión"].tolist())
+        for row_idx_str, changes in edits.items():
+            try:
+                row_idx = int(row_idx_str)
+                if row_idx >= len(cam_list_ordered):
+                    continue
+                cam_e = cam_list_ordered[row_idx]
+                for col_changed, new_val in changes.items():
+                    if not col_changed.startswith("ASIGN "):
+                        continue
+                    short = col_changed[len("ASIGN "):]
+                    cn_full = "CANCHA " + short if short not in ("MKPL",) else short
+                    # Normalizar al nombre completo
+                    cn_norm = _t4_norm_cancha(cn_full if short != "MKPL" else "MKPL")
+                    new_str = (new_val or "").strip() if isinstance(new_val, str) else ""
+                    key = (cam_e, cn_norm)
+                    if new_str:
+                        result[key] = new_str
+                    elif key in result:
+                        del result[key]
+            except (ValueError, IndexError):
+                continue
+        return result
+
+    _current_asign = _rebuild_live_asign_from_editor_state()
+
+    # ── Calcular totales con ASIGN actual (consistente con el header) ─────────
+    totales_calc_pre = _t4_calcular_pall_por_cancha(df_display, _current_asign)
     status_rows_pre  = totales_calc_pre["status_rows"]
 
     # ── Tabla principal con ASIGN integrado ──────────────────────────────────
     st.subheader("📦 Pallets UP por camión")
+
+    # ── v4.55.1: Horarios de salida estimados ENCIMA de la tabla (sin lag) ────
+    # Usa _current_asign que ya incorpora los cambios del editor en este ciclo.
+    _pre_met = _t4_calcular_metricas_por_cancha(df_display, _current_asign)
+    _pre_bult = _pre_met["bultos"]
+    _pre_fin_por_cancha = {}
+    for _cn in _T4_CANCHAS:
+        _bult_cn = _pre_bult[_cn]
+        _fin_cn  = _t4_hora_fin(_bult_cn, vel_custom[_cn], pers_custom[_cn], inicio_custom[_cn])
+        _pre_fin_por_cancha[_cn] = {"bultos": _bult_cn, "fin_dt": _fin_cn, "inicio": inicio_custom[_cn]}
+    _pre_fin_global = max(v["fin_dt"] for v in _pre_fin_por_cancha.values())
+
+    def _semaforo_delta_pre(fin_dt, fin_global_dt, bultos):
+        if bultos <= 0:
+            return "off", "sin carga"
+        delta_min = (fin_global_dt - fin_dt).total_seconds() / 60.0
+        if delta_min >= 15:
+            return "normal", f"✅ {delta_min:.0f}' holgura"
+        elif delta_min >= 5:
+            return "off", f"🟡 {delta_min:.0f}' holgura"
+        elif delta_min >= -5:
+            return "off", "🎯 emparejada"
+        elif delta_min >= -15:
+            return "inverse", f"⚠ {-delta_min:.0f}' tarde"
+        else:
+            return "inverse", f"🔴 {-delta_min:.0f}' tarde"
+
+    _pre_totales_pall_c = totales_calc_pre["total"]
+
+    _hdr_top = st.columns([2, 1, 1, 1, 2])
+    _hdr_top[0].markdown(f"**🕐 PICKING** — {pdata['fecha']}")
+    _hdr_top[1].metric("Inicio (CI)", hora_inicio_global.strftime("%H:%M"))
+    _hdr_top[2].metric("Fin global", _pre_fin_global.strftime("%H:%M"))
+    _hdr_top[3].metric("Mix picking", f"{pdata['mix_picking']*100:.1f}%")
+    _hdr_top[4].caption(f"Fuente: {pdata['fuente']}")
+
+    st.markdown("##### 🏁 Horario estimado fin por cancha")
+    _fin_cols_top = st.columns(len(_T4_CANCHAS) + 1)
+    for _i, _cn in enumerate(_T4_CANCHAS):
+        _short_cn = _cn.replace("CANCHA ", "C")
+        _fp_pre   = _pre_fin_por_cancha[_cn]
+        _fin_s    = _fp_pre["fin_dt"].strftime("%H:%M") if _fp_pre["bultos"] > 0 else "—"
+        _ini_s    = _fp_pre["inicio"].strftime("%H:%M")
+        _dc, _dm  = _semaforo_delta_pre(_fp_pre["fin_dt"], _pre_fin_global, _fp_pre["bultos"])
+        _sub_top  = (
+            f"{_dm} · {_ini_s} → {_fp_pre['bultos']:.0f} bult · "
+            f"{_pre_totales_pall_c.get(_cn, 0):.2f} pall"
+        )
+        _fin_cols_top[_i].metric(f"FIN {_short_cn}", _fin_s, _sub_top, delta_color=_dc)
+    _fin_cols_top[-1].metric("🏁 FIN GLOBAL", _pre_fin_global.strftime("%H:%M"),
+                             f"{sum(v['bultos'] for v in _pre_fin_por_cancha.values()):.0f} bult tot",
+                             delta_color="off")
+    st.divider()
+
     st.caption(
         "**UP** = `(bultos + sueltas / un_bulto) / BXP`. "
         "AE = `floor(UP)` (paletas enteras). Picking = fracción restante por cancha (DDM col O). "
         "Columnas **ASIGN.** editables: escribí la cancha destino (CI/CII/CIII/CIV/MKPL) para reasignar. "
-        "Las barras coloreadas indican magnitud de carga por camión (verde→ámbar→rojo)."
+        "Barras UP: 🟢 <0.5 · 🟡 0.5–1.0 · 🔴 >1.0 pall."
     )
 
     cam_list = sorted(df_display["Camión"].tolist())
@@ -3641,7 +3735,7 @@ def render_tab_proyeccion():
             short = cn.replace("CANCHA ", "C")
             up_val = round(float(row.get(f"_up_{cn}", 0.0)), 3)
             rec[f"UP {short}"]    = up_val
-            cur_asign = st.session_state["t4_asign"].get((cam, cn), "")
+            cur_asign = _current_asign.get((cam, cn), "")
             rec[f"ASIGN {short}"] = cur_asign if cur_asign else ""
         bp = round(float(row.get("TOTAL_PICK", 0.0)), 1)
         max_bult_pick = max(max_bult_pick, bp)
@@ -3680,9 +3774,17 @@ def render_tab_proyeccion():
         ),
         "STATUS":    st.column_config.TextColumn("STATUS", disabled=True),
     }
+    # v4.55: UP columns → ProgressColumn con umbral dinámico.
+    # max_value=2.0 → escala consistente entre canchas (🟢<0.5 · 🟡0.5-1.0 · 🔴>1.0)
     for cn in _T4_CANCHAS:
         short = cn.replace("CANCHA ", "C")
-        col_cfg[f"UP {short}"]    = st.column_config.NumberColumn(f"UP {short}", disabled=True, format="%.3f")
+        col_cfg[f"UP {short}"] = st.column_config.ProgressColumn(
+            f"UP {short}",
+            help=f"Pallets UP picking en {cn}. 🟢 <0.5 · 🟡 0.5-1.0 · 🔴 >1.0",
+            format="%.3f",
+            min_value=0.0,
+            max_value=2.0,
+        )
         col_cfg[f"ASIGN {short}"] = st.column_config.SelectboxColumn(
             f"ASIGN {short}", options=_ASIGN_OPTS, default="", required=False,
         )
