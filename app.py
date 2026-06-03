@@ -1,5 +1,15 @@
 """
-Picking Orchestrator v4.56.0 — Beccacece Hnos SA
+Picking Orchestrator v4.62.0 — Beccacece Hnos SA
+
+CAMBIOS v4.62.0 — FIX UI UPLOADERS TAB ARCHIVOS:
+  - 🐛 FIX: El uploader de Frescura (y demás) mostraba "200MB per file • XLSX"
+    y un área de drop más grande que el de CAR cuando había un archivo cargado.
+  - ✅ CSS inyectado en render_tab_archivos() que oculta el texto "per file"
+    y compacta el padding del dropzone, igualando visualmente todos los
+    uploaders del tab independientemente de si tienen archivo cargado o no.
+
+
+Picking Orchestrator v4.61.0 — Beccacece Hnos SA
 
 CAMBIOS v4.56.0 — FIX HORARIOS CONGELADOS EN PROYECCIÓN PICKING:
   - 🐛 ROOT CAUSE: _rebuild_live_asign_from_editor_state() leía
@@ -123,7 +133,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.58.0"
+APP_VERSION = "4.62.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -1671,6 +1681,27 @@ def render_tab_archivos():
     st.caption(
         "Subí aquí los archivos fuente. Quedan disponibles para **todas las pestañas** "
         "de la sesión sin necesidad de volver a cargarlos."
+    )
+    # Ocultar el texto "per file" y normalizar tamaño del área de drop en uploaders
+    st.markdown(
+        """
+        <style>
+        /* Ocultar "200MB per file • XLSX" y texto de límite en todos los uploaders del tab */
+        [data-testid="stFileUploader"] small,
+        [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzoneInstructions"] small {
+            display: none !important;
+        }
+        /* Compactar el área de drop para que todos los uploaders sean del mismo tamaño */
+        [data-testid="stFileUploaderDropzone"] {
+            padding: 0.6rem 0.5rem !important;
+            min-height: unset !important;
+        }
+        [data-testid="stFileUploaderDropzoneInstructions"] {
+            gap: 0.25rem !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
 
     col_a, col_b, col_c, col_d, col_e, col_f = st.columns(6)
