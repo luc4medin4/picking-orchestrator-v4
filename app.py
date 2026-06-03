@@ -1,4 +1,23 @@
 """
+Picking Orchestrator v4.63.0 — Beccacece Hnos SA
+
+CAMBIOS v4.63.0 — FIX ALINEACIÓN TABLAS CONCEPTO (Proyección Picking):
+  - 🐛 ROOT CAUSE: Las tablas "SUB Total PALL / DESIGNADOS / TOTAL PALL x CANCHA"
+    y "TOTAL BULTOS / HL / KG / HORA EST. FIN" se renderizaban como st.dataframe
+    separados. Streamlit distribuye el ancho de columnas de forma independiente
+    en cada tabla, haciendo imposible la alineación pixel-perfecta con la tabla
+    de reasignación principal (data_editor con 14 columnas).
+  - ✅ FIX: Ambas tablas reemplazadas por HTML puro (st.markdown unsafe_allow_html).
+    La columna Concepto ocupa 14% del ancho del contenedor (delgada).
+    Cada cancha ocupa (86% / N_canchas) de forma proporcional.
+    Esto replica exactamente la distribución visual del data_editor, donde las
+    columnas CI/CII/CIII/CIV/MKPL aparecen en la misma posición horizontal.
+  - ✅ Las dos tablas HTML se generan en un solo bloque envuelto en div oscuro,
+    manteniendo el look & feel del tema dark de Streamlit.
+  - ✅ TOTAL PALL x CANCHA mantiene el fondo naranja (#FF8C00) y texto blanco.
+  - ✅ Sin cambios en lógica de cálculo — solo presentación.
+
+
 Picking Orchestrator v4.62.0 — Beccacece Hnos SA
 
 CAMBIOS v4.62.0 — FIX UI UPLOADERS TAB ARCHIVOS:
@@ -133,7 +152,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.62.0"
+APP_VERSION = "4.63.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -3905,9 +3924,8 @@ def render_tab_proyeccion():
     # Al hacer cambios en ASIGN, live_asign ya está correcto en este ciclo
     # para los cálculos POST-tabla. El header PRE-tabla (encima del editor)
     # se actualiza al ciclo SIGUIENTE. El botón fuerza ese rerun inmediatamente.
-    # Botón alineado con las columnas de la tabla (Concepto + 5 canchas).
-    # Las proporciones [2, 1, 1, 1, 1, 1] reflejan el ancho relativo de la
-    # columna "Concepto" vs. cada cancha, igual que el st.dataframe de abajo.
+    # Botón en la primera columna; caption en la segunda.
+    # Las tablas de concepto debajo son HTML con anchos fijos (v4.63.0).
     _rcol1, _rcol2, _rcol3, _rcol4, _rcol5, _rcol6 = st.columns([2, 1, 1, 1, 1, 1])
     with _rcol1:
         if st.button(
@@ -3936,30 +3954,106 @@ def render_tab_proyeccion():
     totales_pall_c = totales_calc["total"]
 
     # ── Filas SUB / DESIGNADOS / TOTAL ───────────────────────────────────────
-    resumen_pall = pd.DataFrame({
-        "Concepto": ["SUB Total PALL", "DESIGNADOS PALL", "TOTAL PALL x CANCHA"],
-        **{cn.replace("CANCHA ", "C"): [
-            round(totales_calc["sub"][cn], 2),
-            round(totales_calc["designados"][cn], 2),
-            round(totales_calc["total"][cn], 2),
-        ] for cn in _T4_CANCHAS}
-    })
+    # v4.63.0 — Tablas de concepto renderizadas como HTML para alineación
+    # pixel-perfecta con las columnas CI/CII/CIII/CIV/MKPL de la tabla
+    # de reasignación. La columna Concepto es delgada (130px); cada cancha
+    # ocupa 1fr del espacio restante, replicando la distribución visual del
+    # data_editor principal.
     _cancha_cols_pall = [cn.replace("CANCHA ", "C") for cn in _T4_CANCHAS]
-    # column_config fuerza el ancho de "Concepto" proporcional al ratio [2,1,1,1,1,1]
-    # usado en el botón "Recalcular horarios", para que todo quede alineado.
-    _col_cfg_pall = {
-        "Concepto": st.column_config.TextColumn("Concepto", width="medium"),
-        **{c: st.column_config.NumberColumn(c, width="small") for c in _cancha_cols_pall},
-    }
-    st.dataframe(
-        resumen_pall.style.format(
-            {col: "{:.2f}" for col in _cancha_cols_pall}
-        ).apply(
-            lambda row: ["background-color: #FF8C00; color: white" if row.name == 2 else "" for _ in row],
-            axis=1,
-        ),
-        use_container_width=True, hide_index=True, column_config=_col_cfg_pall,
-    )
+
+    def _html_concepto_tables(
+        canchas_short,
+        pall_sub, pall_des, pall_tot,
+        bult_vals, hl_vals, kg_vals, fin_vals,
+    ):
+        """Genera dos tablas HTML alineadas con la tabla de reasignación."""
+        # Anchos: col Concepto fija 130px, canchas igual distribución con flex
+        # Usamos tabla con table-layout:fixed y porcentajes para que respeten
+        # el ancho del contenedor igual que use_container_width=True.
+        # Concepto = 14% del ancho total (≈130px en pantalla típica ~930px).
+        # Cada cancha = (86% / N_canchas).
+        N = len(canchas_short)
+        conc_pct = 14
+        each_pct = round((100 - conc_pct) / N, 2)
+
+        def _td(val, bg="", color="", bold=False, align="right"):
+            style = f"padding:4px 8px;text-align:{align};font-size:12px;"
+            if bg:    style += f"background:{bg};"
+            if color: style += f"color:{color};"
+            if bold:  style += "font-weight:600;"
+            return f'<td style="{style}">{val}</td>'
+
+        def _th(val, align="right"):
+            style = (
+                f"padding:4px 8px;text-align:{align};font-size:11px;"
+                "background:#1e3a5f;color:#fff;font-weight:600;"
+            )
+            return f'<th style="{style}">{val}</th>'
+
+        tbl_style = (
+            "width:100%;table-layout:fixed;border-collapse:collapse;"
+            "margin-bottom:4px;"
+        )
+        col_tags = (
+            f'<col style="width:{conc_pct}%">'
+            + "".join(f'<col style="width:{each_pct}%">' for _ in canchas_short)
+        )
+
+        # ── Tabla 1: PALL ────────────────────────────────────────────────────
+        hdr = _th("Concepto", align="left") + "".join(_th(c) for c in canchas_short)
+        rows_pall = [
+            ("SUB Total PALL",     pall_sub, "",        "",      False),
+            ("DESIGNADOS PALL",    pall_des, "",        "",      False),
+            ("TOTAL PALL x CANCHA",pall_tot, "#FF8C00", "#fff",  True),
+        ]
+        body1 = ""
+        for label, vals, bg, fg, bold in rows_pall:
+            cells = _td(label, bg=bg, color=fg, bold=bold, align="left")
+            for v in vals:
+                cells += _td(f"{v:.2f}", bg=bg, color=fg, bold=bold)
+            body1 += f'<tr style="border-bottom:1px solid #333;">{cells}</tr>'
+
+        table1 = (
+            f'<table style="{tbl_style}">'
+            f"<colgroup>{col_tags}</colgroup>"
+            f"<thead><tr>{hdr}</tr></thead>"
+            f"<tbody>{body1}</tbody>"
+            f"</table>"
+        )
+
+        # ── Tabla 2: BULTOS / HL / KG / FIN ─────────────────────────────────
+        hdr2 = _th("Concepto", align="left") + "".join(_th(c) for c in canchas_short)
+        rows_extra = [
+            ("TOTAL BULTOS",   [f"{v:.1f}" for v in bult_vals]),
+            ("TOTAL HL",       [f"{v:.2f}" for v in hl_vals]),
+            ("TOTAL KG",       [f"{v:.0f}" for v in kg_vals]),
+            ("HORA EST. FIN",  fin_vals),
+        ]
+        body2 = ""
+        for label, vals in rows_extra:
+            cells = _td(label, align="left")
+            for v in vals:
+                cells += _td(v)
+            body2 += f'<tr style="border-bottom:1px solid #333;">{cells}</tr>'
+
+        table2 = (
+            f'<table style="{tbl_style}">'
+            f"<colgroup>{col_tags}</colgroup>"
+            f"<thead><tr>{hdr2}</tr></thead>"
+            f"<tbody>{body2}</tbody>"
+            f"</table>"
+        )
+
+        wrapper_style = (
+            "font-family:sans-serif;background:#0e1117;border-radius:6px;"
+            "padding:6px 10px 2px 10px;margin-bottom:6px;"
+        )
+        return f'<div style="{wrapper_style}">{table1}{table2}</div>'
+
+    # Calcular valores para tabla 1 (PALL)
+    pall_sub_vals = [round(totales_calc["sub"][cn],       2) for cn in _T4_CANCHAS]
+    pall_des_vals = [round(totales_calc["designados"][cn], 2) for cn in _T4_CANCHAS]
+    pall_tot_vals = [round(totales_calc["total"][cn],      2) for cn in _T4_CANCHAS]
 
     # ── Totales bultos/HL/KG por cancha (post-asign) ─────────────────────────
     totales_bult_base = {cn: float(df_display[cn].sum()) if cn in df_display.columns else 0.0 for cn in _T4_CANCHAS}
@@ -3975,21 +4069,22 @@ def render_tab_proyeccion():
         fin_dt = _t4_hora_fin(bult, vel_custom[cn], pers_custom[cn], inicio_custom[cn])
         fin_por_cancha[cn] = {"bultos": bult, "fin_dt": fin_dt, "inicio": inicio_custom[cn]}
 
-    # ── Fila resumen estilo Excel master: TOTAL BULTOS / HL / KG / HORA FIN ──
-    resumen_extra = pd.DataFrame({
-        "Concepto": ["TOTAL BULTOS", "TOTAL HL", "TOTAL KG", "HORA EST. FIN"],
-        **{cn.replace("CANCHA ", "C"): [
-            f"{round(totales_bult[cn], 1):.1f}",
-            f"{round(totales_hl[cn],   2):.2f}",
-            f"{round(totales_kg[cn],   0):.0f}",
-            fin_por_cancha[cn]["fin_dt"].strftime("%H:%M") if totales_bult[cn] > 0 else "—",
-        ] for cn in _T4_CANCHAS}
-    })
-    _col_cfg_extra = {
-        "Concepto": st.column_config.TextColumn("Concepto", width="medium"),
-        **{cn.replace("CANCHA ", "C"): st.column_config.TextColumn(cn.replace("CANCHA ", "C"), width="small") for cn in _T4_CANCHAS},
-    }
-    st.dataframe(resumen_extra, use_container_width=True, hide_index=True, column_config=_col_cfg_extra)
+    bult_list = [totales_bult[cn] for cn in _T4_CANCHAS]
+    hl_list   = [totales_hl[cn]   for cn in _T4_CANCHAS]
+    kg_list   = [totales_kg[cn]   for cn in _T4_CANCHAS]
+    fin_list  = [
+        fin_por_cancha[cn]["fin_dt"].strftime("%H:%M") if totales_bult[cn] > 0 else "—"
+        for cn in _T4_CANCHAS
+    ]
+
+    st.markdown(
+        _html_concepto_tables(
+            _cancha_cols_pall,
+            pall_sub_vals, pall_des_vals, pall_tot_vals,
+            bult_list, hl_list, kg_list, fin_list,
+        ),
+        unsafe_allow_html=True,
+    )
 
     with st.expander("📊 Totales por cancha", expanded=True):
         cols_met = st.columns(len(_T4_CANCHAS) + 1)
