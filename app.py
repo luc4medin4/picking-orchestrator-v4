@@ -1,5 +1,5 @@
 """
-Picking Orchestrator v4.68.0 — Beccacece Hnos SA
+Picking Orchestrator v4.69.0 — Beccacece Hnos SA
 
 CAMBIOS v4.68.0 — TABLERO RUTEADOR: FUENTE CAR + TABLERO MENSUAL:
 
@@ -8611,84 +8611,107 @@ def render_tab_tablero():
         # ── DDM disponibilidad — v4.68: solo flag, los dicts ya están en _ddm_dict ─
         _ddm_disponible = bool(_ddm_dict)
 
-        # ── MÉTRICAS POR CAMIÓN ─────────────────────────────────────────────────
-        # PDV y Rechazos siguen desde el ANR (el CAR no tiene info de clientes)
+        # ── PDV / CLIENTES — fuente: ANR (único que tiene info de clientes) ────
+        # Lógica: deduplicar por cliente dentro de cada camión para evitar
+        # contar múltiples líneas del mismo cliente.
+        pedidos_por_cam = pd.Series(dtype=float)
         if col_clientes is not None:
+            # Columna binaria "TOTAL CLIENTES" (1 = cliente único por fila)
             df_dia[col_clientes] = pd.to_numeric(df_dia[col_clientes], errors="coerce").fillna(0)
             pedidos_por_cam = df_dia[df_dia[col_clientes] == 1].groupby(col_camion).size()
         elif col_cliente is not None:
-            pedidos_por_cam = df_dia.groupby(col_camion)[col_cliente].nunique()
+            # Columna de código cliente: deduplicar con nunique()
+            pedidos_por_cam = (
+                df_dia.dropna(subset=[col_camion, col_cliente])
+                .drop_duplicates(subset=[col_camion, col_cliente])
+                .groupby(col_camion)
+                .size()
+            )
         else:
             pedidos_por_cam = df_dia.groupby(col_camion).size()
 
         rechazo_por_cam = df_dia.groupby(col_camion)[col_rechazo].sum() if col_rechazo else pd.Series(dtype=float)
 
-        # ── UP, HL y Peso — FUENTE: CAR completo + DDM (v4.68) ─────────────────
-        # El CAR contiene TODAS las líneas: VE (bloque azul) + CHESS (resto).
-        # Por fila: bultos_eq = Bultos + Unids/un_bulto(DDM col N)
-        #           UP  = Σ bultos_eq  (en bultos, no en pallets)
-        #           HL  = Σ hl_unit  × bultos_eq
-        #           KG  = Σ kg_unit  × bultos_eq
-        up_por_cam   = pd.Series(dtype=float)
-        hl_por_cam   = pd.Series(dtype=float)
-        peso_por_cam = pd.Series(dtype=float)
+        # ── UP · PALETAS · HL · PESO — fuente: CAR completo + DDM (v4.69) ─────
+        #
+        # Terminología DEFINITIVA (no cambiar más):
+        #   bultos_eq = bultos_enteros + (unidades_sueltas / unidades_x_bulto)
+        #                └─ fraccionado donde corresponde
+        #   UP        = (50 / BXP) × bultos_eq
+        #                └─ espacio normalizado (base pallet estándar de 50)
+        #                └─ equivale a: UP = 50 × paletas
+        #   Paletas   = bultos_eq / BXP  =  UP / 50
+        #   HL        = hl_unit(DDM) × bultos_eq
+        #   Peso      = kg_unit(DDM) × bultos_eq
+        #
+        # Ejemplo SKU 6582 (BXP=70):  140 bultos → UP = (50/70)×140 = 100 UP
+        # Ejemplo SKU 7038 (BXP=50):  100 bultos → UP = (50/50)×100 = 100 UP
+        #
+        # El CAR contiene TODAS las líneas: VE (bloque azul) + CHESS juntos.
+
+        bult_eq_por_cam = pd.Series(dtype=float)   # bultos equivalentes (informativo)
+        up_por_cam      = pd.Series(dtype=float)   # "Bultos UP" del tablero = (50/BXP)×beq
+        paletas_por_cam = pd.Series(dtype=float)   # paletas reales = beq/BXP = UP/50
+        hl_por_cam      = pd.Series(dtype=float)
+        peso_por_cam    = pd.Series(dtype=float)
 
         _car_disponible = False
         if car_file_tr is not None and _ddm_dict:
             try:
-                import openpyxl as _ox68
+                import openpyxl as _ox69
                 car_file_tr.seek(0)
-                _wb68 = _ox68.load_workbook(car_file_tr, read_only=True, data_only=True)
+                _wb69 = _ox69.load_workbook(car_file_tr, read_only=True, data_only=True)
                 car_file_tr.seek(0)
-                _ws68 = _wb68.worksheets[0]
-                _car_rows68 = list(_ws68.iter_rows(min_row=2, values_only=True))
-                _wb68.close()
+                _ws69 = _wb69.worksheets[0]
+                _car_rows69 = list(_ws69.iter_rows(min_row=2, values_only=True))
+                _wb69.close()
 
-                # Índices de columnas CAR (0-based desde fila 2):
-                # col 10=Transporte, col 17=Artículo, col 19=Bultos, col 21=Unids
-                from collections import defaultdict as _dd68
-                _up68  = _dd68(float)
-                _hl68  = _dd68(float)
-                _kg68  = _dd68(float)
+                from collections import defaultdict as _dd69
+                _beq69 = _dd69(float)
+                _up69  = _dd69(float)
+                _pal69 = _dd69(float)
+                _hl69  = _dd69(float)
+                _kg69  = _dd69(float)
 
-                for _r68 in _car_rows68:
+                for _r69 in _car_rows69:
                     try:
-                        _cam68 = _r68[10]
-                        _sku68 = _r68[17]
-                        if _cam68 is None or _sku68 is None:
-                            continue
-                        _blt68 = float(_r68[19] or 0)
-                        _uni68 = float(_r68[21] or 0)
-                        _sid68 = int(float(str(_sku68)))
-                        _d68   = _ddm_dict.get(_sid68, {})
-                        _bxp68 = _d68.get("bxp", 50) or 50
-                        _unb68 = _d68.get("un_bulto", 0)
-                        _hl_u68 = _d68.get("hl_unit", 0)
-                        _kg_u68 = _d68.get("kg_unit", 0)
-                        # bultos equivalentes: fracción de unidades sueltas
-                        _beq68 = _blt68 + (_uni68 / _unb68 if _unb68 > 0 and _uni68 > 0 else 0)
-                        _cam_int = int(float(str(_cam68)))
-                        _up68[_cam_int]  += _beq68
-                        _hl68[_cam_int]  += _hl_u68 * _beq68
-                        _kg68[_cam_int]  += _kg_u68 * _beq68
+                        _cam69 = _r69[10]; _sku69 = _r69[17]
+                        if _cam69 is None or _sku69 is None: continue
+                        _blt69 = float(_r69[19] or 0)
+                        _uni69 = float(_r69[21] or 0)
+                        _sid69 = int(float(str(_sku69)))
+                        _d69   = _ddm_dict.get(_sid69, {})
+                        _bxp69 = _d69.get("bxp", 50) or 50
+                        _unb69 = _d69.get("un_bulto", 0)
+                        _hl_u  = _d69.get("hl_unit",  0)
+                        _kg_u  = _d69.get("kg_unit",  0)
+                        # bultos equivalentes (enteros + fracción de sueltas)
+                        _be69  = _blt69 + (_uni69 / _unb69 if _unb69 > 0 and _uni69 > 0 else 0)
+                        _cam_i = int(float(str(_cam69)))
+                        _beq69[_cam_i] += _be69
+                        _up69[_cam_i]  += (50.0 / _bxp69) * _be69   # UP normalizado
+                        _pal69[_cam_i] += _be69 / _bxp69             # paletas reales
+                        _hl69[_cam_i]  += _hl_u * _be69
+                        _kg69[_cam_i]  += _kg_u * _be69
                     except Exception:
                         pass
 
-                up_por_cam   = pd.Series(dict(_up68), dtype=float)
-                hl_por_cam   = pd.Series(dict(_hl68), dtype=float)
-                peso_por_cam = pd.Series(dict(_kg68), dtype=float)
+                bult_eq_por_cam = pd.Series(dict(_beq69), dtype=float)
+                up_por_cam      = pd.Series(dict(_up69),  dtype=float)
+                paletas_por_cam = pd.Series(dict(_pal69), dtype=float)
+                hl_por_cam      = pd.Series(dict(_hl69),  dtype=float)
+                peso_por_cam    = pd.Series(dict(_kg69),  dtype=float)
                 _car_disponible = True
-            except Exception as _car_err68:
-                st.warning(f"⚠️ Error calculando UP desde CAR: {_car_err68}")
+            except Exception as _car_err69:
+                st.warning(f"⚠️ Error calculando UP desde CAR: {_car_err69}")
 
         if not _car_disponible:
-            # Fallback: si no hay CAR o DDM, usar la columna UNIDAD PAQUETE del ANR
+            # Fallback: columna UNIDAD PAQUETE del ANR
             if col_up is not None:
-                up_por_cam = df_dia.groupby(col_camion)[col_up].sum()
-                st.warning(
-                    "⚠️ **UP calculado desde ANR** (cargá el CAR + Frescura para mayor precisión).",
-                    icon="⚠️"
-                )
+                up_por_cam      = df_dia.groupby(col_camion)[col_up].sum()
+                bult_eq_por_cam = up_por_cam.copy()
+                paletas_por_cam = up_por_cam / 50
+                st.warning("⚠️ **UP calculado desde ANR** (cargá CAR + Frescura para mayor precisión).", icon="⚠️")
             if col_hl is not None:
                 hl_por_cam = df_dia.groupby(col_camion)[col_hl].apply(
                     lambda x: pd.to_numeric(x, errors="coerce").fillna(0).sum())
@@ -8698,7 +8721,7 @@ def render_tab_tablero():
 
         # Caption fuente
         if _car_disponible and _ddm_disponible:
-            _fuente_hlkg = "✅ Bultos UP · HL · Peso: calculados desde CAR completo (VE + CHESS) × DDM. v4.68"
+            _fuente_hlkg = "✅ UP=(50/BXP)×bultos_eq | Paletas=UP/50 | HL/Peso=DDM×bultos_eq — fuente CAR+DDM. v4.69"
         elif _car_disponible:
             _fuente_hlkg = "⚠️ UP desde CAR. HL/Peso sin DDM — cargá Frescura 3.0 para activarlos."
         else:
@@ -8715,71 +8738,44 @@ def render_tab_tablero():
             ss["tr_excluidos"] = []
         ss["tr_excluidos"] = [c for c in ss["tr_excluidos"] if c in _todos_cams]
 
-        # Paletas por camión desde CAR (bultos_eq / BXP por SKU)
-        # Ya calculadas durante el loop del CAR; si no hay CAR, estimamos t_up/50
-        paletas_por_cam = pd.Series(dtype=float)
-        if _car_disponible and car_file_tr is not None and _ddm_dict:
-            try:
-                from collections import defaultdict as _dd68p
-                _pal68 = _dd68p(float)
-                car_file_tr.seek(0)
-                import openpyxl as _ox68p
-                _wb68p = _ox68p.load_workbook(car_file_tr, read_only=True, data_only=True)
-                car_file_tr.seek(0)
-                _ws68p = _wb68p.worksheets[0]
-                for _r68p in _ws68p.iter_rows(min_row=2, values_only=True):
-                    try:
-                        _cam_p = _r68p[10]; _sku_p = _r68p[17]
-                        if _cam_p is None or _sku_p is None: continue
-                        _blt_p = float(_r68p[19] or 0); _uni_p = float(_r68p[21] or 0)
-                        _sid_p = int(float(str(_sku_p)))
-                        _d_p   = _ddm_dict.get(_sid_p, {})
-                        _bxp_p = _d_p.get("bxp", 50) or 50
-                        _unb_p = _d_p.get("un_bulto", 0)
-                        _beq_p = _blt_p + (_uni_p / _unb_p if _unb_p > 0 and _uni_p > 0 else 0)
-                        _pal68[int(float(str(_cam_p)))] += _beq_p / _bxp_p
-                    except Exception:
-                        pass
-                _wb68p.close()
-                paletas_por_cam = pd.Series(dict(_pal68), dtype=float)
-            except Exception:
-                pass  # fallback: se estima en _calc_totales
-
         # ── TOTALES BASE ────────────────────────────────────────────────────────
         def _calc_totales(excl):
             _mask = [c for c in _todos_cams if c not in excl]
-            _ped  = pedidos_por_cam[pedidos_por_cam.index.isin(_mask)] if not pedidos_por_cam.empty else pd.Series(dtype=float)
-            _up   = up_por_cam[up_por_cam.index.isin(_mask)]     if not up_por_cam.empty     else pd.Series(dtype=float)
-            _hl_s = hl_por_cam[hl_por_cam.index.isin(_mask)]     if not hl_por_cam.empty     else pd.Series(dtype=float)
-            _kg   = peso_por_cam[peso_por_cam.index.isin(_mask)] if not peso_por_cam.empty   else pd.Series(dtype=float)
-            _rec  = rechazo_por_cam[rechazo_por_cam.index.isin(_mask)] if not rechazo_por_cam.empty else pd.Series(dtype=float)
-            _pal  = paletas_por_cam[paletas_por_cam.index.isin(_mask)] if not paletas_por_cam.empty else pd.Series(dtype=float)
-            c_rep  = int((_ped > 0).sum())
-            t_pdv  = int(_ped.sum())
-            t_up   = float(_up.sum())
-            t_hl   = float(_hl_s.sum())
-            t_kg   = float(_kg.sum())
-            t_rec  = float(_rec.sum())
-            t_pal  = float(_pal.sum()) if not _pal.empty else t_up / 50
-            _denom = c_rep + segundas_vueltas
-            t_ocup = (t_up - t_rec) / _denom if _denom > 0 else 0.0
+            _ped  = pedidos_por_cam[pedidos_por_cam.index.isin(_mask)]  if not pedidos_por_cam.empty  else pd.Series(dtype=float)
+            _up   = up_por_cam[up_por_cam.index.isin(_mask)]            if not up_por_cam.empty       else pd.Series(dtype=float)
+            _pal  = paletas_por_cam[paletas_por_cam.index.isin(_mask)]  if not paletas_por_cam.empty  else pd.Series(dtype=float)
+            _bup  = bult_eq_por_cam[bult_eq_por_cam.index.isin(_mask)]  if not bult_eq_por_cam.empty  else pd.Series(dtype=float)
+            _hl_s = hl_por_cam[hl_por_cam.index.isin(_mask)]            if not hl_por_cam.empty       else pd.Series(dtype=float)
+            _kg   = peso_por_cam[peso_por_cam.index.isin(_mask)]        if not peso_por_cam.empty     else pd.Series(dtype=float)
+            _rec  = rechazo_por_cam[rechazo_por_cam.index.isin(_mask)]  if not rechazo_por_cam.empty  else pd.Series(dtype=float)
+            c_rep   = int((_ped > 0).sum())
+            t_pdv   = int(_ped.sum())
+            t_up    = float(_up.sum())    # UP normalizado: (50/BXP)×bultos_eq
+            t_pal   = float(_pal.sum())   # paletas reales: bultos_eq/BXP  = t_up/50
+            t_bup   = float(_bup.sum())   # bultos equivalentes totales
+            t_hl    = float(_hl_s.sum())
+            t_kg    = float(_kg.sum())
+            t_rec   = float(_rec.sum())
+            _denom  = c_rep + segundas_vueltas
+            t_ocup  = (t_up - t_rec) / _denom if _denom > 0 else 0.0
             t_fzpct = fuera_zona_real / t_pdv if t_pdv > 0 else 0.0
             t_efic  = t_pdv / visitas_teoricas if visitas_teoricas > 0 else 0.0
             t_util  = c_rep / total_camiones_flota if total_camiones_flota > 0 else 0.0
             t_drop  = t_up / t_pdv if t_pdv > 0 else 0.0
             t_ppal  = t_pal / c_rep if c_rep > 0 else 0.0
-            return dict(c_rep=c_rep, t_pdv=t_pdv, t_up=t_up, t_hl=t_hl, t_kg=t_kg,
-                        t_rec=t_rec, t_pal=t_pal, t_ocup=t_ocup, t_fzpct=t_fzpct,
-                        t_efic=t_efic, t_util=t_util, t_drop=t_drop, t_ppal=t_ppal)
+            return dict(c_rep=c_rep, t_pdv=t_pdv, t_up=t_up, t_pal=t_pal, t_bup=t_bup,
+                        t_hl=t_hl, t_kg=t_kg, t_rec=t_rec, t_ocup=t_ocup,
+                        t_fzpct=t_fzpct, t_efic=t_efic, t_util=t_util,
+                        t_drop=t_drop, t_ppal=t_ppal)
 
         tv = _calc_totales(set(ss["tr_excluidos"]))
         camiones_en_reparto = tv["c_rep"]; total_pedidos = tv["t_pdv"]
-        total_up = tv["t_up"]; total_hl = tv["t_hl"]; total_peso_kg = tv["t_kg"]
+        total_up = tv["t_up"]; total_bup = tv["t_bup"]; total_hl = tv["t_hl"]; total_peso_kg = tv["t_kg"]
         total_rechazos_up = tv["t_rec"]; paletas_total = tv["t_pal"]
         ocup_bodega = tv["t_ocup"]; fuera_zona_pct = tv["t_fzpct"]
         eficiencia = tv["t_efic"]; util_vehiculos = tv["t_util"]
         drop_size = tv["t_drop"]; prom_paletas = tv["t_ppal"]
-        conversion_eq = total_up * 2.4
+        conversion_eq = total_bup * 2.4
 
         sla_t       = _tr_parse_time_input(sla_str)
         ruteo_tgt_t = _tr_parse_time_input(ruteo_str)
@@ -8848,7 +8844,7 @@ def render_tab_tablero():
         _ms = st.columns(6)
         _ms[0].metric("🚚 Camiones",        f"{camiones_en_reparto}/{total_camiones_flota}")
         _ms[1].metric("📦 PDV",             total_pedidos)
-        _ms[2].metric("🏋 Bultos UP",       f"{total_up:.1f}")
+        _ms[2].metric("🏋 Bultos UP",       f"{total_bup:.0f}", help="Bultos equivalentes totales")
         _ms[3].metric("📐 Paletas",         f"{paletas_total:.2f}", f"{prom_paletas:.2f}/cam")
         _ms[4].metric("💧 HL",              f"{total_hl:.2f}" if total_hl > 0 else "—")
         _ms[5].metric("⚖️ Peso (kg)",       f"{total_peso_kg:,.0f}")
@@ -8889,23 +8885,25 @@ def render_tab_tablero():
         if _excluidos:
             tv = _calc_totales(_excluidos)
             camiones_en_reparto = tv["c_rep"]; total_pedidos = tv["t_pdv"]
-            total_up = tv["t_up"]; total_hl = tv["t_hl"]; total_peso_kg = tv["t_kg"]
+            total_up = tv["t_up"]; total_bup = tv["t_bup"]; total_hl = tv["t_hl"]; total_peso_kg = tv["t_kg"]
             total_rechazos_up = tv["t_rec"]; paletas_total = tv["t_pal"]
             ocup_bodega = tv["t_ocup"]; fuera_zona_pct = tv["t_fzpct"]
             eficiencia = tv["t_efic"]; util_vehiculos = tv["t_util"]
             drop_size = tv["t_drop"]; prom_paletas = tv["t_ppal"]
+            conversion_eq = total_bup * 2.4
             st.info(f"ℹ️ {len(_excluidos)} camión(es) excluido(s): {', '.join(str(c) for c in sorted(_excluidos))}")
 
-        # Construir tabla
+        # Construir tabla de camiones
         tabla_rows = []
         for cam in sorted(set(list(pedidos_por_cam.index) + list(up_por_cam.index) + list(cam_patente.keys()))):
             if int(pedidos_por_cam.get(cam, 0)) == 0 and float(up_por_cam.get(cam, 0)) == 0: continue
             if cam in _excluidos: continue
-            bup  = float(up_por_cam.get(cam, 0.0))
-            pals = float(paletas_por_cam.get(cam, 0.0)) if not paletas_por_cam.empty else bup / 50
-            hl_c = float(hl_por_cam.get(cam, 0.0))  if not hl_por_cam.empty   else 0.0
-            kg_c = float(peso_por_cam.get(cam, 0.0)) if not peso_por_cam.empty else 0.0
-            rec_c = float(rechazo_por_cam.get(cam, 0.0))
+            beq   = float(bult_eq_por_cam.get(cam, 0.0)) if not bult_eq_por_cam.empty else 0.0
+            up_c  = float(up_por_cam.get(cam, 0.0))      if not up_por_cam.empty      else 0.0
+            pals  = float(paletas_por_cam.get(cam, 0.0)) if not paletas_por_cam.empty else 0.0
+            hl_c  = float(hl_por_cam.get(cam, 0.0))      if not hl_por_cam.empty      else 0.0
+            kg_c  = float(peso_por_cam.get(cam, 0.0))    if not peso_por_cam.empty    else 0.0
+            rec_c = float(rechazo_por_cam.get(cam, 0.0)) if not rechazo_por_cam.empty else 0.0
             pate  = str(cam_patente.get(cam, ""))
             cap_kg = cam_capkg.get(pate, 0) if pate else 0
 
@@ -8922,11 +8920,9 @@ def render_tab_tablero():
                         if chofer.upper() in ("SIN CHOFER ASIGNADO", "SIN ASIGNAR", ""):
                             chofer = ""
 
-            venc_lic = ""; val_lic = ""
+            venc_lic = ""; val_lic = ""; lic_bloqueado = False
             if not df_lic.empty and chofer:
-                # Match por apellido corto (col D del archivo licencias)
                 chofer_up = chofer.upper().strip()
-                # Intentar match exacto primero, luego parcial con al menos 4 chars
                 m = df_lic[df_lic["nombre"].str.upper() == chofer_up]
                 if m.empty and len(chofer_up) >= 4:
                     m = df_lic[df_lic["nombre"].str.upper().str.startswith(chofer_up[:6])]
@@ -8936,60 +8932,84 @@ def render_tab_tablero():
                     venc = m.iloc[0]["vencimiento"]
                     if pd.notna(venc):
                         venc_lic = venc.strftime("%d/%m/%Y")
-                        val_lic  = "BLOQUEADO" if pd.Timestamp(fecha_dia) >= venc else "OK"
+                        lic_bloqueado = pd.Timestamp(fecha_dia) >= venc
+                        val_lic = "🚫 BLOQUEADO" if lic_bloqueado else "✅ OK"
 
             tabla_rows.append({
-                "N° Cam": cam, "Chofer": chofer, "PDV": int(pedidos_por_cam.get(cam, 0)),
-                "Bultos UP": round(bup, 2), "Paletas": round(pals, 2),
-                "Patente": pate,
-                "Cap. Kg": int(cap_kg) if cap_kg else 0,
-                "HL": round(hl_c, 2),
-                "Peso (kg)": round(kg_c, 2),
-                "Rechazos": round(rec_c, 2),
+                "N° Cam":    cam,
+                "Chofer":    chofer,
+                "PDV":       int(pedidos_por_cam.get(cam, 0)),
+                "Bultos":    round(beq,  2),   # bultos equivalentes
+                "Bultos UP": round(up_c, 2),   # (50/BXP) × bultos_eq
+                "Paletas":   round(pals, 2),   # Bultos UP / 50 = beq/BXP
+                "Patente":   pate,
+                "Cap.(kg)":  int(cap_kg) if cap_kg else 0,
+                "HL":        round(hl_c, 2),
+                "Peso(kg)":  round(kg_c, 1),
+                "Rechazos":  round(rec_c, 2),
                 "Venc. Lic.": venc_lic,
-                "Validación": val_lic,
+                "Lic.":      val_lic,
+                "_bloqueado": lic_bloqueado,
             })
 
         if tabla_rows:
             df_tab = pd.DataFrame(tabla_rows)
 
-            def _style_val(val):
-                if val == "BLOQUEADO":
-                    return "background-color:#ff4b4b;color:white;font-weight:bold"
-                if val == "OK":
-                    return "background-color:#00c853;color:white;font-weight:bold"
-                return ""
-            try:
-                styled = df_tab.style.map(_style_val, subset=["Validación"])
-            except AttributeError:
-                styled = df_tab.style.applymap(_style_val, subset=["Validación"])
+            def _style_tabla(row):
+                styles = [""] * len(row)
+                if row.get("_bloqueado", False):
+                    styles = ["background-color:#fff0f0"] * len(row)
+                    try:
+                        styles[list(row.index).index("Lic.")] = \
+                            "background-color:#ff4b4b;color:white;font-weight:bold;text-align:center"
+                    except Exception: pass
+                else:
+                    try:
+                        if row.get("Lic.", "") == "✅ OK":
+                            styles[list(row.index).index("Lic.")] = \
+                                "background-color:#d4edda;color:#155724;font-weight:bold;text-align:center"
+                    except Exception: pass
+                return styles
+
+            df_display = df_tab.drop(columns=["_bloqueado"])
+            styled = df_display.style.apply(_style_tabla, axis=1)
 
             st.dataframe(styled, use_container_width=True, hide_index=True,
                 column_config={
-                    "N° Cam":    st.column_config.NumberColumn("N° Cam",   format="%d"),
-                    "PDV":       st.column_config.NumberColumn("PDV",      format="%d"),
-                    "Bultos UP": st.column_config.NumberColumn("Bultos UP",format="%.2f"),
-                    "Paletas":   st.column_config.NumberColumn("Paletas",  format="%.2f"),
-                    "Cap. Kg":   st.column_config.NumberColumn("Cap.(kg)", format="%d"),
-                    "HL":        st.column_config.NumberColumn("HL",       format="%.2f"),
-                    "Peso (kg)": st.column_config.NumberColumn("Peso(kg)", format="%.0f"),
-                    "Rechazos":  st.column_config.NumberColumn("Rechazos", format="%.1f"),
+                    "N° Cam":    st.column_config.NumberColumn("N° Cam",    format="%d"),
+                    "PDV":       st.column_config.NumberColumn("PDV",       format="%d"),
+                    "Bultos":    st.column_config.NumberColumn("Bultos",    format="%.2f",
+                                    help="Bultos equivalentes = bultos enteros + unidades sueltas convertidas"),
+                    "Bultos UP": st.column_config.NumberColumn("Bultos UP", format="%.2f",
+                                    help="UP normalizado = (50 / BXP) × Bultos. Espacio estándar en camión."),
+                    "Paletas":   st.column_config.NumberColumn("Paletas",   format="%.2f",
+                                    help="Paletas reales = Bultos equiv. / BXP = Bultos UP / 50"),
+                    "Cap.(kg)":  st.column_config.NumberColumn("Cap.(kg)",  format="%d"),
+                    "HL":        st.column_config.NumberColumn("HL",        format="%.2f"),
+                    "Peso(kg)":  st.column_config.NumberColumn("Peso(kg)",  format="%.0f"),
+                    "Rechazos":  st.column_config.NumberColumn("Rechazos",  format="%.1f"),
+                    "Lic.":      st.column_config.TextColumn("Lic.",
+                                    help="Estado licencia de conducir. 🚫 BLOQUEADO = no puede salir a reparto."),
                 },
-                height=min(500, 55 + 38 * len(df_tab)))
+                height=min(520, 55 + 38 * len(df_display)))
 
             _hl_tot = df_tab["HL"].sum() if "HL" in df_tab.columns else 0
+            _bloc = df_tab[df_tab["_bloqueado"] == True] if "_bloqueado" in df_tab.columns else pd.DataFrame()
+            _bloc_str = f"  🚫 <b>{len(_bloc)} LIC. BLOQUEADA(S)</b>" if len(_bloc) > 0 else ""
             st.markdown(f"""
             <div style="background:#1F3864;color:white;border-radius:8px;
-                        padding:10px 18px;margin:6px 0;display:flex;gap:22px;
-                        font-size:14px;font-weight:700;">
+                        padding:10px 18px;margin:6px 0;display:flex;gap:18px;flex-wrap:wrap;
+                        font-size:13px;font-weight:700;align-items:center;">
                 <span>TOTAL</span>
                 <span>🚚 {len(df_tab)} cams</span>
                 <span>📦 {df_tab['PDV'].sum()} PDV</span>
+                <span>📦 {df_tab['Bultos'].sum():.0f} bultos</span>
                 <span>🏋 {df_tab['Bultos UP'].sum():.2f} UP</span>
                 <span>📐 {df_tab['Paletas'].sum():.2f} pal</span>
                 <span>💧 {_hl_tot:.2f} HL</span>
-                <span>⚖️ {df_tab['Peso (kg)'].sum():,.0f} kg</span>
+                <span>⚖️ {df_tab['Peso(kg)'].sum():,.0f} kg</span>
                 <span>❌ {df_tab['Rechazos'].sum():.1f} rec</span>
+                {_bloc_str}
             </div>
             """, unsafe_allow_html=True)
         else:
@@ -9006,32 +9026,35 @@ def render_tab_tablero():
         with _ex1:
             st.markdown("**📊 Excel del día** (exportación completa)")
             _buf_xl = io.BytesIO()
+            _total_bup_xl = sum(r.get("Bultos",0) for r in tabla_rows)
             with pd.ExcelWriter(_buf_xl, engine="openpyxl") as _wr:
                 pd.DataFrame({
-                    "KPI": ["Fecha","Camiones reparto","Total PDV","Bultos UP","Paletas",
-                             "HL","Peso (kg)","Drop Size","Eficiencia","Util. Vehículos",
+                    "KPI": ["Fecha","Camiones reparto","Total PDV","Bultos (equiv.)","Bultos UP","Paletas",
+                             "HL","Peso(kg)","Drop Size","Eficiencia","Util. Vehículos",
                              "Fuera de zona (PDV)","Fuera de zona (%)","Ocup. bodega",
                              "Productividad ruteo","Causa demora","Segundas vueltas"],
                     "Valor": [fecha_dia.strftime("%d/%m/%Y"), camiones_en_reparto, total_pedidos,
-                               round(total_up,2), round(paletas_total,2), round(total_hl,2),
-                               round(total_peso_kg,2), round(drop_size,2),
+                               round(total_bup,2), round(total_up,2), round(paletas_total,2),
+                               round(total_hl,2), round(total_peso_kg,2), round(drop_size,2),
                                round(eficiencia,4), round(util_vehiculos,4),
                                fuera_zona_real, round(fuera_zona_pct,4),
                                round(ocup_bodega,2), round(prod_ruteo,4),
                                causa_demora, segundas_vueltas],
-                    "Target": ["—","—","—","—","—","—","—","—",
+                    "Target": ["—","—","—","—","—","—","—","—","—",
                                 f"≥{_TR_TARGET_EFICIENCIA:.0%}", f"≥{_TR_TARGET_UTIL_VEH:.0%}",
                                 "—", f"≤{fz_target:.0%}", f"≥{ocup_target}", "≥70%","—","—"],
-                    "Status": ["—","—","—","—","—","—","—","—",
+                    "Status": ["—","—","—","—","—","—","—","—","—",
                                 "OK" if efic_ok else "NO", "OK" if util_ok else "NO",
                                 "—", "OK" if fz_ok else "NO",
                                 "OK" if ocup_ok else "NO", f"{prod_ruteo:.0%}","—","—"],
                 }).to_excel(_wr, sheet_name="KPIs", index=False)
                 if tabla_rows:
-                    pd.DataFrame(tabla_rows).to_excel(_wr, sheet_name="Detalle Camiones", index=False)
-                    pd.DataFrame(tabla_rows)[["N° Cam","Chofer","PDV","Bultos UP","Paletas","HL","Peso (kg)","Rechazos"]].to_excel(
+                    # Detalle completo (sin columna interna _bloqueado)
+                    _df_det = pd.DataFrame(tabla_rows).drop(columns=["_bloqueado"], errors="ignore")
+                    _df_det.to_excel(_wr, sheet_name="Detalle Camiones", index=False)
+                    _df_det[["N° Cam","Chofer","PDV","Bultos","Bultos UP","Paletas","HL","Peso(kg)","Rechazos","Venc. Lic.","Lic."]].to_excel(
                         _wr, sheet_name="Resumen Camiones", index=False)
-                _ve_cl = ve_edited.dropna(subset=["camion","sku","bultos"]) if not ve_edited.empty else pd.DataFrame()
+                _ve_cl = ve_auto.dropna(subset=["camion","sku","bultos"]) if not ve_auto.empty else pd.DataFrame()
                 if not _ve_cl.empty:
                     _ve_cl.to_excel(_wr, sheet_name="Ventas Especiales", index=False)
                 if _excluidos:
@@ -9124,9 +9147,9 @@ def render_tab_tablero():
                     _ws2.row_dimensions[row].height = 40; row += 1
 
                     # ── FILA 3-4: Totales globales ────────────────────────────
-                    _tl = ["Camiones","PDV","Bultos UP","Paletas","HL","Peso (kg)","Drop Size","Rechazos","SV","FZ PDV","FZ %","Prod.Ruteo"]
+                    _tl = ["Camiones","PDV","Bultos","Bultos UP","Paletas","HL","Peso(kg)","Drop Size","Rechazos","SV","FZ PDV","FZ %","Prod.Ruteo"]
                     _tv = [f"{camiones_en_reparto}/{total_camiones_flota}",
-                           str(total_pedidos), f"{total_up:.1f}", f"{paletas_total:.2f}",
+                           str(total_pedidos), f"{total_bup:.0f}", f"{total_up:.2f}", f"{paletas_total:.2f}",
                            f"{total_hl:.2f}", f"{total_peso_kg:,.0f}",
                            f"{drop_size:.2f}", f"{total_rechazos_up:.1f}",
                            str(segundas_vueltas), str(fuera_zona_real),
@@ -9140,45 +9163,56 @@ def render_tab_tablero():
 
                     # ── TABLA CAMIONES ────────────────────────────────────────
                     if tabla_rows:
-                        _cols_h = ["N°","Chofer","PDV","Bultos\nUP","Paletas",
+                        _cols_h = ["N°","Chofer","PDV","Bultos\n(eq.)","Bultos\nUP","Paletas",
                                    "Patente","Cap.\nkg","HL","Peso\n(kg)",
-                                   "Rech.","Venc.\nLic.","Validación"]
+                                   "Rech.","Venc.\nLic.","Lic."]
                         for ci5, ch5 in enumerate(_cols_h, 1):
                             _cell(row, ci5, ch5, bold=True, color="FFFFFF", sz=8, bg=_NX, wrap=True)
                         _ws2.row_dimensions[row].height = 28; row += 1
 
                         for ri2, rr2 in enumerate(tabla_rows):
                             _bg2 = _LGX if ri2 % 2 else "FFFFFF"
+                            _lic_txt = rr2.get("Lic.", "—") or "—"
+                            # Texto limpio para Excel (sin emoji)
+                            _lic_xl  = "BLOQUEADO" if str(_lic_txt).startswith("🚫") else ("OK" if str(_lic_txt).startswith("✅") else "—")
                             _vv2 = [str(rr2["N° Cam"]), rr2["Chofer"] or "—",
-                                    rr2["PDV"], rr2["Bultos UP"], rr2["Paletas"],
-                                    rr2["Patente"], rr2.get("Cap. Kg", 0),
+                                    rr2["PDV"],
+                                    round(rr2.get("Bultos", 0), 2),
+                                    round(rr2.get("Bultos UP", 0), 2),
+                                    round(rr2.get("Paletas", 0), 2),
+                                    rr2["Patente"], rr2.get("Cap.(kg)", 0),
                                     round(rr2.get("HL", 0), 2),
-                                    round(rr2.get("Peso (kg)", 0), 0),
+                                    round(rr2.get("Peso(kg)", 0), 0),
                                     rr2["Rechazos"],
                                     rr2["Venc. Lic."] or "—",
-                                    rr2["Validación"] or "—"]
+                                    _lic_xl]
                             for ci6, vv6 in enumerate(_vv2, 1):
                                 _cell(row, ci6, vv6, sz=8, bg=_bg2,
                                       halign="left" if ci6 == 2 else "center")
-                            # Colorear Validación
-                            _valid_col = 12
-                            if rr2.get("Validación") == "BLOQUEADO":
+                            # Colorear columna Lic.
+                            _valid_col = 13
+                            if _lic_xl == "BLOQUEADO":
                                 _ws2.cell(row, _valid_col).fill = _fx(_RX)
                                 _ws2.cell(row, _valid_col).font = _fo(True, "FFFFFF", 8)
-                            elif rr2.get("Validación") == "OK":
+                                # fila completa rosa
+                                for _ci_bl in range(1, len(_vv2)+1):
+                                    if _ci_bl != _valid_col:
+                                        _ws2.cell(row, _ci_bl).fill = _fx("FFE8E8")
+                            elif _lic_xl == "OK":
                                 _ws2.cell(row, _valid_col).fill = _fx(_GRX)
                                 _ws2.cell(row, _valid_col).font = _fo(True, "FFFFFF", 8)
                             _ws2.row_dimensions[row].height = 14; row += 1
 
                         # Fila TOTAL
                         _totv2 = ["TOTAL", "",
-                                  sum(r["PDV"]        for r in tabla_rows),
-                                  round(sum(r["Bultos UP"]   for r in tabla_rows), 1),
-                                  round(sum(r["Paletas"]     for r in tabla_rows), 2),
+                                  sum(r["PDV"]                    for r in tabla_rows),
+                                  round(sum(r.get("Bultos",0)     for r in tabla_rows), 0),
+                                  round(sum(r.get("Bultos UP",0)  for r in tabla_rows), 2),
+                                  round(sum(r.get("Paletas",0)    for r in tabla_rows), 2),
                                   "", "",
-                                  round(sum(r.get("HL",0)       for r in tabla_rows), 2),
-                                  round(sum(r.get("Peso (kg)",0) for r in tabla_rows), 0),
-                                  round(sum(r["Rechazos"]     for r in tabla_rows), 1),
+                                  round(sum(r.get("HL",0)         for r in tabla_rows), 2),
+                                  round(sum(r.get("Peso(kg)",0)   for r in tabla_rows), 0),
+                                  round(sum(r.get("Rechazos",0)   for r in tabla_rows), 1),
                                   "", ""]
                         for ci7, tv7 in enumerate(_totv2, 1):
                             _cell(row, ci7, tv7, bold=True, color=_NX, sz=9, bg=_BLX)
@@ -9190,27 +9224,26 @@ def render_tab_tablero():
                         _cell(row, 1, "ANÁLISIS OPERATIVO", bold=True, color="FFFFFF", sz=9, bg=_NX)
                         _ws2.row_dimensions[row].height = 16; row += 1
 
-                        # % carga (HL) por camión sobre total
-                        _hl_t = sum(r.get("HL", 0) for r in tabla_rows)
-                        _kg_t = sum(r.get("Peso (kg)", 0) for r in tabla_rows)
-                        _bup_t = sum(r["Bultos UP"] for r in tabla_rows)
+                        _hl_t  = sum(r.get("HL", 0) for r in tabla_rows)
+                        _kg_t  = sum(r.get("Peso(kg)", 0) for r in tabla_rows)
+                        _bup_t = sum(r.get("Bultos UP", 0) for r in tabla_rows)
 
-                        # Headers análisis
-                        _ah = ["N° Cam","Chofer","Bultos UP","%Carga UP","HL","%Carga HL","Peso (kg)","% Cap.kg usada","PDV","Drop Size"]
+                        _ah = ["N° Cam","Chofer","Bultos","Bultos UP","%Carga UP","HL","%Carga HL","Peso(kg)","% Cap.kg","PDV","Drop Size"]
                         for _ai, _ah2 in enumerate(_ah, 1):
                             _cell(row, _ai, _ah2, bold=True, color="FFFFFF", sz=8, bg="2e5fa3")
                         _ws2.row_dimensions[row].height = 14; row += 1
 
-                        for _ri3, _rr3 in enumerate(sorted(tabla_rows, key=lambda x: x["Bultos UP"], reverse=True)):
+                        for _ri3, _rr3 in enumerate(sorted(tabla_rows, key=lambda x: x.get("Bultos UP",0), reverse=True)):
                             _bg3 = _LGX if _ri3 % 2 else "FFFFFF"
-                            _pct_bup = _rr3["Bultos UP"] / _bup_t * 100 if _bup_t > 0 else 0
+                            _pct_bup = _rr3.get("Bultos UP",0) / _bup_t * 100 if _bup_t > 0 else 0
                             _pct_hl  = _rr3.get("HL", 0) / _hl_t * 100 if _hl_t > 0 else 0
-                            _cap_kg  = _rr3.get("Cap. Kg", 0)
-                            _kg_c2   = _rr3.get("Peso (kg)", 0)
+                            _cap_kg  = _rr3.get("Cap.(kg)", 0)
+                            _kg_c2   = _rr3.get("Peso(kg)", 0)
                             _pct_cap = _kg_c2 / _cap_kg * 100 if _cap_kg > 0 else 0
-                            _ds2 = _rr3["Bultos UP"] / _rr3["PDV"] if _rr3["PDV"] > 0 else 0
+                            _ds2 = _rr3.get("Bultos UP",0) / _rr3["PDV"] if _rr3["PDV"] > 0 else 0
                             _av3 = [str(_rr3["N° Cam"]), _rr3["Chofer"] or "—",
-                                    round(_rr3["Bultos UP"], 1), f"{_pct_bup:.1f}%",
+                                    round(_rr3.get("Bultos",0), 0),
+                                    round(_rr3.get("Bultos UP",0), 2), f"{_pct_bup:.1f}%",
                                     round(_rr3.get("HL", 0), 2), f"{_pct_hl:.1f}%",
                                     round(_kg_c2, 0), f"{_pct_cap:.1f}%",
                                     _rr3["PDV"], round(_ds2, 2)]
@@ -9234,7 +9267,7 @@ def render_tab_tablero():
                                 _ws2.cell(_gdr + _gi2, _gd_col,     str(_gr2["N° Cam"]))
                                 _ws2.cell(_gdr + _gi2, _gd_col + 1, round(_gr2["Bultos UP"], 1))
                                 _ws2.cell(_gdr + _gi2, _gd_col + 2, round(_gr2.get("HL", 0), 2))
-                                _ws2.cell(_gdr + _gi2, _gd_col + 3, round(_gr2.get("Peso (kg)", 0), 0))
+                                _ws2.cell(_gdr + _gi2, _gd_col + 3, round(_gr2.get("Peso(kg)", 0), 0))
                                 _ws2.cell(_gdr + _gi2, _gd_col + 4, _gr2["PDV"])
                             _gd_end = _gdr + len(tabla_rows)
 
@@ -9266,17 +9299,17 @@ def render_tab_tablero():
                             row += 1
 
                     # ── ALERTAS LICENCIAS ────────────────────────────────────
-                    _lic_alerts = [r for r in tabla_rows if r.get("Validación") == "BLOQUEADO"]
+                    _lic_alerts = [r for r in tabla_rows if str(r.get("Lic.", "")).startswith("🚫")]
                     if _lic_alerts:
                         _ws2.merge_cells(f"A{row}:N{row}")
-                        _cell(row, 1, "⚠ ALERTAS — LICENCIAS VENCIDAS", bold=True, color="FFFFFF", sz=9, bg=_RX)
+                        _cell(row, 1, "⚠ ALERTAS — LICENCIAS VENCIDAS (NO PUEDEN SALIR A REPARTO)", bold=True, color="FFFFFF", sz=9, bg=_RX)
                         _ws2.row_dimensions[row].height = 16; row += 1
                         for _la in _lic_alerts:
                             _ws2.merge_cells(f"A{row}:N{row}")
                             _cell(row, 1,
-                                  f"CAM {_la['N° Cam']} — {_la['Chofer'] or 'S/N'}: "
+                                  f"🚫 CAM {_la['N° Cam']} — {_la['Chofer'] or 'S/N'}: "
                                   f"LICENCIA VENCIDA ({_la['Venc. Lic.']})",
-                                  bold=True, color=_RX, sz=9, bg=_AX)
+                                  bold=True, color=_RX, sz=9, bg="FFE8E8")
                             _ws2.row_dimensions[row].height = 14; row += 1
                         row += 1
 
@@ -9289,22 +9322,22 @@ def render_tab_tablero():
                     ).font = _fo(False, "888888", 7)
                     _ws2.row_dimensions[row].height = 12
 
-                    # ── ANCHOS DE COLUMNA (A4 landscape ≈ 279mm / ~110 unidades) ──
-                    # 12 cols principales + 3 gráfico = 15 cols totales
+                    # ── ANCHOS DE COLUMNA (13 cols: N°/Chofer/PDV/Bultos/BultosUP/Pal/Pat/Cap/HL/Peso/Rech/VencLic/Lic)
                     _col_widths = {
-                        "A": 5.5,   # N° Cam
-                        "B": 13,    # Chofer
-                        "C": 5,     # PDV
-                        "D": 9,     # Bultos UP
-                        "E": 7,     # Paletas
-                        "F": 8,     # Patente
-                        "G": 7,     # Cap. kg
-                        "H": 7,     # HL
-                        "I": 9,     # Peso
-                        "J": 6,     # Rechazo
-                        "K": 10,    # Venc. Lic
-                        "L": 9,     # Validación
-                        "M": 4, "N": 4,  # extras
+                        "A": 5,    # N° Cam
+                        "B": 13,   # Chofer
+                        "C": 5,    # PDV
+                        "D": 8,    # Bultos (eq.)
+                        "E": 8,    # Bultos UP
+                        "F": 7,    # Paletas
+                        "G": 8,    # Patente
+                        "H": 7,    # Cap. kg
+                        "I": 7,    # HL
+                        "J": 9,    # Peso
+                        "K": 6,    # Rechazo
+                        "L": 10,   # Venc. Lic
+                        "M": 10,   # Lic.
+                        "N": 4,    # extra
                     }
                     for _cl, _cw in _col_widths.items():
                         _ws2.column_dimensions[_cl].width = _cw
@@ -9428,7 +9461,7 @@ def render_tab_tablero():
                             _cam_bup      = [r["Bultos UP"] for r in tabla_rows]
                             _cam_pdv      = [r["PDV"] for r in tabla_rows]
                             _cam_hl       = [r.get("HL", 0) for r in tabla_rows]
-                            _cam_kg       = [r.get("Peso (kg)", 0) for r in tabla_rows]
+                            _cam_kg       = [r.get("Peso(kg)", 0) for r in tabla_rows]
                             _n = len(_cam_labels)
                             _quarter_w = float(_usable_w) / 4 - 1*mm
                             _chart_h = 32.0 * mm
@@ -9488,8 +9521,8 @@ def render_tab_tablero():
                             _avg_bup   = _bup_t2 / len(tabla_rows) if tabla_rows else 0
                             _sobre50   = [r for r in tabla_rows if r["Bultos UP"] >= 50]
                             _alertas_kg = [r for r in tabla_rows
-                                          if r.get("Cap. Kg", 0) > 0 and
-                                          r.get("Peso (kg)", 0) / r["Cap. Kg"] > 0.85]
+                                          if r.get("Cap.(kg)", 0) > 0 and
+                                          r.get("Peso(kg)", 0) / r["Cap.(kg)"] > 0.85]
 
                             _an_rows = [
                                 [_p("📊 Análisis Operativo", 7, True, colors.white),
@@ -9528,86 +9561,96 @@ def render_tab_tablero():
                         except Exception as _ae:
                             pass
 
-                    # Tabla detalle por camión — 12 cols compactas + Licencias + Validación
+                    # Tabla detalle por camión — 13 cols: Bultos + Bultos UP + Paletas
                     if tabla_rows:
-                        _det_hdr = ["N°","Chofer","PDV","Bultos UP","Paletas","Patente","Cap.kg","HL","Peso(kg)","Rechazos","Venc.Lic.","Validación"]
+                        _det_hdr = ["N°","Chofer","PDV","Bultos","Blt.\nUP","Paletas","Patente","Cap.kg","HL","Peso(kg)","Rech.","Venc.Lic.","Lic."]
                         _alertas_lic = []
                         _det_data = [_det_hdr]
                         for _i3, _r3 in enumerate(tabla_rows, 1):
                             vl = _r3.get("Venc. Lic.","") or "—"
-                            va = _r3.get("Validación","") or "—"
+                            va = _r3.get("Lic.","") or "—"
+                            # Texto limpio para PDF (sin emoji)
+                            va_pdf = "BLOQUEADO" if str(va).startswith("🚫") else ("OK" if str(va).startswith("✅") else "—")
                             _det_data.append([
                                 str(_r3["N° Cam"]),
                                 _r3["Chofer"] or "—",
                                 str(_r3["PDV"]),
-                                f"{_r3['Bultos UP']:.1f}",
-                                f"{_r3['Paletas']:.2f}",
+                                f"{_r3.get('Bultos',0):.0f}",
+                                f"{_r3.get('Bultos UP',0):.2f}",
+                                f"{_r3.get('Paletas',0):.2f}",
                                 _r3["Patente"] or "—",
-                                f"{_r3['Cap. Kg']:,}" if _r3.get("Cap. Kg") else "—",
+                                f"{_r3['Cap.(kg)']:,}" if _r3.get("Cap.(kg)") else "—",
                                 f"{_r3.get('HL',0):.2f}",
-                                f"{_r3.get('Peso (kg)',0):,.0f}",
-                                f"{_r3['Rechazos']:.1f}",
+                                f"{_r3.get('Peso(kg)',0):,.0f}",
+                                f"{_r3.get('Rechazos',0):.1f}",
                                 vl,
-                                va,
+                                va_pdf,
                             ])
-                            if va == "BLOQUEADO":
+                            if str(va).startswith("🚫"):
                                 _alertas_lic.append(
                                     f"⚠ CAM {_r3['N° Cam']} — {_r3['Chofer'] or 'S/N'}: "
-                                    f"LICENCIA VENCIDA ({vl})"
+                                    f"LICENCIA VENCIDA ({vl}) — NO PUEDE SALIR A REPARTO"
                                 )
 
                         _det_data.append(["TOTAL","",
                             str(sum(r["PDV"] for r in tabla_rows)),
-                            f"{sum(r['Bultos UP'] for r in tabla_rows):.1f}",
-                            f"{sum(r['Paletas'] for r in tabla_rows):.2f}",
+                            f"{sum(r.get('Bultos',0) for r in tabla_rows):.0f}",
+                            f"{sum(r.get('Bultos UP',0) for r in tabla_rows):.2f}",
+                            f"{sum(r.get('Paletas',0) for r in tabla_rows):.2f}",
                             "","",
                             f"{sum(r.get('HL',0) for r in tabla_rows):.2f}",
-                            f"{sum(r.get('Peso (kg)',0) for r in tabla_rows):,.0f}",
-                            f"{sum(r['Rechazos'] for r in tabla_rows):.1f}","",""])
+                            f"{sum(r.get('Peso(kg)',0) for r in tabla_rows):,.0f}",
+                            f"{sum(r.get('Rechazos',0) for r in tabla_rows):.1f}","",""])
 
-                        # Col widths landscape A4 ajustadas
                         _det_tbl = Table(_det_data, repeatRows=1,
                             colWidths=[
-                                _usable_w * 0.042,  # N°
-                                _usable_w * 0.115,  # Chofer
-                                _usable_w * 0.042,  # PDV
-                                _usable_w * 0.075,  # BUP
-                                _usable_w * 0.055,  # Pal
-                                _usable_w * 0.068,  # Patente
-                                _usable_w * 0.062,  # Cap
-                                _usable_w * 0.062,  # HL
-                                _usable_w * 0.075,  # Peso
-                                _usable_w * 0.058,  # Rec
-                                _usable_w * 0.088,  # Venc.Lic
-                                _usable_w * 0.088,  # Validación — suma ~73% → ok con márgenes
+                                _usable_w * 0.038,  # N°
+                                _usable_w * 0.105,  # Chofer
+                                _usable_w * 0.038,  # PDV
+                                _usable_w * 0.060,  # Bultos
+                                _usable_w * 0.060,  # Bultos UP
+                                _usable_w * 0.052,  # Paletas
+                                _usable_w * 0.065,  # Patente
+                                _usable_w * 0.058,  # Cap
+                                _usable_w * 0.058,  # HL
+                                _usable_w * 0.070,  # Peso
+                                _usable_w * 0.052,  # Rec
+                                _usable_w * 0.080,  # Venc.Lic
+                                _usable_w * 0.080,  # Lic.
                             ])
 
                         _ds = [
                             ("BACKGROUND",(0,0),(-1,0),_NAVY),
                             ("TEXTCOLOR",(0,0),(-1,0),colors.white),
                             ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),
-                            ("FONTSIZE",(0,0),(-1,0),8),
-                            ("FONTSIZE",(0,1),(-1,-1),8),
+                            ("FONTSIZE",(0,0),(-1,0),7),
+                            ("FONTSIZE",(0,1),(-1,-1),7),
                             ("FONTNAME",(0,1),(-1,-1),"Helvetica"),
                             ("ROWBACKGROUNDS",(0,1),(-1,-2),[colors.white, _LGREY]),
                             ("BACKGROUND",(0,-1),(-1,-1),colors.HexColor("#E8EAF6")),
                             ("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),
-                            ("FONTSIZE",(0,-1),(-1,-1),8),
+                            ("FONTSIZE",(0,-1),(-1,-1),7),
                             ("GRID",(0,0),(-1,-1),0.3,colors.lightgrey),
                             ("TOPPADDING",(0,0),(-1,-1),2),
                             ("BOTTOMPADDING",(0,0),(-1,-1),2),
-                            ("LEFTPADDING",(0,0),(-1,-1),3),
+                            ("LEFTPADDING",(0,0),(-1,-1),2),
+                            ("RIGHTPADDING",(0,0),(-1,-1),2),
                             ("ALIGN",(0,0),(-1,-1),"CENTER"),
                             ("ALIGN",(1,1),(1,-1),"LEFT"),
+                            ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
                         ]
+                        # Colorear columna Lic. (índice 12) según estado
                         for _ix, _rx in enumerate(tabla_rows, 1):
-                            if _rx.get("Validación") == "BLOQUEADO":
-                                _ds += [("BACKGROUND",(11,_ix),(11,_ix),_RED),
-                                        ("TEXTCOLOR",(11,_ix),(11,_ix),colors.white),
-                                        ("FONTNAME",(11,_ix),(11,_ix),"Helvetica-Bold")]
-                            elif _rx.get("Validación") == "OK":
-                                _ds += [("BACKGROUND",(11,_ix),(11,_ix),_GREEN),
-                                        ("TEXTCOLOR",(11,_ix),(11,_ix),colors.white)]
+                            if _rx.get("Lic.","").startswith("🚫"):
+                                _ds += [
+                                    ("BACKGROUND",(0,_ix),(-1,_ix),colors.HexColor("#FFE8E8")),
+                                    ("BACKGROUND",(12,_ix),(12,_ix),_RED),
+                                    ("TEXTCOLOR",(12,_ix),(12,_ix),colors.white),
+                                    ("FONTNAME",(12,_ix),(12,_ix),"Helvetica-Bold")
+                                ]
+                            elif _rx.get("Lic.","").startswith("✅"):
+                                _ds += [("BACKGROUND",(12,_ix),(12,_ix),_GREEN),
+                                        ("TEXTCOLOR",(12,_ix),(12,_ix),colors.white)]
                         _det_tbl.setStyle(TableStyle(_ds))
                         _story.append(_det_tbl)
 
@@ -9705,7 +9748,7 @@ def render_tab_tablero():
                         "bultos_up":     _safe_float(kv.get("Bultos UP",0)),
                         "paletas":       _safe_float(kv.get("Paletas",0)),
                         "hl":            _safe_float(kv.get("HL",0)),
-                        "peso_kg":       _safe_float(kv.get("Peso (kg)",0)),
+                        "peso_kg":       _safe_float(kv.get("Peso(kg)",0)),
                         "drop_size":     _safe_float(kv.get("Drop Size",0)),
                         "eficiencia":    _safe_float(kv.get("Eficiencia",0)),
                         "util_vehiculos":_safe_float(kv.get("Util. Vehículos",0)),
