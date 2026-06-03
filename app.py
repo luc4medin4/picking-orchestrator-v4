@@ -1,5 +1,27 @@
 """
-Picking Orchestrator v4.67.0 — Beccacece Hnos SA
+Picking Orchestrator v4.68.0 — Beccacece Hnos SA
+
+CAMBIOS v4.68.0 — TABLERO RUTEADOR: FUENTE CAR + TABLERO MENSUAL:
+
+  1. FIX CRÍTICO UP — fuente única CAR (no más ANR para Bultos UP):
+     - Los Bultos UP, HL y Peso se calculan EXCLUSIVAMENTE desde el CAR.
+     - Lógica por fila: bultos_eq = Bultos + Unids / un_x_bulto (DDM col N).
+       Si un_x_bulto = 0 o Unids = 0 → bultos_eq = Bultos.
+     - HL = DDM[sku].hl × bultos_eq; Peso = DDM[sku].kg × bultos_eq.
+     - El CAR contiene TODAS las líneas: VE (bloque azul hasta separador vacío)
+       y CHESS (resto del archivo). Ambos bloques se procesan juntos.
+     - PDV (pedidos) y Rechazos siguen leyéndose del ANR (CAR no tiene esa info).
+     - El bloque VE ya no se procesa por separado — está incluido en el total CAR.
+     - df_ddm_dict se extiende con 'un_bulto' (col N de DDM).
+
+  2. TABLERO MENSUAL — subtab "📅 Histórico Mensual":
+     - Upload persistente de Excel diarios generados por el Tablero del día.
+     - Los archivos se acumulan: no se borran al subir nuevos.
+     - Tabla resumen con todos los días cargados (fecha, camiones, PDV, UP, HL, kg,
+       rechazos, drop size, paletas promedio, productividad ruteo).
+     - Gráficos: UP total diario, PDV total diario, Drop Size diario.
+     - Botones "Excel Mensual" y "PDF Mensual" para exportar el consolidado.
+     - Estructura de datos en session_state["tr_mensual_data"] (lista de dicts).
 
 CAMBIOS v4.67.0 — TABLERO RUTEADOR: FIX DDM + EXCEL/PDF COMPLETOS:
 
@@ -1861,9 +1883,11 @@ def render_tab_archivos():
                     _ihl = _ci67(["VALOR HL"])
                     _ikg = _ci67(["PESO KG"])
                     _ican = _ci67(["CAN", "CANCHA"])
-                    # Fallbacks por posición (0-indexed): C=2, G=6, P=15, Q=16, O=14
+                    _iun = _ci67(["UNIDADES", "UN BULTO", "UN/BULTO", "UN X BULTO"])
+                    # Fallbacks por posición (0-indexed): C=2, G=6, N=13, P=15, Q=16, O=14
                     if _ic  < 0: _ic  = 2
                     if _ig  < 0: _ig  = 6
+                    if _iun < 0: _iun = 13  # col N = UNIDADES por bulto
                     if _ihl < 0: _ihl = 15
                     if _ikg < 0: _ikg = 16
                     if _ican < 0: _ican = 14
@@ -1874,10 +1898,11 @@ def render_tab_archivos():
                             if _s is None: continue
                             _sid = int(float(str(_s)))
                             _ddm_dict67[_sid] = {
-                                "bxp":     float(_r67[_ig])  if _r67[_ig]  else 50.0,
-                                "hl_unit": float(_r67[_ihl]) if _r67[_ihl] else 0.0,
-                                "kg_unit": float(_r67[_ikg]) if _r67[_ikg] else 0.0,
-                                "can":     str(_r67[_ican]).strip() if _r67[_ican] else "",
+                                "bxp":      float(_r67[_ig])  if _r67[_ig]  else 50.0,
+                                "hl_unit":  float(_r67[_ihl]) if _r67[_ihl] else 0.0,
+                                "kg_unit":  float(_r67[_ikg]) if _r67[_ikg] else 0.0,
+                                "un_bulto": float(_r67[_iun]) if _r67[_iun] else 0.0,
+                                "can":      str(_r67[_ican]).strip() if _r67[_ican] else "",
                             }
                         except Exception:
                             pass
@@ -8462,17 +8487,17 @@ def render_tab_tablero():
                 with _lc2:
                     st.warning(f"No se pudo leer licencias: {_e_lic}")
 
-        # ── VENTAS ESPECIALES ──────────────────────────────────────────────────
+        # ── VENTAS ESPECIALES (informativas) ──────────────────────────────────
+        # v4.68: el CAR cubre TODO el despacho (VE + CHESS).
+        # Solo mostramos el bloque VE como preview informativo.
         car_file_tr = ss.get("t1_car") or ss.get("tc_car")
         ve_auto = pd.DataFrame(columns=["camion", "sku", "bultos"])
         if car_file_tr is not None:
             try:
                 car_file_tr.seek(0)
-                # v4.65: leer TODO el CAR y encontrar el separador dinámicamente
                 _raw_ve_full = pd.read_excel(car_file_tr, sheet_name=0, header=None)
                 car_file_tr.seek(0)
                 _hdr_ve = _raw_ve_full.iloc[0].tolist()
-                # Buscar fila separadora (todas NaN) → todo antes = VE
                 _sep_ve = None
                 for _vi in range(1, min(60, len(_raw_ve_full))):
                     _rv = _raw_ve_full.iloc[_vi]
@@ -8507,14 +8532,13 @@ def render_tab_tablero():
             except Exception as _ve_err:
                 st.caption(f"⚠️ VE no leídas del CAR: {_ve_err}")
         if not ve_auto.empty:
-            with st.expander(f"🔵 Ventas Especiales — {len(ve_auto)} líneas del CAR", expanded=False):
+            with st.expander(f"🔵 Ventas Especiales — {len(ve_auto)} líneas (bloque azul CAR)", expanded=False):
                 st.dataframe(ve_auto, use_container_width=True, hide_index=True,
                              column_config={
                                  "camion": st.column_config.NumberColumn("N° Camión", format="%d"),
                                  "sku":    st.column_config.NumberColumn("SKU", format="%d"),
                                  "bultos": st.column_config.NumberColumn("Bultos", format="%.2f"),
                              })
-        ve_edited = ve_auto
 
         st.markdown("---")
 
@@ -8584,51 +8608,11 @@ def render_tab_tablero():
                 st.warning("No hay datos en el ANR para ninguna fecha.")
                 return
 
-        # ── DDM: HL y PESO por SKU — v4.67: usa df_ddm_dict precalculado ─────
-        sku_bxp = {}; sku_hl_u = {}; sku_peso_u = {}
-        _ddm_disponible = False
-        if sku_bxp_pre or sku_hl_pre or sku_peso_pre:
-            # Ya tenemos los dicts del Frescura cargado en Archivos
-            sku_bxp   = dict(sku_bxp_pre)
-            sku_hl_u  = dict(sku_hl_pre)
-            sku_peso_u = dict(sku_peso_pre)
-            _ddm_disponible = bool(sku_hl_u or sku_peso_u)
-        elif ddm is not None:
-            # Fallback: intentar parsear df_ddm crudo (path antiguo)
-            try:
-                ddm_n = ddm.copy()
-                ddm_n.columns = [str(c).upper().strip() for c in ddm_n.columns]
-                cod_c = _get_col(ddm_n,
-                    "ARTÍCULO", "ARTICULO", "COD", "SKU") or ddm_n.columns[0]
-                bxp_c = _get_col(ddm_n, "BULTOS X PALLET", "BXP") or \
-                        (ddm_n.columns[6] if len(ddm_n.columns) > 6 else None)
-                val_c = _get_col(ddm_n, "VALOR HL", "HL") or \
-                        (ddm_n.columns[15] if len(ddm_n.columns) > 15 else None)
-                pes_c = _get_col(ddm_n, "PESO KG", "PESO") or \
-                        (ddm_n.columns[16] if len(ddm_n.columns) > 16 else None)
-                for _, r in ddm_n.iterrows():
-                    try:
-                        sid = int(r[cod_c])
-                        if bxp_c and pd.notna(r.get(bxp_c)) and float(r[bxp_c]) > 0:
-                            sku_bxp[sid] = float(r[bxp_c])
-                        if val_c and pd.notna(r.get(val_c)) and float(r[val_c]) > 0:
-                            sku_hl_u[sid] = float(r[val_c])
-                        if pes_c and pd.notna(r.get(pes_c)) and float(r[pes_c]) > 0:
-                            sku_peso_u[sid] = float(r[pes_c])
-                    except Exception:
-                        pass
-                _ddm_disponible = bool(sku_hl_u or sku_peso_u)
-            except Exception as _ddm_ex:
-                st.warning(f"⚠️ Error leyendo DDM: {_ddm_ex}")
-
-        if not _ddm_disponible:
-            st.warning(
-                "⚠️ **Sin datos DDM** — HL y Peso no calculados. "
-                "Subí **Frescura 3.0.xlsx** en la pestaña 📁 Archivos para activarlos.",
-                icon="⚠️"
-            )
+        # ── DDM disponibilidad — v4.68: solo flag, los dicts ya están en _ddm_dict ─
+        _ddm_disponible = bool(_ddm_dict)
 
         # ── MÉTRICAS POR CAMIÓN ─────────────────────────────────────────────────
+        # PDV y Rechazos siguen desde el ANR (el CAR no tiene info de clientes)
         if col_clientes is not None:
             df_dia[col_clientes] = pd.to_numeric(df_dia[col_clientes], errors="coerce").fillna(0)
             pedidos_por_cam = df_dia[df_dia[col_clientes] == 1].groupby(col_camion).size()
@@ -8637,98 +8621,129 @@ def render_tab_tablero():
         else:
             pedidos_por_cam = df_dia.groupby(col_camion).size()
 
-        up_por_cam      = df_dia.groupby(col_camion)[col_up].sum()      if col_up      else pd.Series(dtype=float)
         rechazo_por_cam = df_dia.groupby(col_camion)[col_rechazo].sum() if col_rechazo else pd.Series(dtype=float)
 
-        # ── HL y Peso por camión — estrategia híbrida ──────────────────────────
-        # El ANR de Chess tiene PESO KG y HL como totales por fila (peso_unit × bultos).
-        # Algunos SKUs (merch, activos, etc.) tienen PESO=0 aunque tienen bultos.
-        # Lógica fila a fila:
-        #   - Si ANR tiene PESO KG > 0  → usar valor real del ANR
-        #   - Si ANR tiene PESO KG = 0  → completar con DDM[sku] × bultos
-        #   Ídem para HL. Luego sumar por camión.
-        # VE del CAR: siempre se agregan vía DDM × bultos (no están en el ANR).
-
+        # ── UP, HL y Peso — FUENTE: CAR completo + DDM (v4.68) ─────────────────
+        # El CAR contiene TODAS las líneas: VE (bloque azul) + CHESS (resto).
+        # Por fila: bultos_eq = Bultos + Unids/un_bulto(DDM col N)
+        #           UP  = Σ bultos_eq  (en bultos, no en pallets)
+        #           HL  = Σ hl_unit  × bultos_eq
+        #           KG  = Σ kg_unit  × bultos_eq
+        up_por_cam   = pd.Series(dtype=float)
         hl_por_cam   = pd.Series(dtype=float)
         peso_por_cam = pd.Series(dtype=float)
 
-        if col_sku_anr and col_blt_anr:
-            _dc = df_dia[[col_camion, col_sku_anr, col_blt_anr]].copy()
-            # Traer columnas ANR de peso y HL si existen
-            _dc["_peso_anr"] = (
-                pd.to_numeric(df_dia[col_peso].values, errors="coerce").clip(min=0)
-                if col_peso is not None else 0.0
-            )
-            _dc["_hl_anr"] = (
-                pd.to_numeric(df_dia[col_hl].values, errors="coerce").clip(min=0)
-                if col_hl is not None else 0.0
-            )
-            _dc.columns = ["_cam", "_sku", "_blt", "_peso_anr", "_hl_anr"]
-            _dc["_sku"]  = pd.to_numeric(_dc["_sku"],  errors="coerce")
-            _dc["_blt"]  = pd.to_numeric(_dc["_blt"],  errors="coerce").fillna(0)
-            _dc["_peso_anr"] = pd.to_numeric(_dc["_peso_anr"], errors="coerce").fillna(0)
-            _dc["_hl_anr"]   = pd.to_numeric(_dc["_hl_anr"],   errors="coerce").fillna(0)
-            _dc = _dc.dropna(subset=["_cam", "_sku"])
+        _car_disponible = False
+        if car_file_tr is not None and _ddm_dict:
+            try:
+                import openpyxl as _ox68
+                car_file_tr.seek(0)
+                _wb68 = _ox68.load_workbook(car_file_tr, read_only=True, data_only=True)
+                car_file_tr.seek(0)
+                _ws68 = _wb68.worksheets[0]
+                _car_rows68 = list(_ws68.iter_rows(min_row=2, values_only=True))
+                _wb68.close()
 
-            # Peso híbrido: ANR real si > 0, DDM como complemento donde = 0
-            if _ddm_disponible and sku_peso_u:
-                _dc["_kg_ddm"] = _dc["_sku"].map(sku_peso_u).fillna(0) * _dc["_blt"]
-                _dc["_kg"] = _dc["_peso_anr"].where(_dc["_peso_anr"] > 0, _dc["_kg_ddm"])
-            else:
-                _dc["_kg"] = _dc["_peso_anr"]
+                # Índices de columnas CAR (0-based desde fila 2):
+                # col 10=Transporte, col 17=Artículo, col 19=Bultos, col 21=Unids
+                from collections import defaultdict as _dd68
+                _up68  = _dd68(float)
+                _hl68  = _dd68(float)
+                _kg68  = _dd68(float)
 
-            # HL híbrido: ANR real si > 0, DDM como complemento donde = 0
-            if _ddm_disponible and sku_hl_u:
-                _dc["_hl_ddm"] = _dc["_sku"].map(sku_hl_u).fillna(0) * _dc["_blt"]
-                _dc["_hl"] = _dc["_hl_anr"].where(_dc["_hl_anr"] > 0, _dc["_hl_ddm"])
-            else:
-                _dc["_hl"] = _dc["_hl_anr"]
+                for _r68 in _car_rows68:
+                    try:
+                        _cam68 = _r68[10]
+                        _sku68 = _r68[17]
+                        if _cam68 is None or _sku68 is None:
+                            continue
+                        _blt68 = float(_r68[19] or 0)
+                        _uni68 = float(_r68[21] or 0)
+                        _sid68 = int(float(str(_sku68)))
+                        _d68   = _ddm_dict.get(_sid68, {})
+                        _bxp68 = _d68.get("bxp", 50) or 50
+                        _unb68 = _d68.get("un_bulto", 0)
+                        _hl_u68 = _d68.get("hl_unit", 0)
+                        _kg_u68 = _d68.get("kg_unit", 0)
+                        # bultos equivalentes: fracción de unidades sueltas
+                        _beq68 = _blt68 + (_uni68 / _unb68 if _unb68 > 0 and _uni68 > 0 else 0)
+                        _cam_int = int(float(str(_cam68)))
+                        _up68[_cam_int]  += _beq68
+                        _hl68[_cam_int]  += _hl_u68 * _beq68
+                        _kg68[_cam_int]  += _kg_u68 * _beq68
+                    except Exception:
+                        pass
 
-            peso_por_cam = _dc.groupby("_cam")["_kg"].sum()
-            hl_por_cam   = _dc.groupby("_cam")["_hl"].sum()
+                up_por_cam   = pd.Series(dict(_up68), dtype=float)
+                hl_por_cam   = pd.Series(dict(_hl68), dtype=float)
+                peso_por_cam = pd.Series(dict(_kg68), dtype=float)
+                _car_disponible = True
+            except Exception as _car_err68:
+                st.warning(f"⚠️ Error calculando UP desde CAR: {_car_err68}")
 
-        elif col_hl is not None or col_peso is not None:
-            # Fallback simple si no hay col_sku/col_blt en el ANR
+        if not _car_disponible:
+            # Fallback: si no hay CAR o DDM, usar la columna UNIDAD PAQUETE del ANR
+            if col_up is not None:
+                up_por_cam = df_dia.groupby(col_camion)[col_up].sum()
+                st.warning(
+                    "⚠️ **UP calculado desde ANR** (cargá el CAR + Frescura para mayor precisión).",
+                    icon="⚠️"
+                )
             if col_hl is not None:
-                hl_por_cam   = df_dia.groupby(col_camion)[col_hl].apply(
+                hl_por_cam = df_dia.groupby(col_camion)[col_hl].apply(
                     lambda x: pd.to_numeric(x, errors="coerce").fillna(0).sum())
             if col_peso is not None:
                 peso_por_cam = df_dia.groupby(col_camion)[col_peso].apply(
                     lambda x: pd.to_numeric(x, errors="coerce").fillna(0).sum())
 
-        # Ventas Especiales del CAR → sumar UP + HL + Peso vía DDM × bultos
-        # (son bultos adicionales que no figuran en el ANR del día)
-        ve_clean = ve_edited.dropna(subset=["camion","sku","bultos"]) if not ve_edited.empty else pd.DataFrame()
-        if not ve_clean.empty:
-            for _, r in ve_clean.iterrows():
-                try:
-                    cam = int(r["camion"]); sku = int(r["sku"]); blt = float(r["bultos"])
-                    bxp = sku_bxp.get(sku, 50)
-                    up_por_cam[cam]   = up_por_cam.get(cam, 0)   + blt / bxp
-                    if sku in sku_hl_u:
-                        hl_por_cam[cam]   = hl_por_cam.get(cam, 0)   + sku_hl_u[sku]   * blt
-                    if sku in sku_peso_u:
-                        peso_por_cam[cam] = peso_por_cam.get(cam, 0) + sku_peso_u[sku] * blt
-                except Exception:
-                    pass
-
-        # Caption fuente HL/Peso — v4.65: ANR usa "UNIDAD DE MEDIDA" (col O) = HL
-        if col_hl is not None and _ddm_disponible:
-            _fuente_hlkg = "✅ HL: ANR col 'Unidad de Medida' (HL real) + DDM complemento. Peso: DDM × Bultos (ANR+VE). v4.65"
-        elif col_hl is not None:
-            _fuente_hlkg = "⚠️ HL: ANR col 'Unidad de Medida'. Peso: sin DDM (cargá Frescura 3.0)."
-        elif _ddm_disponible:
-            _fuente_hlkg = "⚠️ HL y Peso: calculados 100% desde DDM × Bultos (ANR sin col HL). Frescura cargada."
+        # Caption fuente
+        if _car_disponible and _ddm_disponible:
+            _fuente_hlkg = "✅ Bultos UP · HL · Peso: calculados desde CAR completo (VE + CHESS) × DDM. v4.68"
+        elif _car_disponible:
+            _fuente_hlkg = "⚠️ UP desde CAR. HL/Peso sin DDM — cargá Frescura 3.0 para activarlos."
         else:
-            _fuente_hlkg = "⚠️ HL y Peso: sin datos (cargá la Frescura/DDM para calcularlos)."
+            _fuente_hlkg = "⚠️ UP desde ANR (fallback). Cargá CAR + Frescura para cálculo correcto."
         st.caption(_fuente_hlkg)
 
         # ── EXCLUSIÓN DE CAMIONES ──────────────────────────────────────────────
-        _todos_cams = sorted([c for c in set(list(pedidos_por_cam.index) + list(cam_patente.keys()))
-                              if int(pedidos_por_cam.get(c, 0)) > 0])
+        # _todos_cams: unión de camiones con PDV (ANR) + camiones con UP (CAR)
+        _cams_pdv = set(pedidos_por_cam.index.tolist()) if not pedidos_por_cam.empty else set()
+        _cams_up  = set(up_por_cam.index.tolist())      if not up_por_cam.empty      else set()
+        _todos_cams = sorted([c for c in (_cams_pdv | _cams_up | set(cam_patente.keys()))
+                              if int(pedidos_por_cam.get(c, 0)) > 0 or float(up_por_cam.get(c, 0)) > 0])
         if "tr_excluidos" not in ss:
             ss["tr_excluidos"] = []
         ss["tr_excluidos"] = [c for c in ss["tr_excluidos"] if c in _todos_cams]
+
+        # Paletas por camión desde CAR (bultos_eq / BXP por SKU)
+        # Ya calculadas durante el loop del CAR; si no hay CAR, estimamos t_up/50
+        paletas_por_cam = pd.Series(dtype=float)
+        if _car_disponible and car_file_tr is not None and _ddm_dict:
+            try:
+                from collections import defaultdict as _dd68p
+                _pal68 = _dd68p(float)
+                car_file_tr.seek(0)
+                import openpyxl as _ox68p
+                _wb68p = _ox68p.load_workbook(car_file_tr, read_only=True, data_only=True)
+                car_file_tr.seek(0)
+                _ws68p = _wb68p.worksheets[0]
+                for _r68p in _ws68p.iter_rows(min_row=2, values_only=True):
+                    try:
+                        _cam_p = _r68p[10]; _sku_p = _r68p[17]
+                        if _cam_p is None or _sku_p is None: continue
+                        _blt_p = float(_r68p[19] or 0); _uni_p = float(_r68p[21] or 0)
+                        _sid_p = int(float(str(_sku_p)))
+                        _d_p   = _ddm_dict.get(_sid_p, {})
+                        _bxp_p = _d_p.get("bxp", 50) or 50
+                        _unb_p = _d_p.get("un_bulto", 0)
+                        _beq_p = _blt_p + (_uni_p / _unb_p if _unb_p > 0 and _uni_p > 0 else 0)
+                        _pal68[int(float(str(_cam_p)))] += _beq_p / _bxp_p
+                    except Exception:
+                        pass
+                _wb68p.close()
+                paletas_por_cam = pd.Series(dict(_pal68), dtype=float)
+            except Exception:
+                pass  # fallback: se estima en _calc_totales
 
         # ── TOTALES BASE ────────────────────────────────────────────────────────
         def _calc_totales(excl):
@@ -8738,13 +8753,14 @@ def render_tab_tablero():
             _hl_s = hl_por_cam[hl_por_cam.index.isin(_mask)]     if not hl_por_cam.empty     else pd.Series(dtype=float)
             _kg   = peso_por_cam[peso_por_cam.index.isin(_mask)] if not peso_por_cam.empty   else pd.Series(dtype=float)
             _rec  = rechazo_por_cam[rechazo_por_cam.index.isin(_mask)] if not rechazo_por_cam.empty else pd.Series(dtype=float)
+            _pal  = paletas_por_cam[paletas_por_cam.index.isin(_mask)] if not paletas_por_cam.empty else pd.Series(dtype=float)
             c_rep  = int((_ped > 0).sum())
             t_pdv  = int(_ped.sum())
             t_up   = float(_up.sum())
             t_hl   = float(_hl_s.sum())
             t_kg   = float(_kg.sum())
             t_rec  = float(_rec.sum())
-            t_pal  = t_up / 50
+            t_pal  = float(_pal.sum()) if not _pal.empty else t_up / 50
             _denom = c_rep + segundas_vueltas
             t_ocup = (t_up - t_rec) / _denom if _denom > 0 else 0.0
             t_fzpct = fuera_zona_real / t_pdv if t_pdv > 0 else 0.0
@@ -8882,11 +8898,11 @@ def render_tab_tablero():
 
         # Construir tabla
         tabla_rows = []
-        for cam in sorted(set(list(pedidos_por_cam.index) + list(cam_patente.keys()))):
-            if int(pedidos_por_cam.get(cam, 0)) == 0: continue
+        for cam in sorted(set(list(pedidos_por_cam.index) + list(up_por_cam.index) + list(cam_patente.keys()))):
+            if int(pedidos_por_cam.get(cam, 0)) == 0 and float(up_por_cam.get(cam, 0)) == 0: continue
             if cam in _excluidos: continue
             bup  = float(up_por_cam.get(cam, 0.0))
-            pals = bup / 50
+            pals = float(paletas_por_cam.get(cam, 0.0)) if not paletas_por_cam.empty else bup / 50
             hl_c = float(hl_por_cam.get(cam, 0.0))  if not hl_por_cam.empty   else 0.0
             kg_c = float(peso_por_cam.get(cam, 0.0)) if not peso_por_cam.empty else 0.0
             rec_c = float(rechazo_por_cam.get(cam, 0.0))
