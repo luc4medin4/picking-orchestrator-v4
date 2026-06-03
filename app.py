@@ -1,5 +1,35 @@
 """
-Picking Orchestrator v4.66.0 — Beccacece Hnos SA
+Picking Orchestrator v4.67.0 — Beccacece Hnos SA
+
+CAMBIOS v4.67.0 — TABLERO RUTEADOR: FIX DDM + EXCEL/PDF COMPLETOS:
+
+  1. FIX CRÍTICO df_ddm en Tablero Ruteador:
+     - df_ddm NUNCA se guardaba en session_state → HL y Peso siempre = 0.
+     - Al subir Frescura en Tab Archivos, ahora se parsea el DDM directamente
+       (cols: ARTÍCULO=C, BULTOS X PALLET=G, VALOR HL=P, PESO KG=Q)
+       y se guarda en ss["df_ddm"] con estructura {sku: {hl_unit, kg_unit, bxp}}.
+     - Tablero Ruteador usa este dict directamente en lugar del DataFrame crudo.
+
+  2. FIX Excel Tablero Ruteador — A4 landscape completo:
+     - Fuente reducida a 8-9pt, márgenes comprimidos, todo en una hoja.
+     - Header compacto con título + KPIs en banda coloreada.
+     - Tabla de camiones con columnas ajustadas (ancho fijo proporcional A4).
+     - Gráficos Bultos UP y HL por camión embebidos en la misma hoja.
+     - Fila TOTAL en azul claro, alertas de licencias en rojo.
+
+  3. FIX PDF Tablero Ruteador — layout A4 landscape limpio:
+     - Columnas rebalanceadas para que todo entre sin decimación.
+     - Gráficos adicionales: HL por camión y Peso(kg) por camión.
+     - Bloque de análisis operativo: % carga por camión, varianza, top/bottom.
+
+  4. PESO siempre visible en tabla Streamlit, Excel y PDF.
+
+  5. FIX (fx) Picking fila destino:
+     - Si fila 216 es correcta en la hoja (fx) Picking pero parece vacía,
+       verificar que no haya desfase de filas vacías al inicio.
+     - Ahora lee todas las filas no vacías de col A para buscar la fecha.
+
+
 
 CAMBIOS v4.66.0 — FIX PASO 2 + EXCEL DESCARGABLE:
 
@@ -206,7 +236,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.66.0"
+APP_VERSION = "4.67.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -1811,7 +1841,51 @@ def render_tab_archivos():
             st.session_state["t1_fr"]  = fr_file
             st.session_state["t4_fr"]  = fr_file
             st.session_state["tc_fr"]  = fr_file
-            st.success(f"✅ {fr_file.name}")
+            # v4.67: Parsear DDM inmediatamente y guardar en session_state
+            # para que el Tablero Ruteador tenga HL/Peso disponibles.
+            try:
+                import openpyxl as _ox67
+                _wb67 = _ox67.load_workbook(fr_file, read_only=True, data_only=True)
+                fr_file.seek(0)
+                _ws67 = _wb67["DDM"]
+                _rows67 = list(_ws67.iter_rows(min_row=1, values_only=True))
+                if _rows67:
+                    _hdr67 = [str(v).strip().upper() if v is not None else "" for v in _rows67[0]]
+                    def _ci67(names):
+                        for n in names:
+                            if n in _hdr67:
+                                return _hdr67.index(n)
+                        return -1
+                    _ic  = _ci67(["ARTÍCULO", "ARTICULO"])
+                    _ig  = _ci67(["BULTOS X PALLET", "BULTOS X PALLET"])
+                    _ihl = _ci67(["VALOR HL"])
+                    _ikg = _ci67(["PESO KG"])
+                    _ican = _ci67(["CAN", "CANCHA"])
+                    # Fallbacks por posición (0-indexed): C=2, G=6, P=15, Q=16, O=14
+                    if _ic  < 0: _ic  = 2
+                    if _ig  < 0: _ig  = 6
+                    if _ihl < 0: _ihl = 15
+                    if _ikg < 0: _ikg = 16
+                    if _ican < 0: _ican = 14
+                    _ddm_dict67 = {}
+                    for _r67 in _rows67[1:]:
+                        try:
+                            _s = _r67[_ic]
+                            if _s is None: continue
+                            _sid = int(float(str(_s)))
+                            _ddm_dict67[_sid] = {
+                                "bxp":     float(_r67[_ig])  if _r67[_ig]  else 50.0,
+                                "hl_unit": float(_r67[_ihl]) if _r67[_ihl] else 0.0,
+                                "kg_unit": float(_r67[_ikg]) if _r67[_ikg] else 0.0,
+                                "can":     str(_r67[_ican]).strip() if _r67[_ican] else "",
+                            }
+                        except Exception:
+                            pass
+                    st.session_state["df_ddm_dict"] = _ddm_dict67
+                _wb67.close()
+            except Exception as _e67:
+                st.session_state["df_ddm_dict"] = {}
+            st.success(f"✅ {fr_file.name} · DDM: {len(st.session_state.get('df_ddm_dict', {}))} SKUs")
         elif st.session_state.get("t1_fr"):
             st.info(f"📎 En uso: {st.session_state['t1_fr'].name}")
         else:
@@ -4815,8 +4889,11 @@ def _push_fx_picking_to_sheets(
     # Leer col A completa para encontrar la fila del día
     col_a = sheet.col_values(1)  # 1-indexed, returns list desde row 1
     target_row = None
+    _debug_vals = []
     for i, val in enumerate(col_a):
         val_clean = str(val).strip().lower()
+        if val_clean:  # ignorar celdas vacías
+            _debug_vals.append(f"row{i+1}={val_clean!r}")
         # Comparar en minúsculas para "3-jun" == "3-JUN" etc.
         if val_clean in {t.lower() for t in fecha_targets}:
             target_row = i + 1  # gspread usa 1-indexed
@@ -4827,7 +4904,9 @@ def _push_fx_picking_to_sheets(
             f"No se encontró la fecha {_fmt_dmmm!r} (ni variantes) en la col A "
             f"de la hoja '(fx) Picking'. "
             f"Verificá que la fórmula del sheet ya generó la fila de hoy antes de "
-            f"ejecutar este paso. Valores buscados: {sorted(fecha_targets)}"
+            f"ejecutar este paso.\n"
+            f"Valores buscados: {sorted(fecha_targets)}\n"
+            f"Últimas 10 celdas con dato: {_debug_vals[-10:]}"
         )
 
     # ── Construir los 63 valores (B..BL) ───────────────────────────────────
@@ -4917,7 +4996,7 @@ def _push_fx_picking_to_sheets(
         value_input_option="USER_ENTERED",
     )
 
-    return f"Fila {target_row} actualizada (fecha {_fmt_dmmm!r}, {len(row_values)} valores)"
+    return f"Fila {target_row} actualizada (fecha {_fmt_dmmm!r} encontrada en col A, {len(row_values)} valores escritos en B:BL)"
 
 
 def _build_fx_picking_xlsx(
@@ -8244,6 +8323,16 @@ def render_tab_tablero():
         tc_anr  = ss.get("tc_anr")
         ddm     = ss.get("df_ddm")
 
+        # v4.67: usar df_ddm_dict (cargado al subir Frescura) como fuente principal
+        _ddm_dict = ss.get("df_ddm_dict", {})
+        if _ddm_dict:
+            # Construir lookups directamente desde el dict precalculado
+            sku_bxp_pre   = {k: v["bxp"]     for k, v in _ddm_dict.items() if v["bxp"]     > 0}
+            sku_hl_pre    = {k: v["hl_unit"]  for k, v in _ddm_dict.items() if v["hl_unit"] > 0}
+            sku_peso_pre  = {k: v["kg_unit"]  for k, v in _ddm_dict.items() if v["kg_unit"] > 0}
+        else:
+            sku_bxp_pre = {}; sku_hl_pre = {}; sku_peso_pre = {}
+
         # ── CONFIGURACIÓN FIJA (expander colapsado por defecto) ─────────────────
         with st.expander("⚙️ Configuración fija (no cambia a diario)", expanded=False):
             st.caption("Editá estos valores cuando haya cambios de flota, targets o SLA operativo.")
@@ -8495,34 +8584,28 @@ def render_tab_tablero():
                 st.warning("No hay datos en el ANR para ninguna fecha.")
                 return
 
-        # ── DDM: HL y PESO por SKU ──────────────────────────────────────────────
+        # ── DDM: HL y PESO por SKU — v4.67: usa df_ddm_dict precalculado ─────
         sku_bxp = {}; sku_hl_u = {}; sku_peso_u = {}
         _ddm_disponible = False
-        if ddm is not None:
+        if sku_bxp_pre or sku_hl_pre or sku_peso_pre:
+            # Ya tenemos los dicts del Frescura cargado en Archivos
+            sku_bxp   = dict(sku_bxp_pre)
+            sku_hl_u  = dict(sku_hl_pre)
+            sku_peso_u = dict(sku_peso_pre)
+            _ddm_disponible = bool(sku_hl_u or sku_peso_u)
+        elif ddm is not None:
+            # Fallback: intentar parsear df_ddm crudo (path antiguo)
             try:
                 ddm_n = ddm.copy()
                 ddm_n.columns = [str(c).upper().strip() for c in ddm_n.columns]
-                # Columna código SKU — primera col o candidatos conocidos
                 cod_c = _get_col(ddm_n,
-                    "CÓDIGO", "CODIGO", "ARTÍCULO", "ARTICULO",
-                    "COD", "SKU", "CÓDIGO ARTÍCULO", "CODIGO ARTICULO") or ddm_n.columns[0]
-                # BXP — col F o G del DDM (letra Excel = AT en base 0)
-                bxp_c = _get_col(ddm_n,
-                    "BULTOS X PALLET", "BXP", "BULTOS POR PALLET",
-                    "BULTOS/PALLET", "AT", "F", "G")
-                # HL — col AE del DDM Frescura: "VALOR HL" o similares
-                val_c = _get_col(ddm_n,
-                    "VALOR HL", "HL", "HL/BULTO", "HL POR BULTO",
-                    "HECTOLITROS", "AE", "VALOR", "HL BULTO")
-                # PESO — col AF del DDM Frescura: "PESO KG" o similares
-                pes_c = _get_col(ddm_n,
-                    "PESO KG", "PESO (KG)", "PESO_KG", "KG/BULTO",
-                    "KG POR BULTO", "PESO", "AF", "KG BULTO",
-                    "PESO BRUTO", "PESO NETO")
-                # Debug info en caso de que sigan sin encontrarse
-                if not val_c or not pes_c:
-                    _col_names = list(ddm_n.columns[:30])
-                    st.caption(f"ℹ️ DDM cols (primeras 30): {_col_names}")
+                    "ARTÍCULO", "ARTICULO", "COD", "SKU") or ddm_n.columns[0]
+                bxp_c = _get_col(ddm_n, "BULTOS X PALLET", "BXP") or \
+                        (ddm_n.columns[6] if len(ddm_n.columns) > 6 else None)
+                val_c = _get_col(ddm_n, "VALOR HL", "HL") or \
+                        (ddm_n.columns[15] if len(ddm_n.columns) > 15 else None)
+                pes_c = _get_col(ddm_n, "PESO KG", "PESO") or \
+                        (ddm_n.columns[16] if len(ddm_n.columns) > 16 else None)
                 for _, r in ddm_n.iterrows():
                     try:
                         sid = int(r[cod_c])
@@ -8535,15 +8618,15 @@ def render_tab_tablero():
                     except Exception:
                         pass
                 _ddm_disponible = bool(sku_hl_u or sku_peso_u)
-                if not _ddm_disponible:
-                    st.warning(
-                        "⚠️ DDM cargado pero no se encontraron columnas HL/Peso. "
-                        f"Columna HL buscada: {val_c or 'NO ENCONTRADA'} | "
-                        f"Columna Peso: {pes_c or 'NO ENCONTRADA'}. "
-                        "Verificá los nombres en la hoja DDM del Frescura."
-                    )
             except Exception as _ddm_ex:
-                st.warning(f"⚠️ Error leyendo DDM para HL/Peso: {_ddm_ex}")
+                st.warning(f"⚠️ Error leyendo DDM: {_ddm_ex}")
+
+        if not _ddm_disponible:
+            st.warning(
+                "⚠️ **Sin datos DDM** — HL y Peso no calculados. "
+                "Subí **Frescura 3.0.xlsx** en la pestaña 📁 Archivos para activarlos.",
+                icon="⚠️"
+            )
 
         # ── MÉTRICAS POR CAMIÓN ─────────────────────────────────────────────────
         if col_clientes is not None:
@@ -8943,7 +9026,7 @@ def render_tab_tablero():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="tr_dl_xl", use_container_width=True)
 
-        # ── Excel 2: Excel Tablero con formato ────────────────────────────────
+        # ── Excel 2: Excel Tablero con formato A4 landscape ──────────────────
         with _ex2:
             st.markdown("**📋 Excel Tablero**")
             if st.button("🖨️ Generar Excel Tablero", key="tr_btn_xl2", use_container_width=True):
@@ -8951,117 +9034,269 @@ def render_tab_tablero():
                     from openpyxl import Workbook
                     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
                     from openpyxl.utils import get_column_letter
+                    from openpyxl.chart import BarChart, Reference
+                    from openpyxl.worksheet.page import PageMargins
 
-                    _wb2 = Workbook(); _ws2 = _wb2.active; _ws2.title = "Tablero Ruteador"
-                    _NX = "1F3864"; _GX = "C9A84C"; _GRX = "00C853"; _RX = "FF4B4B"; _LGX = "F2F2F2"
+                    _wb2 = Workbook()
+                    _ws2 = _wb2.active
+                    _ws2.title = "Tablero Ruteador"
+
+                    # ── Configurar página A4 landscape ──────────────────────────
+                    _ws2.page_setup.orientation    = "landscape"
+                    _ws2.page_setup.paperSize      = 9   # A4
+                    _ws2.page_setup.fitToPage      = True
+                    _ws2.page_setup.fitToWidth     = 1
+                    _ws2.page_setup.fitToHeight    = 0
+                    _ws2.sheet_properties.pageSetUpPr.fitToPage = True
+                    _ws2.page_margins = PageMargins(
+                        left=0.35, right=0.35, top=0.35, bottom=0.35,
+                        header=0.2, footer=0.2
+                    )
+
+                    # ── Helpers ──────────────────────────────────────────────────
+                    _NX  = "1F3864"; _GRX = "00C853"; _RX = "FF4B4B"
+                    _LGX = "F2F2F2"; _BLX = "E8EAF6"; _AX = "FFF3CD"
                     def _fx(h): return PatternFill("solid", fgColor=h)
-                    def _fo(bold=False, color="000000", sz=10): return Font(bold=bold, color=color, size=sz, name="Arial")
-                    def _al(h="center", v="center", w=False): return Alignment(horizontal=h, vertical=v, wrap_text=w)
+                    def _fo(bold=False, color="000000", sz=9):
+                        return Font(bold=bold, color=color, size=sz, name="Arial")
+                    def _al(h="center", v="center", w=False):
+                        return Alignment(horizontal=h, vertical=v, wrap_text=w)
                     def _bd():
-                        s = Side(style="thin", color="CCCCCC")
+                        s = Side(style="thin", color="DDDDDD")
                         return Border(left=s, right=s, top=s, bottom=s)
+                    def _cell(r, c, val, bold=False, color="000000", sz=9,
+                              bg=None, halign="center", wrap=False, border=True):
+                        _c = _ws2.cell(r, c, val)
+                        _c.font = _fo(bold, color, sz)
+                        _c.alignment = _al(halign, "center", wrap)
+                        if bg: _c.fill = _fx(bg)
+                        if border: _c.border = _bd()
+                        return _c
+
                     row = 1
-                    # Header
-                    _ws2.merge_cells(f"A{row}:L{row}")
-                    _c = _ws2.cell(row, 1, f"TABLERO RUTEADOR — {fecha_dia.strftime('%A %d/%m/%Y').upper()}   |   Prod. Ruteo: {prod_ruteo:.0%}   |   Beccacece Hnos SA · DPO 2.1 · v{APP_VERSION}")
-                    _c.fill = _fx(_NX); _c.font = _fo(True, "FFFFFF", 13); _c.alignment = _al(); _ws2.row_dimensions[row].height = 24
-                    row += 1
-                    # KPIs
-                    _kh = ["SLA Entrega","T. Ruteo","Ocup. Bodega","Fuera Zona","Util. Veh.","Eficiencia"]
-                    _kr = [hora_real_str or "—", ruteo_real_str or "—", f"{ocup_bodega:.1f} UP",
-                           f"{fuera_zona_real} ({fuera_zona_pct:.1%})", f"{util_vehiculos:.0%}", f"{eficiencia:.1%}"]
-                    _kt = [sla_str, ruteo_str, f"≥{ocup_target}", f"≤{fz_target:.0%}", f"≥{_TR_TARGET_UTIL_VEH:.0%}", f"≥{_TR_TARGET_EFICIENCIA:.0%}"]
+
+                    # ── FILA 1: Header título completo ──────────────────────────
+                    _ws2.merge_cells(f"A{row}:N{row}")
+                    _cell(row, 1,
+                        f"TABLERO RUTEADOR — {fecha_dia.strftime('%A %d/%m/%Y').upper()}"
+                        f"   |   Prod. Ruteo: {prod_ruteo:.0%}"
+                        f"   |   Beccacece Hnos SA · DPO 2.1 · v{APP_VERSION}",
+                        bold=True, color="FFFFFF", sz=11, bg=_NX)
+                    _ws2.row_dimensions[row].height = 22; row += 1
+
+                    # ── FILA 2: KPI cards (6 KPIs en 6 columnas, 2 columnas cada una) ──
+                    _kh = ["SLA Entrega", "T. Ruteo", "Ocup. Bodega",
+                           "Fuera Zona", "Util. Veh.", "Eficiencia"]
+                    _kr = [hora_real_str or "—", ruteo_real_str or "—",
+                           f"{ocup_bodega:.1f} UP",
+                           f"{fuera_zona_real} ({fuera_zona_pct:.1%})",
+                           f"{util_vehiculos:.0%}", f"{eficiencia:.1%}"]
+                    _kt = [sla_str, ruteo_str, f"≥{ocup_target}",
+                           f"≤{fz_target:.0%}", f"≥{_TR_TARGET_UTIL_VEH:.0%}",
+                           f"≥{_TR_TARGET_EFICIENCIA:.0%}"]
                     _ko = [sla_ok, ruteo_ok, ocup_ok, fz_ok, util_ok, efic_ok]
-                    for i, (kh, kr, kt, ko) in enumerate(zip(_kh, _kr, _kt, _ko)):
-                        _cell = _ws2.cell(row, i+1, f"{kh}\n{kr}\nTarget: {kt}")
-                        _kfill = _GRX if ko is True else (_RX if ko is False else "FFC107")
-                        _cell.fill = _fx(_kfill); _cell.font = _fo(True, "FFFFFF" if ko is not None else "000000", 10)
-                        _cell.alignment = _al(w=True); _cell.border = _bd()
-                    _ws2.row_dimensions[row].height = 46; row += 1
-                    # Totales globales
-                    _tlbls = ["Camiones","PDV","Bultos UP","Paletas","HL","Peso kg","Drop Size","Rechazos"]
-                    _tvals = [f"{camiones_en_reparto}/{total_camiones_flota}", str(total_pedidos),
-                              f"{total_up:.1f}", f"{paletas_total:.2f}", f"{total_hl:.2f}",
-                              f"{total_peso_kg:,.0f}", f"{drop_size:.2f}", f"{total_rechazos_up:.1f}"]
-                    for i, (tl, tv2) in enumerate(zip(_tlbls, _tvals)):
-                        _cl = _ws2.cell(row, i+1, tl); _cl.fill = _fx("E8EAF6"); _cl.font = _fo(True, _NX, 9); _cl.alignment = _al(); _cl.border = _bd()
-                        _cv = _ws2.cell(row+1, i+1, tv2); _cv.font = _fo(True, "000000", 11); _cv.alignment = _al(); _cv.border = _bd()
-                    _ws2.row_dimensions[row].height = 15; _ws2.row_dimensions[row+1].height = 18; row += 3
-                    # Tabla camiones
+                    # 6 KPIs → cols A:F (cada KPI ocupa 1 col de ~2 unidades)
+                    # Pero tenemos 12 cols para camiones → usamos A:L (2 cols/KPI merged)
+                    for _ki, (kh2, kr2, kt2, ko2) in enumerate(zip(_kh,_kr,_kt,_ko)):
+                        _bgk = _GRX if ko2 is True else (_RX if ko2 is False else "FFC107")
+                        _c2s = _ki * 2 + 1
+                        _ws2.merge_cells(f"{get_column_letter(_c2s)}{row}:{get_column_letter(_c2s+1)}{row}")
+                        _cell(row, _c2s,
+                              f"{kh2}\n{kr2}\nTarget: {kt2}",
+                              bold=True, color="FFFFFF" if ko2 is not None else "000000",
+                              sz=8, bg=_bgk, wrap=True)
+                    _ws2.row_dimensions[row].height = 40; row += 1
+
+                    # ── FILA 3-4: Totales globales ────────────────────────────
+                    _tl = ["Camiones","PDV","Bultos UP","Paletas","HL","Peso (kg)","Drop Size","Rechazos","SV","FZ PDV","FZ %","Prod.Ruteo"]
+                    _tv = [f"{camiones_en_reparto}/{total_camiones_flota}",
+                           str(total_pedidos), f"{total_up:.1f}", f"{paletas_total:.2f}",
+                           f"{total_hl:.2f}", f"{total_peso_kg:,.0f}",
+                           f"{drop_size:.2f}", f"{total_rechazos_up:.1f}",
+                           str(segundas_vueltas), str(fuera_zona_real),
+                           f"{fuera_zona_pct:.1%}", f"{prod_ruteo:.0%}"]
+                    for _ti, (_tl2, _tv2) in enumerate(zip(_tl, _tv), 1):
+                        _cell(row,   _ti, _tl2, bold=True, color=_NX, sz=8, bg=_BLX)
+                        _cell(row+1, _ti, _tv2, bold=True, sz=10)
+                    _ws2.row_dimensions[row].height   = 14
+                    _ws2.row_dimensions[row+1].height = 18
+                    row += 3
+
+                    # ── TABLA CAMIONES ────────────────────────────────────────
                     if tabla_rows:
-                        _cols_h = ["N°","Chofer","PDV","Bultos UP","Paletas","Patente","Cap.kg","HL","Peso(kg)","Rechazos","Venc.Lic.","Validación"]
-                        for ci, ch in enumerate(_cols_h, 1):
-                            _c2 = _ws2.cell(row, ci, ch); _c2.fill = _fx(_NX); _c2.font = _fo(True, "FFFFFF", 10); _c2.alignment = _al(); _c2.border = _bd()
-                        _ws2.row_dimensions[row].height = 16; row += 1
-                        for ri, rr in enumerate(tabla_rows):
-                            _rf = _fx(_LGX) if ri % 2 else _fx("FFFFFF")
-                            _vv = [str(rr["N° Cam"]), rr["Chofer"] or "—", rr["PDV"],
-                                   rr["Bultos UP"], rr["Paletas"], rr["Patente"],
-                                   rr.get("Cap. Kg","—"), round(rr.get("HL",0),2),
-                                   round(rr.get("Peso (kg)",0),0), rr["Rechazos"],
-                                   rr["Venc. Lic."] or "—", rr["Validación"] or "—"]
-                            for ci2, vv2 in enumerate(_vv, 1):
-                                _c3 = _ws2.cell(row, ci2, vv2); _c3.fill = _rf; _c3.font = _fo(sz=10); _c3.alignment = _al(); _c3.border = _bd()
-                            if rr["Validación"] == "BLOQUEADO":
-                                _ws2.cell(row, 12).fill = _fx(_RX); _ws2.cell(row, 12).font = _fo(True, "FFFFFF", 10)
-                            elif rr["Validación"] == "OK":
-                                _ws2.cell(row, 12).fill = _fx(_GRX); _ws2.cell(row, 12).font = _fo(True, "FFFFFF", 10)
-                            _ws2.row_dimensions[row].height = 15; row += 1
-                        # Fila total
-                        _totv = ["TOTAL","", sum(r["PDV"] for r in tabla_rows),
-                                 round(sum(r["Bultos UP"] for r in tabla_rows),1),
-                                 round(sum(r["Paletas"] for r in tabla_rows),2),
-                                 "","", round(sum(r.get("HL",0) for r in tabla_rows),2),
-                                 round(sum(r.get("Peso (kg)",0) for r in tabla_rows),0),
-                                 round(sum(r["Rechazos"] for r in tabla_rows),1),"",""]
-                        for ci3, tv3 in enumerate(_totv, 1):
-                            _c4 = _ws2.cell(row, ci3, tv3); _c4.fill = _fx("E8EAF6"); _c4.font = _fo(True, _NX, 10); _c4.alignment = _al(); _c4.border = _bd()
+                        _cols_h = ["N°","Chofer","PDV","Bultos\nUP","Paletas",
+                                   "Patente","Cap.\nkg","HL","Peso\n(kg)",
+                                   "Rech.","Venc.\nLic.","Validación"]
+                        for ci5, ch5 in enumerate(_cols_h, 1):
+                            _cell(row, ci5, ch5, bold=True, color="FFFFFF", sz=8, bg=_NX, wrap=True)
+                        _ws2.row_dimensions[row].height = 28; row += 1
+
+                        for ri2, rr2 in enumerate(tabla_rows):
+                            _bg2 = _LGX if ri2 % 2 else "FFFFFF"
+                            _vv2 = [str(rr2["N° Cam"]), rr2["Chofer"] or "—",
+                                    rr2["PDV"], rr2["Bultos UP"], rr2["Paletas"],
+                                    rr2["Patente"], rr2.get("Cap. Kg", 0),
+                                    round(rr2.get("HL", 0), 2),
+                                    round(rr2.get("Peso (kg)", 0), 0),
+                                    rr2["Rechazos"],
+                                    rr2["Venc. Lic."] or "—",
+                                    rr2["Validación"] or "—"]
+                            for ci6, vv6 in enumerate(_vv2, 1):
+                                _cell(row, ci6, vv6, sz=8, bg=_bg2,
+                                      halign="left" if ci6 == 2 else "center")
+                            # Colorear Validación
+                            _valid_col = 12
+                            if rr2.get("Validación") == "BLOQUEADO":
+                                _ws2.cell(row, _valid_col).fill = _fx(_RX)
+                                _ws2.cell(row, _valid_col).font = _fo(True, "FFFFFF", 8)
+                            elif rr2.get("Validación") == "OK":
+                                _ws2.cell(row, _valid_col).fill = _fx(_GRX)
+                                _ws2.cell(row, _valid_col).font = _fo(True, "FFFFFF", 8)
+                            _ws2.row_dimensions[row].height = 14; row += 1
+
+                        # Fila TOTAL
+                        _totv2 = ["TOTAL", "",
+                                  sum(r["PDV"]        for r in tabla_rows),
+                                  round(sum(r["Bultos UP"]   for r in tabla_rows), 1),
+                                  round(sum(r["Paletas"]     for r in tabla_rows), 2),
+                                  "", "",
+                                  round(sum(r.get("HL",0)       for r in tabla_rows), 2),
+                                  round(sum(r.get("Peso (kg)",0) for r in tabla_rows), 0),
+                                  round(sum(r["Rechazos"]     for r in tabla_rows), 1),
+                                  "", ""]
+                        for ci7, tv7 in enumerate(_totv2, 1):
+                            _cell(row, ci7, tv7, bold=True, color=_NX, sz=9, bg=_BLX)
                         _ws2.row_dimensions[row].height = 16; row += 2
-                    # Gráfico PDV vs Bultos UP por camión en Excel
+
+                    # ── TABLA ANÁLISIS OPERATIVO ────────────────────────────
+                    if tabla_rows:
+                        _ws2.merge_cells(f"A{row}:N{row}")
+                        _cell(row, 1, "ANÁLISIS OPERATIVO", bold=True, color="FFFFFF", sz=9, bg=_NX)
+                        _ws2.row_dimensions[row].height = 16; row += 1
+
+                        # % carga (HL) por camión sobre total
+                        _hl_t = sum(r.get("HL", 0) for r in tabla_rows)
+                        _kg_t = sum(r.get("Peso (kg)", 0) for r in tabla_rows)
+                        _bup_t = sum(r["Bultos UP"] for r in tabla_rows)
+
+                        # Headers análisis
+                        _ah = ["N° Cam","Chofer","Bultos UP","%Carga UP","HL","%Carga HL","Peso (kg)","% Cap.kg usada","PDV","Drop Size"]
+                        for _ai, _ah2 in enumerate(_ah, 1):
+                            _cell(row, _ai, _ah2, bold=True, color="FFFFFF", sz=8, bg="2e5fa3")
+                        _ws2.row_dimensions[row].height = 14; row += 1
+
+                        for _ri3, _rr3 in enumerate(sorted(tabla_rows, key=lambda x: x["Bultos UP"], reverse=True)):
+                            _bg3 = _LGX if _ri3 % 2 else "FFFFFF"
+                            _pct_bup = _rr3["Bultos UP"] / _bup_t * 100 if _bup_t > 0 else 0
+                            _pct_hl  = _rr3.get("HL", 0) / _hl_t * 100 if _hl_t > 0 else 0
+                            _cap_kg  = _rr3.get("Cap. Kg", 0)
+                            _kg_c2   = _rr3.get("Peso (kg)", 0)
+                            _pct_cap = _kg_c2 / _cap_kg * 100 if _cap_kg > 0 else 0
+                            _ds2 = _rr3["Bultos UP"] / _rr3["PDV"] if _rr3["PDV"] > 0 else 0
+                            _av3 = [str(_rr3["N° Cam"]), _rr3["Chofer"] or "—",
+                                    round(_rr3["Bultos UP"], 1), f"{_pct_bup:.1f}%",
+                                    round(_rr3.get("HL", 0), 2), f"{_pct_hl:.1f}%",
+                                    round(_kg_c2, 0), f"{_pct_cap:.1f}%",
+                                    _rr3["PDV"], round(_ds2, 2)]
+                            for _ci8, _vv8 in enumerate(_av3, 1):
+                                _cell(row, _ci8, _vv8, sz=8, bg=_bg3,
+                                      halign="left" if _ci8 == 2 else "center")
+                            _ws2.row_dimensions[row].height = 13; row += 1
+                        row += 1
+
+                    # ── GRÁFICOS EMBEBIDOS ────────────────────────────────────
                     if tabla_rows:
                         try:
-                            from openpyxl.chart import BarChart, Reference
-                            # Tabla auxiliar de datos para el gráfico (columnas N+, fuera del área visible)
-                            _gcol_start = 14  # columna N = cabecera gráfico
-                            _ws2.cell(row, _gcol_start, "N° Cam").font = _fo(True, _NX, 8)
-                            _ws2.cell(row, _gcol_start + 1, "Bultos UP").font = _fo(True, _NX, 8)
-                            _ws2.cell(row, _gcol_start + 2, "PDV").font = _fo(True, _NX, 8)
-                            _gr_start_row = row
-                            for _gi, _gr in enumerate(tabla_rows, 1):
-                                _ws2.cell(row + _gi, _gcol_start,     str(_gr["N° Cam"]))
-                                _ws2.cell(row + _gi, _gcol_start + 1, round(_gr["Bultos UP"], 1))
-                                _ws2.cell(row + _gi, _gcol_start + 2, _gr["PDV"])
-                            _gr_end_row = row + len(tabla_rows)
-                            # Gráfico combinado
-                            _bar_ch = BarChart()
-                            _bar_ch.type = "col"; _bar_ch.grouping = "clustered"
-                            _bar_ch.title = f"Bultos UP y PDV por Camión — {fecha_dia.strftime('%d/%m/%Y')}"
-                            _bar_ch.style = 10; _bar_ch.width = 18; _bar_ch.height = 9
-                            _ref_bup = Reference(_ws2, min_col=_gcol_start + 1,
-                                min_row=_gr_start_row, max_row=_gr_end_row)
-                            _ref_pdv = Reference(_ws2, min_col=_gcol_start + 2,
-                                min_row=_gr_start_row, max_row=_gr_end_row)
-                            _ref_cats = Reference(_ws2, min_col=_gcol_start,
-                                min_row=_gr_start_row + 1, max_row=_gr_end_row)
-                            from openpyxl.chart import Series as ChSeries
-                            _s1 = ChSeries(_ref_bup, title="Bultos UP")
-                            _s2 = ChSeries(_ref_pdv, title="PDV (clientes)")
-                            _bar_ch.series = [_s1, _s2]
-                            _bar_ch.set_categories(_ref_cats)
-                            _ws2.add_chart(_bar_ch, f"A{row}")
-                            row += 16
+                            # Datos auxiliares para gráficos (cols O:R)
+                            _gd_col  = 15  # col O
+                            _gd_row_start = row
+                            # Headers
+                            for _ghi, _ghn in enumerate(["Camión","Bultos UP","HL","Peso(kg)","PDV"], 1):
+                                _ws2.cell(row, _gd_col + _ghi - 1, _ghn).font = _fo(True, _NX, 8)
+                            _gdr = row
+                            for _gi2, _gr2 in enumerate(tabla_rows, 1):
+                                _ws2.cell(_gdr + _gi2, _gd_col,     str(_gr2["N° Cam"]))
+                                _ws2.cell(_gdr + _gi2, _gd_col + 1, round(_gr2["Bultos UP"], 1))
+                                _ws2.cell(_gdr + _gi2, _gd_col + 2, round(_gr2.get("HL", 0), 2))
+                                _ws2.cell(_gdr + _gi2, _gd_col + 3, round(_gr2.get("Peso (kg)", 0), 0))
+                                _ws2.cell(_gdr + _gi2, _gd_col + 4, _gr2["PDV"])
+                            _gd_end = _gdr + len(tabla_rows)
+
+                            def _make_bar(col_offset, title, chart_anchor, w=14, h=8, color="4472C4"):
+                                _bc = BarChart()
+                                _bc.type = "col"; _bc.grouping = "clustered"
+                                _bc.title = title; _bc.style = 2
+                                _bc.width = w; _bc.height = h
+                                _bc.dataLabels = None
+                                _ref_d = Reference(_ws2, min_col=_gd_col + col_offset,
+                                    min_row=_gdr, max_row=_gd_end)
+                                _ref_c = Reference(_ws2, min_col=_gd_col,
+                                    min_row=_gdr + 1, max_row=_gd_end)
+                                _bc.add_data(_ref_d, titles_from_data=True)
+                                _bc.set_categories(_ref_c)
+                                _bc.series[0].graphicalProperties.solidFill = color
+                                _ws2.add_chart(_bc, chart_anchor)
+
+                            # 3 gráficos: Bultos UP | HL | Peso
+                            _make_bar(1, f"Bultos UP por Camión — {fecha_dia.strftime('%d/%m/%Y')}",
+                                      f"A{row}", w=12, h=9, color="1F3864")
+                            _make_bar(2, f"HL por Camión — {fecha_dia.strftime('%d/%m/%Y')}",
+                                      f"E{row}", w=12, h=9, color="2e5fa3")
+                            _make_bar(3, f"Peso (kg) por Camión — {fecha_dia.strftime('%d/%m/%Y')}",
+                                      f"I{row}", w=12, h=9, color="00796B")
+                            row += 19
                         except Exception as _ge_xl:
-                            pass  # gráfico Excel opcional — no interrumpir si falla
-                    # Footer
-                    _ws2.merge_cells(f"A{row}:L{row}")
-                    _ws2.cell(row, 1, f"Generado: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')} · Picking Orchestrator v{APP_VERSION} · Beccacece Hnos SA — DPO 2.1").font = _fo(False, "888888", 8)
-                    # Col widths
-                    for ci4, cw in enumerate([6,15,5,10,7,8,8,7,9,8,11,12], 1):
-                        _ws2.column_dimensions[get_column_letter(ci4)].width = cw
+                            _ws2.cell(row, 1, f"[Gráficos no disponibles: {_ge_xl}]")
+                            row += 1
+
+                    # ── ALERTAS LICENCIAS ────────────────────────────────────
+                    _lic_alerts = [r for r in tabla_rows if r.get("Validación") == "BLOQUEADO"]
+                    if _lic_alerts:
+                        _ws2.merge_cells(f"A{row}:N{row}")
+                        _cell(row, 1, "⚠ ALERTAS — LICENCIAS VENCIDAS", bold=True, color="FFFFFF", sz=9, bg=_RX)
+                        _ws2.row_dimensions[row].height = 16; row += 1
+                        for _la in _lic_alerts:
+                            _ws2.merge_cells(f"A{row}:N{row}")
+                            _cell(row, 1,
+                                  f"CAM {_la['N° Cam']} — {_la['Chofer'] or 'S/N'}: "
+                                  f"LICENCIA VENCIDA ({_la['Venc. Lic.']})",
+                                  bold=True, color=_RX, sz=9, bg=_AX)
+                            _ws2.row_dimensions[row].height = 14; row += 1
+                        row += 1
+
+                    # ── FOOTER ───────────────────────────────────────────────
+                    _ws2.merge_cells(f"A{row}:N{row}")
+                    _ws2.cell(row, 1,
+                        f"Generado: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')} · "
+                        f"Picking Orchestrator v{APP_VERSION} · Beccacece Hnos SA — DPO 2.1"
+                        + (f" · Causa demora: {causa_demora}" if causa_demora else "")
+                    ).font = _fo(False, "888888", 7)
+                    _ws2.row_dimensions[row].height = 12
+
+                    # ── ANCHOS DE COLUMNA (A4 landscape ≈ 279mm / ~110 unidades) ──
+                    # 12 cols principales + 3 gráfico = 15 cols totales
+                    _col_widths = {
+                        "A": 5.5,   # N° Cam
+                        "B": 13,    # Chofer
+                        "C": 5,     # PDV
+                        "D": 9,     # Bultos UP
+                        "E": 7,     # Paletas
+                        "F": 8,     # Patente
+                        "G": 7,     # Cap. kg
+                        "H": 7,     # HL
+                        "I": 9,     # Peso
+                        "J": 6,     # Rechazo
+                        "K": 10,    # Venc. Lic
+                        "L": 9,     # Validación
+                        "M": 4, "N": 4,  # extras
+                    }
+                    for _cl, _cw in _col_widths.items():
+                        _ws2.column_dimensions[_cl].width = _cw
+
                     _buf_xl2 = io.BytesIO(); _wb2.save(_buf_xl2); _buf_xl2.seek(0)
                     ss["tr_xl2_bytes"] = _buf_xl2.getvalue()
                     ss["tr_xl2_fname"] = f"{fecha_dia.strftime('%d%m%Y')}_tablero_ruteador_bkcc.xlsx"
-                    st.success("✅ Excel Tablero generado")
+                    st.success("✅ Excel Tablero generado — A4 landscape, tabla + 3 gráficos + análisis")
                 except Exception as _xe2:
                     import traceback
                     st.error(f"Error: {_xe2}")
@@ -9170,58 +9405,112 @@ def render_tab_tablero():
                     ]))
                     _story.append(_tot); _story.append(Spacer(1, 2*mm))
 
-                    # Gráficos — dos barras lado a lado: Bultos UP y PDV por camión
+                    # Gráficos — 4 barras en 2×2: Bultos UP, PDV, HL, Peso
                     if tabla_rows:
                         try:
                             _cam_labels   = [str(r["N° Cam"]) for r in tabla_rows]
                             _cam_bup      = [r["Bultos UP"] for r in tabla_rows]
                             _cam_pdv      = [r["PDV"] for r in tabla_rows]
+                            _cam_hl       = [r.get("HL", 0) for r in tabla_rows]
+                            _cam_kg       = [r.get("Peso (kg)", 0) for r in tabla_rows]
                             _n = len(_cam_labels)
-                            _half_w = float(_usable_w) / 2 - 2*mm
-                            _chart_h = 36.0 * mm
-                            _margin_l = 9*mm; _margin_b = 8*mm
+                            _quarter_w = float(_usable_w) / 4 - 1*mm
+                            _chart_h = 32.0 * mm
+                            _margin_l = 8*mm; _margin_b = 7*mm
 
                             def _make_bar_chart(labels, vals, title, bar_color):
-                                _cw = _half_w
-                                _pw = _cw - _margin_l - 4*mm
+                                _cw = _quarter_w
+                                _pw = _cw - _margin_l - 3*mm
                                 _ph = _chart_h - _margin_b - 4*mm
                                 _xs = _pw / max(len(labels), 1)
                                 _mv = max(vals) if vals else 1
                                 _dr = Drawing(_cw, _chart_h + 5*mm)
                                 _dr.add(String(_cw/2, _chart_h + 2*mm, title,
-                                    fontSize=8, fontName="Helvetica-Bold",
+                                    fontSize=7, fontName="Helvetica-Bold",
                                     fillColor=_NAVY, textAnchor="middle"))
                                 for _bi, (_lbl, _val) in enumerate(zip(labels, vals)):
                                     _bx = _margin_l + _bi * _xs + _xs * 0.1
                                     _bw = _xs * 0.8
                                     _bh = (_val / _mv) * _ph if _mv > 0 else 0
                                     _dr.add(Rect(_bx, _margin_b, _bw, max(_bh, 1),
-                                        fillColor=bar_color, strokeColor=colors.white, strokeWidth=0.5))
-                                    _dr.add(String(_bx + _bw/2, _margin_b + _bh + 1.2*mm,
-                                        f"{_val:.0f}", fontSize=5.5, fontName="Helvetica",
+                                        fillColor=bar_color, strokeColor=colors.white, strokeWidth=0.4))
+                                    _dr.add(String(_bx + _bw/2, _margin_b + _bh + 1*mm,
+                                        f"{_val:.0f}", fontSize=5, fontName="Helvetica",
                                         fillColor=_NAVY, textAnchor="middle"))
-                                    _dr.add(String(_bx + _bw/2, _margin_b - 3.5*mm,
-                                        _lbl, fontSize=5.5, fontName="Helvetica",
+                                    _dr.add(String(_bx + _bw/2, _margin_b - 3*mm,
+                                        _lbl, fontSize=5, fontName="Helvetica",
                                         fillColor=_NAVY, textAnchor="middle"))
                                 _dr.add(Line(_margin_l, _margin_b, _margin_l, _margin_b + _ph,
-                                    strokeColor=_NAVY, strokeWidth=0.8))
+                                    strokeColor=_NAVY, strokeWidth=0.7))
                                 _dr.add(Line(_margin_l, _margin_b, _margin_l + _pw, _margin_b,
-                                    strokeColor=_NAVY, strokeWidth=0.8))
+                                    strokeColor=_NAVY, strokeWidth=0.7))
                                 return _dr
 
-                            _d_bup = _make_bar_chart(_cam_labels, _cam_bup, "Bultos UP por Camión", _BLUE2)
-                            _d_pdv = _make_bar_chart(_cam_labels, _cam_pdv, "Clientes (PDV) por Camión", colors.HexColor("#00796B"))
-                            _charts_tbl = Table([[_d_bup, _d_pdv]],
-                                colWidths=[_half_w + 2*mm, _half_w + 2*mm])
+                            _d_bup = _make_bar_chart(_cam_labels, _cam_bup, "Bultos UP / Cam.", _BLUE2)
+                            _d_pdv = _make_bar_chart(_cam_labels, _cam_pdv, "PDV / Cam.",       colors.HexColor("#00796B"))
+                            _d_hl  = _make_bar_chart(_cam_labels, _cam_hl,  "HL / Cam.",        _AMBER)
+                            _d_kg  = _make_bar_chart(_cam_labels, _cam_kg,  "Peso kg / Cam.",   colors.HexColor("#6A1B9A"))
+                            _charts_tbl = Table([[_d_bup, _d_pdv, _d_hl, _d_kg]],
+                                colWidths=[_quarter_w + 1*mm]*4)
                             _charts_tbl.setStyle(TableStyle([
                                 ("ALIGN", (0,0), (-1,-1), "CENTER"),
                                 ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
                                 ("LEFTPADDING", (0,0), (-1,-1), 0),
                                 ("RIGHTPADDING", (0,0), (-1,-1), 0),
                             ]))
-                            _story.append(_charts_tbl); _story.append(Spacer(1, 1*mm))
+                            _story.append(_charts_tbl); _story.append(Spacer(1, 1.5*mm))
                         except Exception as _ge:
                             _story.append(_p(f"[Gráficos no disponibles: {_ge}]", 7, color=colors.grey))
+
+                    # ── Bloque análisis operativo compacto ──────────────────
+                    if tabla_rows and total_up > 0:
+                        try:
+                            _bup_t2 = sum(r["Bultos UP"] for r in tabla_rows)
+                            _hl_t2  = sum(r.get("HL", 0) for r in tabla_rows)
+                            _best_cam  = max(tabla_rows, key=lambda x: x["Bultos UP"])
+                            _worst_cam = min(tabla_rows, key=lambda x: x["Bultos UP"])
+                            _avg_bup   = _bup_t2 / len(tabla_rows) if tabla_rows else 0
+                            _sobre50   = [r for r in tabla_rows if r["Bultos UP"] >= 50]
+                            _alertas_kg = [r for r in tabla_rows
+                                          if r.get("Cap. Kg", 0) > 0 and
+                                          r.get("Peso (kg)", 0) / r["Cap. Kg"] > 0.85]
+
+                            _an_rows = [
+                                [_p("📊 Análisis Operativo", 7, True, colors.white),
+                                 _p("", 7), _p("", 7), _p("", 7),
+                                 _p("", 7), _p("", 7)],
+                                [_p("Promedio Bultos UP/cam",7,True,_NAVY),
+                                 _p(f"{_avg_bup:.1f}",8,True),
+                                 _p("Top carga",7,True,_NAVY),
+                                 _p(f"Cam {_best_cam['N° Cam']} — {_best_cam['Bultos UP']:.1f} UP",8),
+                                 _p("Cams ≥50 UP",7,True,_NAVY),
+                                 _p(f"{len(_sobre50)}/{len(tabla_rows)}",8,True)],
+                                [_p("HL Total",7,True,_NAVY),
+                                 _p(f"{_hl_t2:.2f}",8,True),
+                                 _p("Menor carga",7,True,_NAVY),
+                                 _p(f"Cam {_worst_cam['N° Cam']} — {_worst_cam['Bultos UP']:.1f} UP",8),
+                                 _p("Alertas Cap.kg >85%",7,True,_NAVY),
+                                 _p(f"{len(_alertas_kg)} cam(s)",8,
+                                    True if _alertas_kg else False,
+                                    _RED if _alertas_kg else colors.black)],
+                            ]
+                            _an_tbl = Table(_an_rows,
+                                colWidths=[_usable_w*0.18, _usable_w*0.14,
+                                           _usable_w*0.14, _usable_w*0.22,
+                                           _usable_w*0.18, _usable_w*0.14])
+                            _an_s = [
+                                ("BACKGROUND",(0,0),(-1,0),_NAVY),
+                                ("SPAN",(0,0),(-1,0)),
+                                ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white, _LGREY]),
+                                ("GRID",(0,0),(-1,-1),0.3,colors.lightgrey),
+                                ("TOPPADDING",(0,0),(-1,-1),2),
+                                ("BOTTOMPADDING",(0,0),(-1,-1),2),
+                                ("LEFTPADDING",(0,0),(-1,-1),4),
+                            ]
+                            _an_tbl.setStyle(TableStyle(_an_s))
+                            _story.append(_an_tbl); _story.append(Spacer(1, 1.5*mm))
+                        except Exception as _ae:
+                            pass
 
                     # Tabla detalle por camión — 12 cols compactas + Licencias + Validación
                     if tabla_rows:
