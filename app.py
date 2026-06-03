@@ -2771,13 +2771,30 @@ def _t4_load_car_proyeccion(car_bytes: bytes, fr_bytes: bytes) -> dict:
     # Stats VE/CHESS para auditoría
     fuentes = body["fuente"].value_counts().to_dict() if "fuente" in body.columns else {}
 
+    # v4.65 — Bultos AE por cancha (para Paso 2 fx Picking)
+    # Se calcula desde grp ANTES del pivot, que es la única forma de obtenerlo
+    # con la lógica floor() correcta aplicada por cam×SKU.
+    bult_ae_grp = grp.groupby("cancha_norm", as_index=False).agg(bult_ae=("bult_ae", "sum"))
+    bult_ae_por_cancha = {c: 0.0 for c in _T4_CANCHAS}
+    for _, _r in bult_ae_grp.iterrows():
+        if _r["cancha_norm"] in _T4_CANCHAS:
+            bult_ae_por_cancha[_r["cancha_norm"]] = float(_r["bult_ae"])
+
+    # v4.65 — DDM cancha lookup (para Paso 2: mapear SKU ANR → cancha)
+    ddm_can_lookup = {}
+    if not df_ddm.empty:
+        for _sku_k, _sku_v in df_ddm.set_index("sku").to_dict("index").items():
+            ddm_can_lookup[_sku_k] = _sku_v.get("can", "SIN CANCHA")
+
     return {
-        "df":          cam_df,
-        "fecha":       fecha,
-        "fuente":      f"CAR + Frescura DDM · v4.33 · VE={fuentes.get('VE',0)} líneas · CHESS={fuentes.get('CHESS',0)} líneas",
-        "mix_picking": mix,
-        "tot_pick":    tot_pick,
-        "tot_ae":      tot_ae,
+        "df":               cam_df,
+        "fecha":            fecha,
+        "fuente":           f"CAR + Frescura DDM · v4.33 · VE={fuentes.get('VE',0)} líneas · CHESS={fuentes.get('CHESS',0)} líneas",
+        "mix_picking":      mix,
+        "tot_pick":         tot_pick,
+        "tot_ae":           tot_ae,
+        "bult_ae_por_cancha": bult_ae_por_cancha,   # v4.65: AE bultos por cancha (pre-asign)
+        "ddm_can_lookup":   ddm_can_lookup,           # v4.65: SKU→cancha para ANR lookup
     }
 
 
@@ -4463,6 +4480,379 @@ def render_tab_proyeccion():
                     with st.expander("Stack trace"):
                         import traceback
                         st.code(traceback.format_exc())
+
+
+    # ── Paso 2 — Enviar resumen (fx) Picking a Google Sheets ─────────────────
+    # v4.65: Se ubica al FINAL de la sección, después de generar los PDFs,
+    # para que los operadores siempre generen primero los PDFs de cancha
+    # (y apliquen las reasignaciones si las hay) y LUEGO registren el dato.
+    # El aviso en rojo recuerda ajustar los bultos si hubo reasignaciones.
+    st.divider()
+    with st.container(border=True):
+        st.markdown("#### 📥 Paso 2 — Registrar picking en (fx) Picking (Inputs Sheet)")
+
+        # Aviso prominente sobre reasignaciones
+        st.error(
+            "⚠️ **IMPORTANTE — ANTES DE ENVIAR:** "
+            "Si reasignaste cargas entre canchas en la tabla de arriba, los bultos "
+            "enviados aquí ya reflejan esa reasignación. "
+            "Si además moviste bultos **físicamente entre canchas** (por ejemplo, "
+            "un autoelevador llevó una carga de C1 a C3), "
+            "debés ajustar manualmente esa cantidad en la fila del sheet "
+            "**DESPUÉS** de que este botón haya completado la escritura.",
+            icon="🔴",
+        )
+
+        # Preview de los valores que se van a escribir
+        with st.expander("👁️ Vista previa de valores a enviar", expanded=False):
+            _T4_C_p2 = _T4_CANCHAS
+            _prev_cols = st.columns(len(_T4_C_p2) + 1)
+            _prev_cols[0].markdown("**Métrica**")
+            for _pi, _pc in enumerate(_T4_C_p2):
+                _prev_cols[_pi + 1].markdown(f"**{_cn_short(_pc)}**")
+
+            def _prev_row(label, vals_dict, fmt=".1f"):
+                _row_c = st.columns(len(_T4_C_p2) + 1)
+                _row_c[0].caption(label)
+                for _pi, _pc in enumerate(_T4_C_p2):
+                    _row_c[_pi + 1].caption(f"{vals_dict.get(_pc, 0):{fmt}}")
+
+            _prev_row("PICK BULTOS", totales_bult, ".1f")
+            _prev_row("AE BULTOS",   pdata.get("bult_ae_por_cancha", {}), ".1f")
+            _prev_row("PESO KG",     totales_kg, ".0f")
+            _prev_row("PICKING HL",  totales_hl, ".3f")
+
+            # Preview HL venta (necesita ANR)
+            _anr_df_prev = st.session_state.get("anr_df")
+            if _anr_df_prev is not None:
+                _hl_venta_prev = _t4_compute_hl_venta_por_cancha(
+                    _anr_df_prev,
+                    pdata.get("ddm_can_lookup", {}),
+                )
+                _prev_row("HL VENTA (ANR)", _hl_venta_prev, ".3f")
+            else:
+                st.caption("*(HL VENTA no disponible — subí ANR.xlsx en Archivos)*")
+
+        # Verificar si ANR está cargado
+        _anr_disponible = st.session_state.get("anr_df") is not None
+
+        if not _anr_disponible:
+            st.warning(
+                "⬅️ Para incluir TOTAL HL VENTA subí **ANR.xlsx** en la pestaña 📁 Archivos. "
+                "Si no está cargado, esa columna quedará en 0."
+            )
+
+        _p2_col1, _p2_col2 = st.columns([1, 2])
+        with _p2_col1:
+            if st.button(
+                "📥 Enviar a (fx) Picking",
+                type="primary",
+                use_container_width=True,
+                key="t4_paso2_btn",
+                help="Busca la fila de hoy en la hoja (fx) Picking y completa las columnas B:BL",
+            ):
+                with st.spinner("Calculando y enviando a (fx) Picking…"):
+                    try:
+                        _creds_p2 = dict(st.secrets["gcp_service_account"])
+
+                        # HL venta por cancha desde ANR
+                        _anr_df_p2 = st.session_state.get("anr_df")
+                        _hl_venta_p2 = _t4_compute_hl_venta_por_cancha(
+                            _anr_df_p2,
+                            pdata.get("ddm_can_lookup", {}),
+                        )
+
+                        _resultado_p2 = _push_fx_picking_to_sheets(
+                            totales_bult        = totales_bult,
+                            totales_hl          = totales_hl,
+                            totales_kg          = totales_kg,
+                            bult_ae_por_cancha  = pdata.get("bult_ae_por_cancha", {}),
+                            hl_venta_por_cancha = _hl_venta_p2,
+                            tot_pick            = pdata["tot_pick"],
+                            tot_ae              = pdata["tot_ae"],
+                            fecha               = pdata["fecha"],
+                            credentials_json    = _creds_p2,
+                        )
+                        st.success(f"✅ {_resultado_p2}")
+                        log_event(
+                            "info",
+                            f"Paso 2 (fx) Picking: {_resultado_p2} | "
+                            f"pick={pdata['tot_pick']:.0f} bult | "
+                            f"ae={pdata['tot_ae']:.0f} bult | "
+                            f"hl_pick={sum(totales_hl.values()):.2f} | "
+                            f"hl_venta={sum(_hl_venta_p2.values()):.2f}",
+                        )
+                    except KeyError:
+                        st.error(
+                            "❌ Falta `gcp_service_account` en `st.secrets`. "
+                            "Agregá el JSON de la service account en `.streamlit/secrets.toml`."
+                        )
+                    except Exception as _ex_p2:
+                        st.error(f"❌ Error al escribir en (fx) Picking: {_ex_p2}")
+                        with st.expander("Stack trace"):
+                            import traceback
+                            st.code(traceback.format_exc())
+
+        with _p2_col2:
+            _fecha_str_p2 = (
+                pdata["fecha"].strftime("%d/%m/%Y")
+                if hasattr(pdata["fecha"], "strftime")
+                else str(pdata["fecha"])
+            )
+            st.info(
+                f"**¿Qué hace este botón?**\n\n"
+                f"Busca la fila del **{_fecha_str_p2}** en la hoja `(fx) Picking` "
+                f"del Inputs Sheet y completa las columnas **B:BL** con los datos "
+                f"calculados de esta sesión (picking + AE + HL + KG + HL venta del ANR). "
+                f"Las columnas de matrices quedan en 0 (se calculan en el sheet). "
+                f"No inserta filas nuevas, no rompe fórmulas."
+            )
+
+
+# ── HELPER: (fx) Picking — Paso 2 ─────────────────────────────────────────
+# v4.65 — Calcula HL venta por cancha desde ANR (excluyendo SIN CARGO)
+# y escribe la fila resumen en la hoja (fx) Picking del Inputs Sheets.
+
+def _t4_compute_hl_venta_por_cancha(
+    anr_df: "pd.DataFrame",
+    ddm_can_lookup: dict,
+) -> dict:
+    """
+    v4.65 — Suma TOTAL HL VENTA por cancha desde el ANR (hoja BASE).
+
+    Lógica:
+      - Col O (idx 14 = UM / HL) contiene los HL de cada línea de venta.
+      - Se excluyen filas con SIN CARGO = 'SI' (col G, idx 6).
+      - Cada SKU (col H, idx 7) se mapea a su cancha via ddm_can_lookup.
+      - La suma por cancha es TOTAL HL VENTA (no es el HL del picking).
+
+    Retorna {cancha: float} para T4_CANCHAS + 'SIN CANCHA'.
+    """
+    result = {c: 0.0 for c in _T4_CANCHAS}
+
+    if anr_df is None or anr_df.empty:
+        return result
+
+    # Nombres de columna flexibles — buscar por nombre o por posición
+    def _col(df, *names):
+        for n in names:
+            if n in df.columns:
+                return df[n]
+        return None
+
+    col_sku      = _col(anr_df, "ARTÍCULO", "ARTICULO", "H")
+    col_hl       = _col(anr_df, "UNIDAD DE MEDIDA", "UM", "O")
+    col_sin_cargo = _col(anr_df, "SIN CARGO", "G")
+
+    if col_hl is None:
+        # Fallback posicional (col O = idx 14 en BASE, que puede tener header en row 2)
+        if len(anr_df.columns) > 14:
+            col_hl = anr_df.iloc[:, 14]
+        else:
+            return result
+
+    if col_sku is None and len(anr_df.columns) > 7:
+        col_sku = anr_df.iloc[:, 7]
+
+    if col_sin_cargo is None and len(anr_df.columns) > 6:
+        col_sin_cargo = anr_df.iloc[:, 6]
+
+    for i in range(len(anr_df)):
+        try:
+            # Excluir SIN CARGO
+            sc = str(col_sin_cargo.iloc[i]).strip().upper() if col_sin_cargo is not None else ""
+            if sc == "SI":
+                continue
+
+            hl_val = col_hl.iloc[i]
+            hl_f   = float(hl_val) if hl_val not in (None, "", "None") else 0.0
+            if hl_f <= 0:
+                continue
+
+            sku_raw = col_sku.iloc[i] if col_sku is not None else None
+            sku_int = int(float(str(sku_raw))) if sku_raw not in (None, "", "None") else 0
+            can_raw = ddm_can_lookup.get(sku_int, "SIN CANCHA")
+            can_norm = _t4_norm_cancha(can_raw)
+
+            if can_norm in _T4_CANCHAS:
+                result[can_norm] += hl_f
+        except (ValueError, TypeError, IndexError):
+            pass
+
+    return result
+
+
+def _push_fx_picking_to_sheets(
+    *,
+    totales_bult:      dict,
+    totales_hl:        dict,
+    totales_kg:        dict,
+    bult_ae_por_cancha: dict,
+    hl_venta_por_cancha: dict,
+    tot_pick:          float,
+    tot_ae:            float,
+    fecha,
+    credentials_json:  dict,
+) -> str:
+    """
+    v4.65 — Escribe UNA SOLA FILA en la hoja '(fx) Picking' del Inputs Sheet,
+    buscando la fila del día actual por fecha en col A y completando B:BL.
+
+    NO inserta filas nuevas — solo hace update() sobre la fila ya generada
+    automáticamente por la fórmula del sheet. Así nunca rompe fórmulas.
+
+    Columnas B..BL (63 valores, 0-indexados en la fila):
+      B  = PICKING BULTOS total   (sum todas las canchas pick)
+      C..G = CI CII CIII CIV MKPL (pick)
+      H  = Comodín 1 = 0
+      I  = AE BULTOS total        (sum AE todas las canchas)
+      J..N = CI CII CIII CIV MKPL (AE)
+      O  = Comodín 1 = 0
+      P  = PESO KG total           (pick + AE)
+      Q..U = CI CII CIII CIV MKPL (KG pick, AE no tiene columna propia)
+      V  = Comodín 1 = 0
+      W  = PICKING HL total        (sum HL pick todas las canchas)
+      X..AB = CI CII CIII CIV MKPL (HL pick)
+      AC = Comodín 1 = 0
+      AD = TOTAL HL VENTA total    (sum ANR todas las canchas)
+      AE..AI = CI CII CIII CIV MKPL (HL venta ANR)
+      AJ = Comodín 1 = 0
+      AK..BL = MATRICES → todas en 0 (44 ceros)
+    """
+    import gspread
+    from google.oauth2.service_account import Credentials
+    import datetime as _dt
+
+    SPREADSHEET_ID = "1OjIhtpzwV-MpnBWu09lKyguit2iKR-nCFG9g5MOd-mM"
+    SHEET_NAME     = "(fx) Picking"
+    SCOPES = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+
+    creds  = Credentials.from_service_account_info(credentials_json, scopes=SCOPES)
+    client = gspread.authorize(creds)
+    sheet  = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+
+    # Fecha a buscar en col A
+    if hasattr(fecha, "strftime"):
+        fecha_dt = fecha
+    else:
+        fecha_dt = _dt.date.fromisoformat(str(fecha))
+
+    # Formatos de fecha a buscar en col A del sheet
+    fecha_targets = {
+        fecha_dt.strftime("%d/%m/%Y"),
+        fecha_dt.strftime("%-d/%-m/%Y"),
+        fecha_dt.strftime("%d/%m/%Y").lstrip("0"),
+        str(fecha_dt),       # YYYY-MM-DD
+        fecha_dt.strftime("%#d/%#m/%Y") if hasattr(fecha_dt, "strftime") else "",
+    }
+
+    # Leer col A completa para encontrar la fila del día
+    col_a = sheet.col_values(1)  # 1-indexed, returns list desde row 1
+    target_row = None
+    for i, val in enumerate(col_a):
+        val_clean = str(val).strip()
+        if val_clean in fecha_targets:
+            target_row = i + 1  # gspread usa 1-indexed
+            break
+
+    if target_row is None:
+        raise ValueError(
+            f"No se encontró la fecha {fecha_dt.strftime('%d/%m/%Y')} en la col A "
+            f"de la hoja '(fx) Picking'. Verificá que la fórmula del sheet ya generó "
+            f"la fila de hoy antes de ejecutar este paso."
+        )
+
+    # ── Construir los 63 valores (B..BL) ───────────────────────────────────
+    C = _T4_CANCHAS  # ["CANCHA I", "CANCHA II", "CANCHA III", "CANCHA IV", "MKPL"]
+
+    def _r(v, dec=3):
+        try: return round(float(v), dec)
+        except: return 0.0
+
+    # Totales globales
+    pick_total = sum(_r(totales_bult.get(c, 0)) for c in C)
+    ae_total   = sum(_r(bult_ae_por_cancha.get(c, 0)) for c in C)
+    kg_total   = sum(_r(totales_kg.get(c, 0)) for c in C)     # KG es pick only (AE incluido)
+    hl_pick_total  = sum(_r(totales_hl.get(c, 0)) for c in C)
+    hl_venta_total = sum(_r(hl_venta_por_cancha.get(c, 0)) for c in C)
+
+    row_values = [
+        # B — PICKING BULTOS
+        _r(pick_total, 2),
+        # C..G — CI CII CIII CIV MKPL (pick bultos)
+        _r(totales_bult.get("CANCHA I",   0), 2),
+        _r(totales_bult.get("CANCHA II",  0), 2),
+        _r(totales_bult.get("CANCHA III", 0), 2),
+        _r(totales_bult.get("CANCHA IV",  0), 2),
+        _r(totales_bult.get("MKPL",       0), 2),
+        # H — Comodín 1 = 0
+        0,
+        # I — AE BULTOS total
+        _r(ae_total, 2),
+        # J..N — CI CII CIII CIV MKPL (AE bultos)
+        _r(bult_ae_por_cancha.get("CANCHA I",   0), 2),
+        _r(bult_ae_por_cancha.get("CANCHA II",  0), 2),
+        _r(bult_ae_por_cancha.get("CANCHA III", 0), 2),
+        _r(bult_ae_por_cancha.get("CANCHA IV",  0), 2),
+        _r(bult_ae_por_cancha.get("MKPL",       0), 2),
+        # O — Comodín 1 = 0
+        0,
+        # P — PESO KG total
+        _r(kg_total, 2),
+        # Q..U — CI CII CIII CIV MKPL (KG)
+        _r(totales_kg.get("CANCHA I",   0), 2),
+        _r(totales_kg.get("CANCHA II",  0), 2),
+        _r(totales_kg.get("CANCHA III", 0), 2),
+        _r(totales_kg.get("CANCHA IV",  0), 2),
+        _r(totales_kg.get("MKPL",       0), 2),
+        # V — Comodín 1 = 0
+        0,
+        # W — PICKING HL total
+        _r(hl_pick_total, 3),
+        # X..AB — CI CII CIII CIV MKPL (HL pick)
+        _r(totales_hl.get("CANCHA I",   0), 3),
+        _r(totales_hl.get("CANCHA II",  0), 3),
+        _r(totales_hl.get("CANCHA III", 0), 3),
+        _r(totales_hl.get("CANCHA IV",  0), 3),
+        _r(totales_hl.get("MKPL",       0), 3),
+        # AC — Comodín 1 = 0
+        0,
+        # AD — TOTAL HL VENTA total
+        _r(hl_venta_total, 3),
+        # AE..AI — CI CII CIII CIV MKPL (HL venta ANR)
+        _r(hl_venta_por_cancha.get("CANCHA I",   0), 3),
+        _r(hl_venta_por_cancha.get("CANCHA II",  0), 3),
+        _r(hl_venta_por_cancha.get("CANCHA III", 0), 3),
+        _r(hl_venta_por_cancha.get("CANCHA IV",  0), 3),
+        _r(hl_venta_por_cancha.get("MKPL",       0), 3),
+        # AJ — Comodín 1 = 0
+        0,
+        # AK..BL — MATRICES (44 ceros: 4 bloques × 7 cols × … = 28 restantes)
+        # Bloque MATRIZ PICKING HL AGREGADOS: total + CI CII CIII CIV MKPL + Comodín
+        0, 0, 0, 0, 0, 0, 0,
+        # Bloque MATRIZ TODO HL AGREGADOS: total + CI CII CIII CIV MKPL + Comodín
+        0, 0, 0, 0, 0, 0, 0,
+        # Bloque MATRIZ TODO BULTOS PICKING (1): total + CI CII CIII CIV MKPL + Comodín
+        0, 0, 0, 0, 0, 0, 0,
+        # Bloque MATRIZ TODO BULTOS PICKING (2): total + CI CII CIII CIV MKPL + Comodín
+        0, 0, 0, 0, 0, 0, 0,
+    ]
+
+    assert len(row_values) == 63, f"Error interno: se esperaban 63 valores, hay {len(row_values)}"
+
+    # ── Escribir en la fila encontrada, columnas B:BL ──────────────────────
+    # Rango: B{target_row}:BL{target_row}
+    range_notation = f"B{target_row}:BL{target_row}"
+    sheet.update(
+        range_name=range_notation,
+        values=[row_values],
+        value_input_option="USER_ENTERED",
+    )
+
+    return f"Fila {target_row} actualizada (fecha {fecha_dt.strftime('%d/%m/%Y')}, {len(row_values)} valores)"
 
 
 # ── HELPER: PDF Controlador de Depósito ────────────────────────────────────
