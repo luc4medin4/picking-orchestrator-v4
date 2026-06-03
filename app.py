@@ -123,7 +123,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.57.0"
+APP_VERSION = "4.58.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -3751,9 +3751,9 @@ def render_tab_proyeccion():
     st.divider()
 
     st.caption(
-        "**Bult CX** = bultos reales de picking por cancha × camión. "
-        "AE = paletas enteras (autoelevador). **ASIGN →CX** = reasignar carga de esa fila a otra cancha. "
-        "TOT PALL = pallets totales (AE + picking). Barras rojas = bultos picking · barra verde = PALL total."
+        "**UP CX** = fracción de pallet de picking por cancha (usá esto para reasignar). "
+        "**TOT UP** = suma UP picking de la fila. **→CX** = reasignar esa carga a otra cancha. "
+        "TOT PALL = AE + picking total. Barras rojas = UP picking · barra verde = PALL total."
     )
 
     cam_list = sorted(df_display["Camión"].tolist())
@@ -3763,29 +3763,29 @@ def render_tab_proyeccion():
     _ASIGN_OPTS = ["", "CANCHA I", "CANCHA II", "CANCHA III", "CANCHA IV", "MKPL"]
 
     edit_rows = []
-    max_bult_pick = 0.0
-    max_bult_cn   = 0.0   # para escala de ProgressColumn por cancha
+    max_up_cn = 0.0   # escala dinámica para ProgressColumn UP por cancha
+    max_up_tot = 0.0  # escala para columna TOT UP
     for _, row in df_display.iterrows():
         cam = int(row["Camión"])
         sr  = status_rows_pre.get(cam, {})
         rec = {"#": cam_to_num.get(cam, "—"), "Camión": cam}
+        tot_up_fila = 0.0
         for cn in _T4_CANCHAS:
             short = cn.replace("CANCHA ", "C")
-            # v4.57: mostrar BULTOS reales de picking por cancha (no UP fraccionario)
-            # La columna `cn` del df tiene bult_pick; `_up_cn` tiene el valor UP fracción.
-            bult_cn = round(float(row.get(cn, 0.0)), 1)   # bultos reales de picking
-            up_cn   = round(float(row.get(f"_up_{cn}", 0.0)), 3)  # guardado oculto para tooltip
-            max_bult_cn = max(max_bult_cn, bult_cn)
-            rec[f"Bult {short}"]   = bult_cn
-            rec[f"_up_{short}"]    = up_cn   # columna oculta — se excluye del editor visible
+            # v4.58: columnas muestran UP picking por cancha (fracción de pallet).
+            # Es el valor correcto para reasignar: indica cuántos pallets parciales
+            # tiene esa cancha → se puede comparar entre canchas para balancear.
+            up_cn = round(float(row.get(f"_up_{cn}", 0.0)), 3)
+            max_up_cn = max(max_up_cn, up_cn)
+            tot_up_fila += up_cn
+            rec[f"UP {short}"]    = up_cn
             cur_asign = _current_asign.get((cam, cn), "")
             rec[f"ASIGN {short}"] = cur_asign if cur_asign else ""
-        bp = round(float(row.get("TOTAL_PICK", 0.0)), 1)
-        max_bult_pick = max(max_bult_pick, bp)
-        rec["Bult Pick"] = bp
-        rec["AE Pall"]   = round(float(row.get("AE_PALL", 0.0)), 2)
-        rec["TOT PALL"]  = round(float(sr.get("total_pall", 0.0)), 2)
-        # STATUS con emoji visual
+        tot_up_fila = round(tot_up_fila, 3)
+        max_up_tot = max(max_up_tot, tot_up_fila)
+        rec["TOT UP"]  = tot_up_fila   # suma UP picking de todas las canchas
+        rec["AE Pall"] = round(float(row.get("AE_PALL", 0.0)), 1)
+        rec["TOT PALL"] = round(float(sr.get("total_pall", 0.0)), 2)
         raw_status = sr.get("status", "—")
         if raw_status == "OK":
             rec["STATUS"] = "✅ OK"
@@ -3797,63 +3797,53 @@ def render_tab_proyeccion():
 
     df_editor_in = pd.DataFrame(edit_rows)
 
-    # v4.57: escalas dinámicas para columnas de bultos por cancha
-    bp_max_scale  = max(100.0, max_bult_pick * 1.05)   # escala Bult Pick total
-    bcn_max_scale = max(50.0,  max_bult_cn  * 1.05)    # escala Bult por cancha
+    # ── column_config v4.58 ──────────────────────────────────────────────────
+    # UP CI/CII/…: ProgressColumn rojo (escala dinámica, máx UP de la operación)
+    # TOT UP: suma UP picking fila → referencia para reasignar
+    # TOT PALL: ProgressColumn verde (AE + pick, escala fija 0–12)
+    up_max_scale  = max(2.0, max_up_cn  * 1.1)
+    upt_max_scale = max(5.0, max_up_tot * 1.1)
 
-    # ── column_config v4.57 ──────────────────────────────────────────────────
-    # Principios de diseño:
-    #  • Bult CI/CII/…: NumberColumn con barra roja (diferente al verde de TOT PALL)
-    #  • TOT PALL: ProgressColumn verde (pallets AE + pick)
-    #  • Anchos: small para #/STATUS/AE; medium para el resto → sin scroll horizontal
     col_cfg = {
-        "#":         st.column_config.NumberColumn("#", disabled=True, width="small"),
-        "Camión":    st.column_config.NumberColumn("Cam.", disabled=True, width="small"),
-        "Bult Pick": st.column_config.NumberColumn(
-            "Tot.Bult",
-            help="Bultos totales picking (suma todas las canchas).",
-            format="%.0f", disabled=True, width="small",
+        "#":        st.column_config.NumberColumn("#", disabled=True, width="small"),
+        "Camión":   st.column_config.NumberColumn("Cam.", disabled=True, width="small"),
+        "TOT UP":   st.column_config.ProgressColumn(
+            "TOT UP",
+            help="Suma de UP picking de todas las canchas para este camión.",
+            format="%.2f", min_value=0.0, max_value=upt_max_scale,
+            width="small",
         ),
-        "AE Pall":   st.column_config.NumberColumn(
+        "AE Pall":  st.column_config.NumberColumn(
             "AE Pall", disabled=True, format="%.1f", width="small",
         ),
-        "TOT PALL":  st.column_config.ProgressColumn(
+        "TOT PALL": st.column_config.ProgressColumn(
             "TOT PALL",
-            help="Pallets totales por camión (barra verde: escala 0–12).",
+            help="Pallets totales por camión — AE + picking (barra verde, escala 0–12).",
             format="%.1f", min_value=0.0, max_value=12.0,
             width="medium",
         ),
-        "STATUS":    st.column_config.TextColumn("OK?", disabled=True, width="small"),
+        "STATUS":   st.column_config.TextColumn("OK?", disabled=True, width="small"),
     }
-    # Bult por cancha: NumberColumn con barra — color rojo/naranja (distinto a TOT PALL verde)
-    # ASIGN: SelectboxColumn compacta
     for cn in _T4_CANCHAS:
         short = cn.replace("CANCHA ", "C")
-        col_cfg[f"Bult {short}"] = st.column_config.ProgressColumn(
-            f"B.{short}",
-            help=f"Bultos de picking en {cn} por camión.",
-            format="%.0f",
+        col_cfg[f"UP {short}"] = st.column_config.ProgressColumn(
+            f"UP {short}",
+            help=f"UP picking en {cn} — fracción de pallet. Usá esto para reasignar.",
+            format="%.3f",
             min_value=0.0,
-            max_value=bcn_max_scale,
+            max_value=up_max_scale,
             width="small",
-        )
-        # Columna UP oculta (guardada en df pero no se muestra al usuario)
-        col_cfg[f"_up_{short}"] = st.column_config.NumberColumn(
-            f"_up_{short}", disabled=True, width="small",
         )
         col_cfg[f"ASIGN {short}"] = st.column_config.SelectboxColumn(
             f"→{short}", options=_ASIGN_OPTS, default="", required=False,
             width="small",
         )
 
-    # Ordenar columnas: mostrar Bult+ASIGN por cancha, luego totales
-    # Las columnas _up_X se excluyen del editor (se guardan en df pero no se renderizan)
     ordered_cols = ["#", "Camión"]
     for cn in _T4_CANCHAS:
         short = cn.replace("CANCHA ", "C")
-        ordered_cols += [f"Bult {short}", f"ASIGN {short}"]
-    ordered_cols += ["Bult Pick", "AE Pall", "TOT PALL", "STATUS"]
-    # _up_ cols se excluyen explícitamente del display (no van en ordered_cols)
+        ordered_cols += [f"UP {short}", f"ASIGN {short}"]
+    ordered_cols += ["TOT UP", "AE Pall", "TOT PALL", "STATUS"]
     df_editor_in = df_editor_in[ordered_cols]
 
     edited_df = st.data_editor(
