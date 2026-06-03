@@ -1,4 +1,33 @@
 """
+Picking Orchestrator v4.64.0 — Beccacece Hnos SA
+
+CAMBIOS v4.64.0 — 4 MEJORAS OPERATIVAS:
+
+  1. NÚMEROS NATURALES en etiquetas de cancha (CI→C1, CII→C2, CIII→C3, CIV→C4):
+     - Nueva función _cn_short() + dict _ROMAN_TO_NAT (display-only, keys internas sin cambio).
+     - Aplicado en: PDF resumen controlador, col_cfg del data_editor (labels),
+       metrics "Bult/PALL/FIN", semáforo alertas, caption reasignaciones,
+       XLSX proyección picking, tablas HTML concepto.
+
+  2. RECOMENDACIONES PARA CONTROLADOR en PDF resumen (basado en ALM-00013 v5):
+     - Nueva sección visual de 10 items en dos columnas, fondo alternado.
+     - Cubre: doble control, EPP, posición lateral al AE, filmación obligatoria,
+       gestión de faltantes/sobrantes/dañados, condiciones de carga (patente/pallets/tara),
+       registro en Errores Operativos, rearmado de paleta, checklist por camión.
+     - Solo se dibuja si hay espacio suficiente sobre el footer.
+
+  3. EXCEL CLASIFICACIÓN — botón de bajada junto al PDF:
+     - Nueva función build_clasificacion_anr_xlsx(): misma visual que el PDF
+       (header azul, tabla con header amarillo, filas alternadas, fila TOTAL azul,
+       bloque Productividad Estimada en amarillo claro).
+     - 3 columnas de download: PDF | Excel | TSV.
+
+  4. FECHA AUTOMÁTICA EN TABLERO RUTEADOR desde el ANR cargado:
+     - Lee la última fecha disponible en col FECHA/S del ANR antes de renderizar
+       el date_input. Fallback a hoy() si el ANR no está cargado o falla la lectura.
+     - Elimina el desfase cuando el ANR es del día anterior al actual.
+
+
 Picking Orchestrator v4.63.0 — Beccacece Hnos SA
 
 CAMBIOS v4.63.0 — FIX ALINEACIÓN TABLAS CONCEPTO (Proyección Picking):
@@ -152,7 +181,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.63.0"
+APP_VERSION = "4.64.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -2265,6 +2294,19 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 _T4_CANCHAS      = ["CANCHA I", "CANCHA II", "CANCHA III", "CANCHA IV", "MKPL"]
 _T4_CANCHAS_PDF  = ["CANCHA I", "CANCHA II", "CANCHA III", "CANCHA IV", "MKPL"]   # v4.36: incluye MKPL
 
+# v4.64.0 — Etiquetas con números naturales en lugar de romanos (display only)
+_ROMAN_TO_NAT = {
+    "CANCHA I":   "C1",
+    "CANCHA II":  "C2",
+    "CANCHA III": "C3",
+    "CANCHA IV":  "C4",
+    "MKPL":       "MKPL",
+}
+
+def _cn_short(cn: str) -> str:
+    """Convierte 'CANCHA I' -> 'C1', 'CANCHA II' -> 'C2', etc. (display only)."""
+    return _ROMAN_TO_NAT.get(cn, cn.replace("CANCHA ", "C"))
+
 _T4_VEL_DEFAULT = {
     "CANCHA I":   370,
     "CANCHA II":  360,
@@ -2902,7 +2944,7 @@ def _draw_controlador_page(
     c.drawString(M, y - 2, "Horarios de finalizacion por cancha")
     y -= 16
 
-    cn_labels = [cn.replace("CANCHA ", "C") for cn in _T4_CANCHAS]
+    cn_labels = [_cn_short(cn) for cn in _T4_CANCHAS]  # v4.64: números naturales
     # v4.41: primera columna del bloque horarios más ancha para evitar superposición
     # La tabla de horarios no tiene col-label izquierdo — usamos todo el ancho
     col_w_cn  = usable / len(_T4_CANCHAS)
@@ -3047,6 +3089,56 @@ def _draw_controlador_page(
         c.setFillColor(DARK_BLUE)
         c.drawString(M + col_left_w + col_gap + 4, y_r - 9, "(no disponible)")
 
+    # ── SECCIÓN RECOMENDACIONES CONTROLADOR (v4.64) ───────────────────────────
+    # Basado en ALM-00013 SOP Verificación de Cargas T2 v5
+    y_rec = min(y_sec, y_r) - 14
+    if y_rec > M + 100:   # solo si queda espacio suficiente
+        c.setFont(FONT_B, 10)
+        c.setFillColor(DARK_BLUE)
+        c.drawString(M, y_rec - 2, "Recomendaciones operativas para Controlador de Deposito")
+        y_rec -= 12
+
+        # Línea separadora
+        c.setStrokeColor(MED_BLUE)
+        c.setLineWidth(0.6)
+        c.line(M, y_rec, M + usable, y_rec)
+        y_rec -= 6
+
+        _rec_items = [
+            # (icono_texto, descripcion)
+            ("DOBLE CTRL",  "1° ctrl: SKU + bultos vs planilla. 2° ctrl (Seguridad): bultos picking + completas."),
+            ("EPP",         "Casco + chaleco reflectivo + zapatos de seguridad + guantes. TODOS en darsena."),
+            ("POSICION",    "Ubicarse siempre LATERAL a la paleta. Nunca frente al AE. Unas en posicion baja."),
+            ("FILMACION",   "Filmar TODAS las paletas con tablet. Material retenido hasta retorno T2."),
+            ("FALTANTES",   "Faltante: detener carga hasta resolver. Sin stock: informar ventas con firma supervisor."),
+            ("DAÑOS",       "Producto roto o con riesgo de derrame: segregar de inmediato. NUNCA cargar."),
+            ("SISTEMA",     "Verificar: patente habilitada + pallets <= limite + peso vs tara ANTES de cargar."),
+            ("ERRORES",     "Registrar todo error en herramienta Errores Operativos. Recurrente: 5 Porques / Ishikawa."),
+            ("REARMADO",    "Error detectado: paleta a cancha, rearmar, re-presentar al equipo de control."),
+            ("CHECKLIST",   "Completar UN checklist por camion. Archivar en carpeta del turno o AppSheet."),
+        ]
+        # Dos columnas de recomendaciones
+        rec_col_w = (usable - 8) / 2
+        rec_row_h = 11
+        for ri, (tag, desc) in enumerate(_rec_items):
+            col_offset = rec_col_w + 8 if ri % 2 == 1 else 0
+            row_y = y_rec - (ri // 2) * (rec_row_h + 1)
+            if row_y < M + 20:
+                break
+            bg_rec = ALT if (ri // 2) % 2 == 0 else LIGHT
+            c.setFillColor(bg_rec)
+            c.rect(M + col_offset, row_y - rec_row_h, rec_col_w, rec_row_h, fill=1, stroke=0)
+            # Tag en azul fuerte
+            c.setFillColor(MED_BLUE)
+            c.setFont(FONT_B, 7)
+            c.drawString(M + col_offset + 3, row_y - rec_row_h + 3, tag)
+            # Descripcion
+            c.setFillColor(DARK_BLUE)
+            c.setFont(FONT_N, 7)
+            # Truncar si no entra
+            _tag_w = c.stringWidth(tag + "  ", FONT_B, 7)
+            c.drawString(M + col_offset + 3 + _tag_w, row_y - rec_row_h + 3, desc[:75])
+
     # ── FOOTER ────────────────────────────────────────────────────────────────
     c.setFillColor(DARK_BLUE)
     c.rect(M, M, usable, 12, fill=1, stroke=0)
@@ -3113,7 +3205,7 @@ def _t4_generar_pdf_x4(
 
     # Columnas tabla: CAM | CI | CII | CIII | CIV | MKPL | AE | TOT | STS
     # v4.39: widths ajustados — sin espacio vacío sobrante; fuente más grande
-    col_labels = ["CAM"] + [c.replace("CANCHA ", "C") for c in _T4_CANCHAS] + ["AE", "TOTAL", "STS"]
+    col_labels = ["CAM"] + [_cn_short(c) for c in _T4_CANCHAS] + ["AE", "TOTAL", "STS"]  # v4.64: números naturales
     inner_w    = pw - 2 * M
     # CAM=38, 5 canchas proporcionales, AE=42, TOTAL=50, STS=38
     _cw_fixed = [38, 46, 46, 46, 46, 42, 42, 50, 38]
@@ -3874,8 +3966,9 @@ def render_tab_proyeccion():
     }
     for cn in _T4_CANCHAS:
         short = cn.replace("CANCHA ", "C")
+        disp  = _cn_short(cn)                    # v4.64: label natural (C1, C2…)
         col_cfg[f"UP {short}"] = st.column_config.ProgressColumn(
-            f"UP {short}",
+            f"UP {disp}",
             help=f"UP picking en {cn} — fracción de pallet. Usá esto para reasignar.",
             format="%.3f",
             min_value=0.0,
@@ -3883,7 +3976,7 @@ def render_tab_proyeccion():
             width="small",
         )
         col_cfg[f"ASIGN {short}"] = st.column_config.SelectboxColumn(
-            f"→{short}", options=_ASIGN_OPTS, default="", required=False,
+            f"→{disp}", options=_ASIGN_OPTS, default="", required=False,
             width="small",
         )
 
@@ -3942,7 +4035,7 @@ def render_tab_proyeccion():
         if live_asign:
             _asign_count = len(live_asign)
             _asign_desc = " | ".join(
-                f"Cam {k[0]} {k[1].replace('CANCHA ','C')}→{v.replace('CANCHA ','C')}"
+                f"Cam {k[0]} {_cn_short(k[1])}→{_cn_short(v)}"
                 for k, v in sorted(live_asign.items())
             )
             st.caption(f"✏️ {_asign_count} reasignación(es) activa(s): {_asign_desc}")
@@ -3959,7 +4052,7 @@ def render_tab_proyeccion():
     # de reasignación. La columna Concepto es delgada (130px); cada cancha
     # ocupa 1fr del espacio restante, replicando la distribución visual del
     # data_editor principal.
-    _cancha_cols_pall = [cn.replace("CANCHA ", "C") for cn in _T4_CANCHAS]
+    _cancha_cols_pall = [_cn_short(cn) for cn in _T4_CANCHAS]  # v4.64: números naturales
 
     def _html_concepto_tables(
         canchas_short,
@@ -4089,16 +4182,16 @@ def render_tab_proyeccion():
     with st.expander("📊 Totales por cancha", expanded=True):
         cols_met = st.columns(len(_T4_CANCHAS) + 1)
         for i, cn in enumerate(_T4_CANCHAS):
-            short = cn.replace("CANCHA ", "C")
+            disp = _cn_short(cn)  # v4.64: números naturales
             delta_bult = totales_bult[cn] - totales_bult_base[cn]
             delta_str  = f"{delta_bult:+.0f} bult (asign)" if delta_bult != 0 else None
-            cols_met[i].metric(f"Bult {short}", f"{totales_bult[cn]:.1f}", delta=delta_str)
+            cols_met[i].metric(f"Bult {disp}", f"{totales_bult[cn]:.1f}", delta=delta_str)
         cols_met[-1].metric("TOT PICK", f"{pdata['tot_pick']:.0f}")
 
         cols_met2 = st.columns(len(_T4_CANCHAS) + 1)
         for i, cn in enumerate(_T4_CANCHAS):
-            short = cn.replace("CANCHA ", "C")
-            cols_met2[i].metric(f"PALL {short}", f"{totales_calc['total'].get(cn, 0):.2f}")
+            disp = _cn_short(cn)  # v4.64: números naturales
+            cols_met2[i].metric(f"PALL {disp}", f"{totales_calc['total'].get(cn, 0):.2f}")
         cols_met2[-1].metric("TOT AE bult", f"{pdata['tot_ae']:.0f}")
 
     # ── fin_global_dt ─────────────────────────────────────────────────────────
@@ -4137,7 +4230,7 @@ def render_tab_proyeccion():
     st.markdown("##### 🏁 Horario fin por cancha — semáforo de desfase")
     fin_cols = st.columns(len(_T4_CANCHAS) + 1)
     for i, cn in enumerate(_T4_CANCHAS):
-        short = cn.replace("CANCHA ", "C")
+        disp = _cn_short(cn)  # v4.64: números naturales
         fp = fin_por_cancha[cn]
         fin_s = fp["fin_dt"].strftime("%H:%M") if fp["bultos"] > 0 else "—"
         ini_s = fp["inicio"].strftime("%H:%M")
@@ -4145,7 +4238,7 @@ def render_tab_proyeccion():
         sub_line = (
             f"{delta_msg} | inicio {ini_s} → {fp['bultos']:.0f} bult"
         )
-        fin_cols[i].metric(f"FIN {short}", fin_s, sub_line, delta_color=delta_color)
+        fin_cols[i].metric(f"FIN {disp}", fin_s, sub_line, delta_color=delta_color)
     fin_cols[-1].metric("🏁 FIN GLOBAL", fin_global_dt.strftime("%H:%M"),
                         f"{sum(v['bultos'] for v in fin_por_cancha.values()):.0f} bult tot",
                         delta_color="off")
@@ -4180,7 +4273,7 @@ def render_tab_proyeccion():
         if _fp["bultos"] > 0:
             _delta = (fin_global_dt - _fp["fin_dt"]).total_seconds() / 60.0
             if _delta < -15:
-                _short_cn = _cn.replace("CANCHA ", "C")
+                _short_cn = _cn_short(_cn)  # v4.64: números naturales
                 _alertas.append(f"🔴 {_short_cn} atrasada {abs(_delta):.0f}' vs global")
 
     _ctrl_params_for_pdf = {
@@ -4241,8 +4334,9 @@ def render_tab_proyeccion():
                 _exp = {"Camión": int(_row["Camión"])}
                 for _cn in _T4_CANCHAS:
                     _short = _cn.replace("CANCHA ", "C")
-                    _exp[f"UP {_short}"]   = round(float(_row.get(f"_up_{_cn}", 0.0)), 3)
-                    _exp[f"Bult {_short}"] = round(float(_row.get(_cn, 0.0)), 1)
+                    _disp  = _cn_short(_cn)       # v4.64: label natural
+                    _exp[f"UP {_disp}"]   = round(float(_row.get(f"_up_{_cn}", 0.0)), 3)
+                    _exp[f"Bult {_disp}"] = round(float(_row.get(_cn, 0.0)), 1)
                 _exp["AE Pall"]    = round(float(_row.get("AE_PALL", 0.0)), 2)
                 _exp["TOT PALL"]   = round(float(_row.get("TOTAL_PALL", 0.0)), 2)
                 _exp["Bult Pick"]  = round(float(_row.get("TOTAL_PICK", 0.0)), 1)
@@ -4251,9 +4345,9 @@ def render_tab_proyeccion():
             # Fila totales
             _tot_row = {"Camión": "TOTAL"}
             for _cn in _T4_CANCHAS:
-                _short = _cn.replace("CANCHA ", "C")
-                _tot_row[f"UP {_short}"]   = round(totales_pall_c.get(_cn, 0), 3)
-                _tot_row[f"Bult {_short}"] = round(totales_bult.get(_cn, 0), 1)
+                _disp = _cn_short(_cn)            # v4.64: label natural
+                _tot_row[f"UP {_disp}"]   = round(totales_pall_c.get(_cn, 0), 3)
+                _tot_row[f"Bult {_disp}"] = round(totales_bult.get(_cn, 0), 1)
             _tot_row["AE Pall"]   = ""
             _tot_row["TOT PALL"]  = round(sum(totales_pall_c.values()), 2)
             _tot_row["Bult Pick"] = round(pdata["tot_pick"], 1)
@@ -5286,6 +5380,203 @@ def build_clasificacion_anr_pdf(df_cl: pd.DataFrame, tot: dict, fecha_str: str =
     return bio.getvalue()
 
 
+def build_clasificacion_anr_xlsx(df_cl: pd.DataFrame, tot: dict, fecha_str: str = "") -> bytes:
+    """
+    v4.64.0 — Excel de Clasificación POR CAMIÓN (Almacén 1 y 3).
+    Misma visual y diseño que el PDF: header azul, tabla amarilla, filas alternadas,
+    fila TOTAL azul, bloque de Productividad Estimada.
+    """
+    import io as _io
+    import openpyxl as _xl
+    from openpyxl.styles import (
+        Font as _Font, PatternFill as _Fill, Alignment as _Align,
+        Border as _Border, Side as _Side,
+    )
+    from openpyxl.utils import get_column_letter as _gcl
+
+    df = df_cl[df_cl["BULTOS"] > 0].copy() if not df_cl.empty else df_cl
+
+    DARK_HEX   = "1A3A6B"
+    YELLOW_HEX = "F8D772"
+    LIGHT_HEX  = "F4F6FA"
+    WHITE_HEX  = "FFFFFF"
+    GRAY_HEX   = "555555"
+
+    wb = _xl.Workbook()
+    ws = wb.active
+    ws.title = "Clasificacion"
+
+    thin = _Side(style="thin", color="8C8C8C")
+    border = _Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = _Align(horizontal="center", vertical="center", wrap_text=True)
+    right  = _Align(horizontal="right",  vertical="center")
+    left   = _Align(horizontal="left",   vertical="center")
+
+    # ── HEADER (fila 1-3) ─────────────────────────────────────────────────────
+    ws.merge_cells("A1:C1")
+    ws["A1"] = "CLASIFICACIÓN POR CAMIÓN — Almacenes 1 y 3"
+    ws["A1"].font      = _Font(name="Calibri", bold=True, size=14, color=WHITE_HEX)
+    ws["A1"].fill      = _Fill("solid", fgColor=DARK_HEX)
+    ws["A1"].alignment = left
+    ws.row_dimensions[1].height = 24
+
+    ws.merge_cells("A2:C2")
+    ws["A2"] = "Beccacece Hnos SA · DPO 2.1 — Pilar Almacén · Envases vacíos + esqueletos a retornar"
+    ws["A2"].font      = _Font(name="Calibri", size=9, color=WHITE_HEX)
+    ws["A2"].fill      = _Fill("solid", fgColor=DARK_HEX)
+    ws["A2"].alignment = left
+    ws.row_dimensions[2].height = 16
+
+    # Fecha y cantidad de camiones en A3:C3
+    ws["A3"] = f"Fecha: {fecha_str}"
+    ws["A3"].font      = _Font(name="Calibri", bold=True, size=10, color=WHITE_HEX)
+    ws["A3"].fill      = _Fill("solid", fgColor=DARK_HEX)
+    ws["A3"].alignment = left
+    ws["C3"] = f"Camiones: {tot.get('camiones', 0)}"
+    ws["C3"].font      = _Font(name="Calibri", size=9, color=WHITE_HEX)
+    ws["C3"].fill      = _Fill("solid", fgColor=DARK_HEX)
+    ws["C3"].alignment = right
+    for col in ["A", "B", "C"]:
+        ws[f"{col}3"].fill = _Fill("solid", fgColor=DARK_HEX)
+    ws.row_dimensions[3].height = 14
+
+    # ── HEADER TABLA (fila 5) ─────────────────────────────────────────────────
+    headers = ["CAMIÓN", "BULTOS", "PALLETS"]
+    for ci, h in enumerate(headers, 1):
+        cell = ws.cell(row=5, column=ci, value=h)
+        cell.font      = _Font(name="Calibri", bold=True, size=10, color=DARK_HEX)
+        cell.fill      = _Fill("solid", fgColor=YELLOW_HEX)
+        cell.alignment = center
+        cell.border    = border
+    ws.row_dimensions[5].height = 18
+
+    # ── FILAS DE DATOS ────────────────────────────────────────────────────────
+    row_num = 6
+    for i, row in df.reset_index(drop=True).iterrows():
+        bg = LIGHT_HEX if i % 2 == 0 else WHITE_HEX
+        # Camión
+        c1 = ws.cell(row=row_num, column=1, value=int(row["CAMION"]))
+        c1.font      = _Font(name="Calibri", bold=True, size=10)
+        c1.fill      = _Fill("solid", fgColor=bg)
+        c1.alignment = center
+        c1.border    = border
+        # Bultos
+        c2 = ws.cell(row=row_num, column=2, value=float(row["BULTOS"]))
+        c2.font      = _Font(name="Calibri", size=10)
+        c2.fill      = _Fill("solid", fgColor=bg)
+        c2.alignment = right
+        c2.border    = border
+        c2.number_format = "#,##0"
+        # Pallets
+        c3 = ws.cell(row=row_num, column=3, value=float(row["PALLETS"]))
+        c3.font      = _Font(name="Calibri", bold=True, size=10)
+        c3.fill      = _Fill("solid", fgColor=bg)
+        c3.alignment = right
+        c3.border    = border
+        c3.number_format = "#,##0.00"
+        ws.row_dimensions[row_num].height = 16
+        row_num += 1
+
+    # ── FILA TOTAL ────────────────────────────────────────────────────────────
+    t1 = ws.cell(row=row_num, column=1, value="TOTAL")
+    t1.font      = _Font(name="Calibri", bold=True, size=11, color=WHITE_HEX)
+    t1.fill      = _Fill("solid", fgColor=DARK_HEX)
+    t1.alignment = center
+    t1.border    = border
+    t2 = ws.cell(row=row_num, column=2, value=float(tot.get("bultos", 0)))
+    t2.font      = _Font(name="Calibri", bold=True, size=11, color=WHITE_HEX)
+    t2.fill      = _Fill("solid", fgColor=DARK_HEX)
+    t2.alignment = right
+    t2.border    = border
+    t2.number_format = "#,##0"
+    t3 = ws.cell(row=row_num, column=3, value=float(tot.get("pallets", 0)))
+    t3.font      = _Font(name="Calibri", bold=True, size=11, color=WHITE_HEX)
+    t3.fill      = _Fill("solid", fgColor=DARK_HEX)
+    t3.alignment = right
+    t3.border    = border
+    t3.number_format = "#,##0.00"
+    ws.row_dimensions[row_num].height = 18
+    row_num += 2
+
+    # ── BLOQUE PRODUCTIVIDAD ESTIMADA ─────────────────────────────────────────
+    prod = tot.get("productividad") or {}
+    if prod:
+        ws.merge_cells(f"A{row_num}:C{row_num}")
+        ws[f"A{row_num}"] = "PRODUCTIVIDAD ESTIMADA DE CLASIFICACIÓN"
+        ws[f"A{row_num}"].font      = _Font(name="Calibri", bold=True, size=11, color=DARK_HEX)
+        ws[f"A{row_num}"].fill      = _Fill("solid", fgColor="FFF8E1")
+        ws[f"A{row_num}"].alignment = center
+        ws[f"A{row_num}"].border    = _Border(
+            left=_Side(style="medium", color=YELLOW_HEX),
+            right=_Side(style="medium", color=YELLOW_HEX),
+            top=_Side(style="medium", color=YELLOW_HEX),
+            bottom=_Side(style="thin", color=YELLOW_HEX),
+        )
+        ws.row_dimensions[row_num].height = 20
+        row_num += 1
+
+        def _fmt_pal2(v):
+            return f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+        prod_data = [
+            ("Pallets a clasificar",  _fmt_pal2(prod.get("pallets_total", 0))),
+            ("Target x operario",     str(prod.get("target_oper", 0))),
+            ("Pallets / hora",        str(prod.get("pall_hora", 0))),
+            ("Personal necesario",    str(prod.get("personal_nec", 0))),
+            ("Duracion estimada",     str(prod.get("duracion", "00:00"))),
+        ]
+        for pi, (label, val) in enumerate(prod_data):
+            lbl_cell = ws.cell(row=row_num, column=1, value=label)
+            lbl_cell.font      = _Font(name="Calibri", size=9, color=GRAY_HEX)
+            lbl_cell.fill      = _Fill("solid", fgColor="FFF8E1")
+            lbl_cell.alignment = left
+            # Valor en col 2-3 merged
+            ws.merge_cells(f"B{row_num}:C{row_num}")
+            val_cell = ws.cell(row=row_num, column=2, value=val)
+            val_cell.font      = _Font(name="Calibri", bold=True, size=12, color=DARK_HEX)
+            val_cell.fill      = _Fill("solid", fgColor="FFF8E1")
+            val_cell.alignment = center
+            ws.row_dimensions[row_num].height = 16
+            row_num += 1
+
+        # Conclusión
+        ws.merge_cells(f"A{row_num}:C{row_num}")
+        concl_txt = (
+            f"Proximo turno: {prod.get('personal_nec',0)} operarios · "
+            f"{prod.get('pallets_total',0):.2f} pall · "
+            f"duracion estimada {prod.get('duracion','00:00')} hs."
+        )
+        ws[f"A{row_num}"] = concl_txt
+        ws[f"A{row_num}"].font      = _Font(name="Calibri", italic=True, size=8, color=GRAY_HEX)
+        ws[f"A{row_num}"].fill      = _Fill("solid", fgColor="FFF8E1")
+        ws[f"A{row_num}"].alignment = center
+        ws[f"A{row_num}"].border    = _Border(
+            left=_Side(style="medium", color=YELLOW_HEX),
+            right=_Side(style="medium", color=YELLOW_HEX),
+            bottom=_Side(style="medium", color=YELLOW_HEX),
+        )
+        ws.row_dimensions[row_num].height = 14
+
+    # ── ANCHOS DE COLUMNA ─────────────────────────────────────────────────────
+    ws.column_dimensions["A"].width = 14
+    ws.column_dimensions["B"].width = 18
+    ws.column_dimensions["C"].width = 18
+
+    # ── FOOTER INFO (en A al final) ───────────────────────────────────────────
+    row_num += 2
+    ws.merge_cells(f"A{row_num}:C{row_num}")
+    ws[f"A{row_num}"] = (
+        f"Fuente: ANR + Frescura DDM (alm 1/3, BXP) — "
+        f"Picking Orchestrator v{APP_VERSION} · {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+    )
+    ws[f"A{row_num}"].font      = _Font(name="Calibri", italic=True, size=7, color=GRAY_HEX)
+    ws[f"A{row_num}"].alignment = left
+
+    bio = _io.BytesIO()
+    wb.save(bio)
+    return bio.getvalue()
+
+
 
     """
     PDF a color vertical A4 con la clasificación por camión.
@@ -5803,7 +6094,7 @@ def render_tab_clasificacion():
         "duracion":       duracion,
     }
 
-    # ── PDF + TSV ─────────────────────────────────────────────────────────
+    # ── PDF + XLSX + TSV ──────────────────────────────────────────────────
     fecha_hoy = datetime.now().strftime("%d/%m/%Y")
     try:
         pdf_bytes = build_clasificacion_anr_pdf(df_cl, tot, fecha_str=fecha_hoy)
@@ -5811,10 +6102,16 @@ def render_tab_clasificacion():
         pdf_bytes = None
         st.error(f"❌ Error generando PDF Clasificación: {e}")
 
-    col_dl1, col_dl2 = st.columns(2)
+    try:
+        xlsx_bytes_cl = build_clasificacion_anr_xlsx(df_cl, tot, fecha_str=fecha_hoy)
+    except Exception as e:
+        xlsx_bytes_cl = None
+        st.error(f"❌ Error generando Excel Clasificación: {e}")
+
+    col_dl1, col_dl2, col_dl3 = st.columns(3)
     if pdf_bytes:
         col_dl1.download_button(
-            "⬇ Descargar PDF Clasificación",
+            "⬇ PDF Clasificación",
             data=pdf_bytes,
             file_name=_stamp("Clasificacion_PorCamion", "pdf"),
             mime="application/pdf",
@@ -5822,9 +6119,19 @@ def render_tab_clasificacion():
             width="stretch",
             key="clasif_pdf_dl",
         )
+    if xlsx_bytes_cl:
+        col_dl2.download_button(
+            "📊 Excel Clasificación",
+            data=xlsx_bytes_cl,
+            file_name=_stamp("Clasificacion_PorCamion", "xlsx"),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            width="stretch",
+            key="clasif_xlsx_dl",
+        )
     tsv = df_cl.to_csv(sep="\t", index=False)
-    col_dl2.download_button(
-        "📋 Descargar TSV (pegar en Sheets)",
+    col_dl3.download_button(
+        "📋 TSV (Sheets)",
         data=tsv.encode("utf-8"),
         file_name="clasificacion_por_camion.tsv",
         mime="text/tab-separated-values",
@@ -7347,10 +7654,38 @@ def render_tab_tablero():
             cam_capkg   = dict(zip(df_cam_edit["patente"], df_cam_edit["capacidad_kg"]))
 
         # ── CARGA DEL DÍA ──────────────────────────────────────────────────────
+        # v4.64.0: fecha por defecto = fecha detectada en el ANR (si está cargado)
+        _fecha_default_tr = datetime.date.today()
+        try:
+            _anr_for_date = ss.get("anr_df") or ss.get("tc_anr")
+            if _anr_for_date is not None:
+                if hasattr(_anr_for_date, "copy"):
+                    _anr_d = _anr_for_date.copy()
+                else:
+                    _anr_for_date.seek(0)
+                    import pandas as _pd_date
+                    _xl_date = _pd_date.ExcelFile(_anr_for_date)
+                    _sh_date = next((s for s in _xl_date.sheet_names if s.upper() == "BASE"), _xl_date.sheet_names[0])
+                    _anr_for_date.seek(0)
+                    _anr_d = _pd_date.read_excel(_anr_for_date, sheet_name=_sh_date, header=1)
+                    _anr_for_date.seek(0)
+                _cols_up = [str(c).upper().strip() for c in _anr_d.columns]
+                _fcol = None
+                for _fc_cand in ("FECHA", "S"):
+                    if _fc_cand in _cols_up:
+                        _fcol = _anr_d.columns[_cols_up.index(_fc_cand)]
+                        break
+                if _fcol:
+                    _fechas_anr = pd.to_datetime(_anr_d[_fcol], errors="coerce").dropna().dt.date.unique()
+                    if len(_fechas_anr):
+                        _fecha_default_tr = sorted(_fechas_anr)[-1]
+        except Exception:
+            pass  # Fallback a hoy si cualquier lectura falla
+
         st.markdown("### 📅 Carga del día")
         _d1, _d2, _d3, _d4, _d5, _d6, _d7 = st.columns(7)
         with _d1:
-            fecha_dia = st.date_input("Fecha", value=datetime.date.today(), key="tr_fecha")
+            fecha_dia = st.date_input("Fecha", value=_fecha_default_tr, key="tr_fecha")  # v4.64: default desde ANR
         with _d2:
             hora_real_str = st.text_input("Hora entrega real (HH:MM)",
                 value="", placeholder="ej: 16:25", key="tr_hora_real")
