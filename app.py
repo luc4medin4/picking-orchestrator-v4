@@ -1,4 +1,23 @@
 """
+Picking Orchestrator v4.56.0 — Beccacece Hnos SA
+
+CAMBIOS v4.56.0 — FIX HORARIOS CONGELADOS EN PROYECCIÓN PICKING:
+  - 🐛 ROOT CAUSE: _rebuild_live_asign_from_editor_state() leía
+    st.session_state["t4_main_editor"]["edited_rows"] que son DELTAS
+    acumulativos (no estado completo). Al quitar una ASIGN → "", el delta
+    decía "" pero t4_asign persistido seguía teniendo la key antigua.
+    Resultado: horarios PRE-tabla congelados al reasignar.
+  - ✅ FIX 1 — Eliminado _rebuild_live_asign_from_editor_state().
+    El header PRE-tabla lee t4_asign directamente (fuente única y confiable).
+  - ✅ FIX 2 — live_asign construido desde edited_df COMPLETO (todas las filas).
+    Si ASIGN está vacío → key ausente (borrado limpio). Garantiza sincronía
+    total entre lo que se ve en el editor y el estado persistido.
+  - ✅ FIX 3 — Botón "🔄 Recalcular horarios" con st.rerun() forzado.
+    Flujo correcto: editar ASIGN → Recalcular → rerun con t4_asign limpio
+    → PRE-tabla muestra horarios actualizados sin lag ni congelamiento.
+  - 📋 Caption dinámico: muestra reasignaciones activas al instante.
+
+
 Picking Orchestrator v4.55.1 — Beccacece Hnos SA
 
 CAMBIOS v4.54.0:
@@ -104,7 +123,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.55.1"
+APP_VERSION = "4.56.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -3510,25 +3529,25 @@ def _push_matriz_pall_to_sheets(df_display, pdata, credentials_json: dict) -> in
 
 def render_tab_proyeccion():
     """
-    Tab 4 — Proyección Picking ×5 (v4.36).
+    Tab 4 — Proyección Picking ×5 (v4.56.0).
 
-    CAMBIOS v4.36 vs v4.35:
-      - ❌ Removido `st.rerun()` después de ASIGN edit: causaba doble rerun y
-        sensación de "calculando todo el tiempo". Ahora se construye un
-        `live_asign` combinando session_state + edits del editor en UNA pasada.
-      - ❌ Removido bloque "Horario fin por cancha" SUPERIOR (estaba duplicado
-        y mostraba estado PRE-edit, generando desincronización visual).
-      - ✅ Cálculos POST-tabla ahora usan `live_asign` (consistente con la
-        última edición del usuario, sin esperar al próximo rerun).
-      - 🎨 Condicionales visuales:
-          * `ProgressColumn` para TOT PALL (barra de magnitud 0–10 pall)
-            y Bult Pick (barra de magnitud 0–max).
-          * STATUS con emoji prefijo (✅ OK / ⚠️ >9 Pall).
-          * FIN por cancha con `delta_color` semaforizado (verde si está
-            dentro de ±5min del FIN GLOBAL, amarillo si está entre 5–15 min,
-            rojo si supera 15 min de desfase — ayuda a detectar canchas
-            atrasadas o canchas con holgura para reasignar).
-      - 📄 PDF ahora genera 5 páginas (incluye MKPL).
+    CAMBIOS v4.56.0 — FIX HORARIOS CONGELADOS TRAS REASIGNACIÓN:
+      - 🐛 ROOT CAUSE: _rebuild_live_asign_from_editor_state() usaba
+        st.session_state["t4_main_editor"]["edited_rows"], que son DELTAS
+        acumulativos desde la primera edición, no el estado completo del widget.
+        Al borrar una asignación (→ ""), el delta decía "" pero la key seguía
+        en t4_asign persistido → el header PRE-tabla mostraba la hora vieja.
+      - ✅ FIX 1: Eliminado _rebuild_live_asign_from_editor_state. El header
+        PRE-tabla ahora lee t4_asign directamente (estado del ciclo anterior,
+        que es siempre correcto porque fue escrito desde edited_df completo).
+      - ✅ FIX 2: live_asign se construye iterando edited_df completo (todas
+        las filas, no solo edited_rows). Si ASIGN está vacío → la key NO se
+        agrega (borrado limpio). Garantiza que quitar una asignación la elimine.
+      - ✅ FIX 3: Botón "🔄 Recalcular horarios" que hace st.rerun() forzado.
+        Flujo: editar ASIGN → presionar Recalcular → rerun → live_asign limpio
+        en t4_asign → PRE-tabla muestra horarios correctos inmediatamente.
+      - 📋 Caption dinámico debajo del botón: muestra todas las reasignaciones
+        activas en formato "Cam X CII→CIV" para visibilidad inmediata.
     """
     import datetime as _dt
 
@@ -3608,49 +3627,60 @@ def render_tab_proyeccion():
     # ── Filtrar: siempre sin ceros ────────────────────────────────────────────
     df_display = df_cam[df_cam["TOTAL_PICK"] > 0].reset_index(drop=True)
 
-    # ── ASIGN state ───────────────────────────────────────────────────────────
+    # ── v4.55.2: Botón "Enviar a Sheets" PROMINENTE al inicio ─────────────────
+    # Se muestra antes de la tabla para recordar al usuario que debe enviarlo
+    # al principio, antes de reasignar o ajustar cargas, para que la Matriz Pall
+    # refleje el estado real del CAR sin modificaciones manuales.
+    with st.container(border=True):
+        _sheets_top_cols = st.columns([3, 1])
+        with _sheets_top_cols[0]:
+            st.markdown(
+                "#### 📤 Paso 1 — Enviar proyección a Google Sheets",
+            )
+            st.caption(
+                "**Hacé esto primero**, antes de reasignar cargas entre canchas. "
+                "El botón escribe la distribución original del CAR en la *Matriz Pall* del Sheets maestro, "
+                "que es la base para el seguimiento diario de productividad y el histórico de pallets por cancha. "
+                "Si enviás después de reasignar, los valores quedarán con los ajustes manuales y no con el dato fuente real.",
+            )
+        with _sheets_top_cols[1]:
+            if st.button(
+                "📤 Enviar a Sheets",
+                use_container_width=True,
+                type="primary",
+                key="t4_sheets_top_btn",
+                help="Inserta las filas de hoy en la hoja 'Matriz Pall' del Sheets maestro (dato fuente, sin reasignaciones)",
+            ):
+                with st.spinner("Enviando a Google Sheets…"):
+                    try:
+                        _creds_json_top = dict(st.secrets["gcp_service_account"])
+                        _n_rows_top = _push_matriz_pall_to_sheets(df_display, pdata, _creds_json_top)
+                        st.success(f"✅ {_n_rows_top} fila(s) enviadas a la Matriz Pall")
+                        log_event("info", f"Sheets Matriz Pall (top): {_n_rows_top} filas ({pdata['fecha']})")
+                    except KeyError:
+                        st.error(
+                            "❌ Falta  en . "
+                            "Agregá el JSON de la service account en .",
+                        )
+                    except Exception as _ex_top:
+                        st.error(f"❌ Error al escribir en Sheets: {_ex_top}")
+                        with st.expander("Stack trace"):
+                            import traceback
+                            st.code(traceback.format_exc())
+
+    st.divider()
+
+    # ── ASIGN state ── v4.56.0 ───────────────────────────────────────────────
+    # SOURCE OF TRUTH: t4_asign se escribe SIEMPRE desde edited_df en POST-tabla.
+    # Es el estado completo (no deltas). El bloque PRE-tabla lo consume directo.
+    # Se eliminó _rebuild_live_asign_from_editor_state porque los edited_rows de
+    # Streamlit son *deltas acumulativos desde la primera edición*, no el estado
+    # completo del widget. Eso causaba que al borrar una asignación (→ "") la key
+    # quedaba en t4_asign → horarios congelados y sin reflejo de la reasignación.
     if "t4_asign" not in st.session_state:
         st.session_state["t4_asign"] = {}
 
-    # ── v4.55.1: Reconstruir live_asign desde el estado interno del editor ────
-    # Streamlit actualiza st.session_state["t4_main_editor"] ANTES de ejecutar
-    # el script (al inicio del rerun), por lo que ya tiene las edits del ciclo
-    # actual. Esto elimina el lag de un ciclo en el header de horarios.
-    def _rebuild_live_asign_from_editor_state() -> dict:
-        raw = st.session_state.get("t4_main_editor")
-        if not raw or not isinstance(raw, dict):
-            return st.session_state.get("t4_asign", {})
-        edits = raw.get("edited_rows", {})
-        if not edits:
-            return st.session_state.get("t4_asign", {})
-        # Reconstruir: partir del session_state y aplicar los deltas del editor
-        result = dict(st.session_state.get("t4_asign", {}))
-        # Los índices de edited_rows son índices de fila del df_editor_in
-        cam_list_ordered = sorted(df_display["Camión"].tolist())
-        for row_idx_str, changes in edits.items():
-            try:
-                row_idx = int(row_idx_str)
-                if row_idx >= len(cam_list_ordered):
-                    continue
-                cam_e = cam_list_ordered[row_idx]
-                for col_changed, new_val in changes.items():
-                    if not col_changed.startswith("ASIGN "):
-                        continue
-                    short = col_changed[len("ASIGN "):]
-                    cn_full = "CANCHA " + short if short not in ("MKPL",) else short
-                    # Normalizar al nombre completo
-                    cn_norm = _t4_norm_cancha(cn_full if short != "MKPL" else "MKPL")
-                    new_str = (new_val or "").strip() if isinstance(new_val, str) else ""
-                    key = (cam_e, cn_norm)
-                    if new_str:
-                        result[key] = new_str
-                    elif key in result:
-                        del result[key]
-            except (ValueError, IndexError):
-                continue
-        return result
-
-    _current_asign = _rebuild_live_asign_from_editor_state()
+    _current_asign = dict(st.session_state["t4_asign"])
 
     # ── Calcular totales con ASIGN actual (consistente con el header) ─────────
     totales_calc_pre = _t4_calcular_pall_por_cancha(df_display, _current_asign)
@@ -3806,21 +3836,48 @@ def render_tab_proyeccion():
         num_rows="fixed",
     )
 
-    # ── v4.36: construir live_asign de UNA sola pasada, sin st.rerun() ───────
-    # En lugar de detectar cambios → rerun → recalcular, construimos
-    # `live_asign` directamente del edited_df y lo usamos para todos los
-    # cálculos POST-tabla. El session_state se actualiza en paralelo para
-    # persistencia, pero NO se dispara rerun manual.
+    # ── v4.56.0: construir live_asign desde edited_df COMPLETO ─────────────
+    # Lee TODAS las filas del editor (no solo edited_rows / deltas).
+    # Esto garantiza que borrar una asignación (→ "") la elimine correctamente
+    # del estado. El resultado se persiste en t4_asign como source of truth.
     live_asign = {}
     for _, erow in edited_df.iterrows():
         cam_e = int(erow["Camión"])
         for cn in _T4_CANCHAS:
             short = cn.replace("CANCHA ", "C")
-            new_val = erow.get(f"ASIGN {short}", "") or ""
+            new_val = (erow.get(f"ASIGN {short}", "") or "").strip()
             if new_val:
                 live_asign[(cam_e, cn)] = new_val
-    # Persistir el estado para próximos reruns naturales (cambio de archivo, hora, etc.)
+            # Si está vacío → simplemente no se agrega: la key queda ausente
+            # (borrado correcto, sin "congelar" asignaciones previas)
+    # Persistir estado completo — PRE-tabla lo leerá en el próximo rerun
     st.session_state["t4_asign"] = live_asign
+
+    # ── v4.56.0: Botón "Recalcular horarios" ────────────────────────────────
+    # Al hacer cambios en ASIGN, live_asign ya está correcto en este ciclo
+    # para los cálculos POST-tabla. El header PRE-tabla (encima del editor)
+    # se actualiza al ciclo SIGUIENTE. El botón fuerza ese rerun inmediatamente.
+    _rcol1, _rcol2 = st.columns([1, 5])
+    with _rcol1:
+        if st.button(
+            "🔄 Recalcular horarios",
+            key="t4_recalc_btn",
+            type="secondary",
+            use_container_width=True,
+            help="Aplica las reasignaciones y actualiza los horarios estimados por cancha.",
+        ):
+            # t4_asign ya fue persistido con live_asign arriba → rerun lo lee
+            st.rerun()
+    with _rcol2:
+        if live_asign:
+            _asign_count = len(live_asign)
+            _asign_desc = " | ".join(
+                f"Cam {k[0]} {k[1].replace('CANCHA ','C')}→{v.replace('CANCHA ','C')}"
+                for k, v in sorted(live_asign.items())
+            )
+            st.caption(f"✏️ {_asign_count} reasignación(es) activa(s): {_asign_desc}")
+        else:
+            st.caption("Sin reasignaciones activas.")
 
     # ── Recalcular totales con live_asign (UNA sola vez) ─────────────────────
     totales_calc   = _t4_calcular_pall_por_cancha(df_display, live_asign)
