@@ -1774,7 +1774,7 @@ def render_tab_archivos():
         elif st.session_state.get("cierre_sr_d1"):
             st.info(f"📎 En uso: {st.session_state['cierre_sr_d1'].name}")
         else:
-            st.info("Opcional — para 💰 Cierre D+1 con rechazos reales")
+            st.info("Opcional — Cierre D+1")
 
     with col_f:
         st.markdown("#### 📊 ANR -1.xlsx")
@@ -1790,9 +1790,7 @@ def render_tab_archivos():
         elif st.session_state.get("cierre_anr_m1"):
             st.info(f"📎 En uso: {st.session_state['cierre_anr_m1'].name}")
         else:
-            st.info("Opcional — ANR del día anterior, solo para Cierre D+1 (CTA CTE)")
-
-    st.divider()
+            st.info("Opcional — Cierre D+1")
 
     # Estado global
     st.markdown("#### 📋 Estado de archivos cargados")
@@ -3916,6 +3914,12 @@ def render_tab_proyeccion():
         ] for cn in _T4_CANCHAS}
     })
     _cancha_cols_pall = [cn.replace("CANCHA ", "C") for cn in _T4_CANCHAS]
+    # column_config fuerza el ancho de "Concepto" proporcional al ratio [2,1,1,1,1,1]
+    # usado en el botón "Recalcular horarios", para que todo quede alineado.
+    _col_cfg_pall = {
+        "Concepto": st.column_config.TextColumn("Concepto", width="medium"),
+        **{c: st.column_config.NumberColumn(c, width="small") for c in _cancha_cols_pall},
+    }
     st.dataframe(
         resumen_pall.style.format(
             {col: "{:.2f}" for col in _cancha_cols_pall}
@@ -3923,7 +3927,7 @@ def render_tab_proyeccion():
             lambda row: ["background-color: #FF8C00; color: white" if row.name == 2 else "" for _ in row],
             axis=1,
         ),
-        use_container_width=True, hide_index=True,
+        use_container_width=True, hide_index=True, column_config=_col_cfg_pall,
     )
 
     # ── Totales bultos/HL/KG por cancha (post-asign) ─────────────────────────
@@ -3950,7 +3954,11 @@ def render_tab_proyeccion():
             fin_por_cancha[cn]["fin_dt"].strftime("%H:%M") if totales_bult[cn] > 0 else "—",
         ] for cn in _T4_CANCHAS}
     })
-    st.dataframe(resumen_extra, use_container_width=True, hide_index=True)
+    _col_cfg_extra = {
+        "Concepto": st.column_config.TextColumn("Concepto", width="medium"),
+        **{cn.replace("CANCHA ", "C"): st.column_config.TextColumn(cn.replace("CANCHA ", "C"), width="small") for cn in _T4_CANCHAS},
+    }
+    st.dataframe(resumen_extra, use_container_width=True, hide_index=True, column_config=_col_cfg_extra)
 
     with st.expander("📊 Totales por cancha", expanded=True):
         cols_met = st.columns(len(_T4_CANCHAS) + 1)
