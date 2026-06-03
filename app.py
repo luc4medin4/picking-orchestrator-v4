@@ -1,4 +1,29 @@
 """
+Picking Orchestrator v4.66.0 — Beccacece Hnos SA
+
+CAMBIOS v4.66.0 — FIX PASO 2 + EXCEL DESCARGABLE:
+
+  1. FIX MATCH DE FECHA EN (fx) Picking:
+     - Root cause: gspread devuelve las fechas de col A como string "d-mmm"
+       (ej: "3-jun", "2-jun") porque el sheet usa fórmulas =Picking!Axxx
+       que generan fechas serializadas de Sheets. Los formatos anteriores
+       (dd/mm/yyyy, yyyy-mm-dd, etc.) nunca hacían match.
+     - Fix: nueva función _normalizar_fecha_gspread() que convierte tanto
+       fechas serializadas numéricas (serial Lotus) como strings "d-mmm"
+       o "dd-mmm" al formato comparable con la fecha del día.
+     - La búsqueda ahora genera el string "d-mmm" en español (ej: "3-jun")
+       desde la fecha del día y lo compara directamente con col A.
+
+  2. EXCEL DESCARGABLE SIEMPRE PRESENTE en Paso 2:
+     - Nueva función _build_fx_picking_xlsx() que genera un .xlsx de una
+       sola fila con: col A = fecha formateada, cols B:BL = los 63 valores
+       calculados, con headers reales leídos desde el sheet (fila 1).
+     - El Excel se ofrece para descarga SIEMPRE (independiente del envío
+       a Sheets), con nombre fx_Picking_DD-MM-YYYY.xlsx.
+     - Fallback: si no hay credenciales para leer headers, usa etiquetas
+       genéricas (A=Fecha de Picking, B=PICKING, I=AE BULT, etc.).
+
+
 Picking Orchestrator v4.64.0 — Beccacece Hnos SA
 
 CAMBIOS v4.64.0 — 4 MEJORAS OPERATIVAS:
@@ -181,7 +206,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.64.0"
+APP_VERSION = "4.66.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -4382,32 +4407,6 @@ def render_tab_proyeccion():
         except Exception as _ex_xlsx:
             st.warning(f"⚠️ XLSX no disponible: {_ex_xlsx}")
 
-        # ── Botón Sheets — Matriz Pall ─────────────────────────────────────────
-        st.markdown("---")
-        if st.button(
-            "📤 Enviar a Sheets (Matriz Pall)",
-            use_container_width=True,
-            key="t4_sheets_matriz_btn",
-            help="Inserta las filas de hoy en la hoja 'Matriz Pall' del Sheets maestro",
-        ):
-            with st.spinner("Enviando a Google Sheets…"):
-                try:
-                    _creds_json = dict(st.secrets["gcp_service_account"])
-                    _n_rows = _push_matriz_pall_to_sheets(df_display, pdata, _creds_json)
-                    st.success(f"✅ {_n_rows} fila(s) enviadas a 'Matriz Pall'")
-                    log_event("info", f"Sheets Matriz Pall: {_n_rows} filas insertadas ({pdata['fecha']})")
-                except KeyError:
-                    st.error(
-                        "❌ No se encontró `gcp_service_account` en `st.secrets`.\n\n"
-                        "Agregá el JSON de la service account en `.streamlit/secrets.toml` "
-                        "bajo la clave `[gcp_service_account]`."
-                    )
-                except Exception as _ex_sheets:
-                    st.error(f"❌ Error al escribir en Sheets: {_ex_sheets}")
-                    with st.expander("Stack trace"):
-                        import traceback
-                        st.code(traceback.format_exc())
-
     with cp2:
         # ── v4.37: Resumen para el Controlador ───────────────────────────────
         # v4.41: _top_skus_lines y _alertas ya computados antes del bloque columns
@@ -4608,6 +4607,50 @@ def render_tab_proyeccion():
                 f"No inserta filas nuevas, no rompe fórmulas."
             )
 
+        # ── Excel descargable — siempre disponible ─────────────────────────
+        st.markdown("##### 📊 Excel de respaldo")
+        _anr_df_xl  = st.session_state.get("anr_df")
+        _hl_venta_xl = _t4_compute_hl_venta_por_cancha(
+            _anr_df_xl,
+            pdata.get("ddm_can_lookup", {}),
+        )
+        # Intentar obtener credenciales para leer headers reales
+        _creds_xl: dict | None = None
+        try:
+            _creds_xl = dict(st.secrets["gcp_service_account"])
+        except Exception:
+            pass
+
+        _fecha_xl = pdata["fecha"]
+        _fname_xl = (
+            f"fx_Picking_{_fecha_xl.strftime('%d-%m-%Y')}.xlsx"
+            if hasattr(_fecha_xl, "strftime")
+            else "fx_Picking.xlsx"
+        )
+        try:
+            _xlsx_bytes = _build_fx_picking_xlsx(
+                totales_bult        = totales_bult,
+                totales_hl          = totales_hl,
+                totales_kg          = totales_kg,
+                bult_ae_por_cancha  = pdata.get("bult_ae_por_cancha", {}),
+                hl_venta_por_cancha = _hl_venta_xl,
+                fecha               = _fecha_xl,
+                credentials_json    = _creds_xl,
+            )
+            st.download_button(
+                label          = f"⬇️ Descargar {_fname_xl}",
+                data           = _xlsx_bytes,
+                file_name      = _fname_xl,
+                mime           = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width = True,
+                key            = "t4_paso2_xlsx_dl",
+                help           = "Una sola fila con fecha en col A y datos B:BL — "
+                                 "mismos headers que el sheet. "
+                                 "Útil si Sheets no está disponible o como respaldo.",
+            )
+        except Exception as _ex_xl:
+            st.warning(f"No se pudo generar el Excel: {_ex_xl}")
+
 
 # ── HELPER: (fx) Picking — Paso 2 ─────────────────────────────────────────
 # v4.65 — Calcula HL venta por cancha desde ANR (excluyendo SIN CARGO)
@@ -4737,32 +4780,54 @@ def _push_fx_picking_to_sheets(
     # Fecha a buscar en col A
     if hasattr(fecha, "strftime"):
         fecha_dt = fecha
+    elif hasattr(fecha, "year"):
+        fecha_dt = fecha
     else:
         fecha_dt = _dt.date.fromisoformat(str(fecha))
 
-    # Formatos de fecha a buscar en col A del sheet
+    # ── Normalizar fecha del día al formato "d-mmm" que usa el sheet ──────
+    # gspread devuelve las celdas con fórmulas =Picking!Axxx como strings
+    # con formato "d-mmm" en español (ej: "3-jun", "15-may", "1-ene").
+    # Generamos ese string y también variantes comunes como fallback.
+    _MESES_ES = {
+        1: "ene", 2: "feb", 3: "mar", 4: "abr",
+        5: "may", 6: "jun", 7: "jul", 8: "ago",
+        9: "sep", 10: "oct", 11: "nov", 12: "dic",
+    }
+    _dia  = fecha_dt.day if hasattr(fecha_dt, "day") else _dt.date.today().day
+    _mes  = fecha_dt.month if hasattr(fecha_dt, "month") else _dt.date.today().month
+    _anio = fecha_dt.year if hasattr(fecha_dt, "year") else _dt.date.today().year
+
+    # Formato principal que devuelve gspread: "3-jun"
+    _fmt_dmmm    = f"{_dia}-{_MESES_ES[_mes]}"       # "3-jun"
+    _fmt_ddmmm   = f"{_dia:02d}-{_MESES_ES[_mes]}"   # "03-jun"
+
     fecha_targets = {
-        fecha_dt.strftime("%d/%m/%Y"),
-        fecha_dt.strftime("%-d/%-m/%Y"),
-        fecha_dt.strftime("%d/%m/%Y").lstrip("0"),
-        str(fecha_dt),       # YYYY-MM-DD
-        fecha_dt.strftime("%#d/%#m/%Y") if hasattr(fecha_dt, "strftime") else "",
+        _fmt_dmmm,
+        _fmt_ddmmm,
+        # Fallbacks adicionales por si el formato del sheet varía
+        f"{_dia:02d}/{_mes:02d}/{_anio}",             # "03/06/2026"
+        f"{_dia}/{_mes}/{_anio}",                      # "3/6/2026"
+        str(fecha_dt),                                  # "2026-06-03"
+        f"{_dia:02d}/{_mes:02d}/{str(_anio)[2:]}",     # "03/06/26"
     }
 
     # Leer col A completa para encontrar la fila del día
     col_a = sheet.col_values(1)  # 1-indexed, returns list desde row 1
     target_row = None
     for i, val in enumerate(col_a):
-        val_clean = str(val).strip()
-        if val_clean in fecha_targets:
+        val_clean = str(val).strip().lower()
+        # Comparar en minúsculas para "3-jun" == "3-JUN" etc.
+        if val_clean in {t.lower() for t in fecha_targets}:
             target_row = i + 1  # gspread usa 1-indexed
             break
 
     if target_row is None:
         raise ValueError(
-            f"No se encontró la fecha {fecha_dt.strftime('%d/%m/%Y')} en la col A "
-            f"de la hoja '(fx) Picking'. Verificá que la fórmula del sheet ya generó "
-            f"la fila de hoy antes de ejecutar este paso."
+            f"No se encontró la fecha {_fmt_dmmm!r} (ni variantes) en la col A "
+            f"de la hoja '(fx) Picking'. "
+            f"Verificá que la fórmula del sheet ya generó la fila de hoy antes de "
+            f"ejecutar este paso. Valores buscados: {sorted(fecha_targets)}"
         )
 
     # ── Construir los 63 valores (B..BL) ───────────────────────────────────
@@ -4852,7 +4917,186 @@ def _push_fx_picking_to_sheets(
         value_input_option="USER_ENTERED",
     )
 
-    return f"Fila {target_row} actualizada (fecha {fecha_dt.strftime('%d/%m/%Y')}, {len(row_values)} valores)"
+    return f"Fila {target_row} actualizada (fecha {_fmt_dmmm!r}, {len(row_values)} valores)"
+
+
+def _build_fx_picking_xlsx(
+    *,
+    totales_bult:       dict,
+    totales_hl:         dict,
+    totales_kg:         dict,
+    bult_ae_por_cancha: dict,
+    hl_venta_por_cancha: dict,
+    fecha,
+    credentials_json:   dict | None = None,
+) -> bytes:
+    """
+    v4.66 — Genera un .xlsx con UNA fila de datos de (fx) Picking:
+      - Col A: fecha formateada "d-mmm" (mismo formato que el sheet)
+      - Cols B:BL: los 63 valores calculados
+    Los headers se leen desde la fila 1 del sheet si hay credenciales,
+    o se usan etiquetas genéricas como fallback.
+    """
+    import io as _io
+    import datetime as _dt2
+
+    try:
+        import openpyxl
+        from openpyxl.styles import PatternFill, Font, Alignment
+    except ImportError:
+        # Fallback sin estilos
+        import openpyxl
+
+    # ── Fecha ─────────────────────────────────────────────────────────────
+    if hasattr(fecha, "day"):
+        fecha_dt = fecha
+    else:
+        fecha_dt = _dt2.date.fromisoformat(str(fecha))
+
+    _MESES_ES2 = {
+        1: "ene", 2: "feb", 3: "mar", 4: "abr",
+        5: "may", 6: "jun", 7: "jul", 8: "ago",
+        9: "sep", 10: "oct", 11: "nov", 12: "dic",
+    }
+    _fecha_str = f"{fecha_dt.day}-{_MESES_ES2[fecha_dt.month]}"
+
+    # ── Construir los 63 valores (misma lógica que _push_fx_picking_to_sheets) ──
+    C = _T4_CANCHAS
+
+    def _rv(v, dec=3):
+        try: return round(float(v), dec)
+        except: return 0.0
+
+    pick_total     = sum(_rv(totales_bult.get(c, 0)) for c in C)
+    ae_total       = sum(_rv(bult_ae_por_cancha.get(c, 0)) for c in C)
+    kg_total       = sum(_rv(totales_kg.get(c, 0)) for c in C)
+    hl_pick_total  = sum(_rv(totales_hl.get(c, 0)) for c in C)
+    hl_venta_total = sum(_rv(hl_venta_por_cancha.get(c, 0)) for c in C)
+
+    row_values = [
+        _rv(pick_total, 2),
+        _rv(totales_bult.get("CANCHA I",   0), 2),
+        _rv(totales_bult.get("CANCHA II",  0), 2),
+        _rv(totales_bult.get("CANCHA III", 0), 2),
+        _rv(totales_bult.get("CANCHA IV",  0), 2),
+        _rv(totales_bult.get("MKPL",       0), 2),
+        0,
+        _rv(ae_total, 2),
+        _rv(bult_ae_por_cancha.get("CANCHA I",   0), 2),
+        _rv(bult_ae_por_cancha.get("CANCHA II",  0), 2),
+        _rv(bult_ae_por_cancha.get("CANCHA III", 0), 2),
+        _rv(bult_ae_por_cancha.get("CANCHA IV",  0), 2),
+        _rv(bult_ae_por_cancha.get("MKPL",       0), 2),
+        0,
+        _rv(kg_total, 2),
+        _rv(totales_kg.get("CANCHA I",   0), 2),
+        _rv(totales_kg.get("CANCHA II",  0), 2),
+        _rv(totales_kg.get("CANCHA III", 0), 2),
+        _rv(totales_kg.get("CANCHA IV",  0), 2),
+        _rv(totales_kg.get("MKPL",       0), 2),
+        0,
+        _rv(hl_pick_total, 3),
+        _rv(totales_hl.get("CANCHA I",   0), 3),
+        _rv(totales_hl.get("CANCHA II",  0), 3),
+        _rv(totales_hl.get("CANCHA III", 0), 3),
+        _rv(totales_hl.get("CANCHA IV",  0), 3),
+        _rv(totales_hl.get("MKPL",       0), 3),
+        0,
+        _rv(hl_venta_total, 3),
+        _rv(hl_venta_por_cancha.get("CANCHA I",   0), 3),
+        _rv(hl_venta_por_cancha.get("CANCHA II",  0), 3),
+        _rv(hl_venta_por_cancha.get("CANCHA III", 0), 3),
+        _rv(hl_venta_por_cancha.get("CANCHA IV",  0), 3),
+        _rv(hl_venta_por_cancha.get("MKPL",       0), 3),
+        0,
+        0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0,
+    ]
+    assert len(row_values) == 63
+
+    # ── Intentar leer headers reales desde el sheet ────────────────────────
+    headers_sheet: list[str] = []
+    if credentials_json:
+        try:
+            import gspread as _gs
+            from google.oauth2.service_account import Credentials as _Creds
+            _creds = _Creds.from_service_account_info(
+                credentials_json,
+                scopes=[
+                    "https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/drive",
+                ],
+            )
+            _cl  = _gs.authorize(_creds)
+            _sh  = _cl.open_by_key("1OjIhtpzwV-MpnBWu09lKyguit2iKR-nCFG9g5MOd-mM")
+            _ws  = _sh.worksheet("(fx) Picking")
+            # Leer fila 1 completa (A:BL = 64 columnas)
+            _row1 = _ws.row_values(1)
+            headers_sheet = _row1[:64]  # A + B..BL
+        except Exception:
+            headers_sheet = []
+
+    # Fallback si no pudimos leer headers
+    if not headers_sheet or len(headers_sheet) < 64:
+        headers_sheet = (
+            ["Fecha de Picking", "PICKING", "CI pick", "CII pick", "CIII pick", "CIV pick", "MKPL pick",
+             "Comodín1", "AE BULT", "CI AE", "CII AE", "CIII AE", "CIV AE", "MKPL AE",
+             "Comodín2", "TOTAL HL", "CI HL", "CII HL", "CIII HL", "CIV HL", "MKPL HL",
+             "Comodín3", "PICKING HL", "CI HL pick", "CII HL pick", "CIII HL pick", "CIV HL pick", "MKPL HL pick",
+             "Comodín4", "TOTAL HL VENTA", "CI HL vta", "CII HL vta", "CIII HL vta", "CIV HL vta", "MKPL HL vta",
+             "Comodín5"]
+            + [f"MATRIZ_{i}" for i in range(28)]
+        )
+        # Rellenar hasta 64
+        while len(headers_sheet) < 64:
+            headers_sheet.append(f"Col_{len(headers_sheet)+1}")
+
+    # ── Armar el workbook ──────────────────────────────────────────────────
+    wb  = openpyxl.Workbook()
+    ws2 = wb.active
+    ws2.title = "(fx) Picking"
+
+    # Estilos
+    try:
+        hdr_fill  = PatternFill("solid", fgColor="1F3864")
+        hdr_font  = Font(color="FFFFFF", bold=True, size=9)
+        hdr_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        dat_align = Alignment(horizontal="center", vertical="center")
+        a_fill    = PatternFill("solid", fgColor="FFF2CC")  # amarillo claro para col A
+    except Exception:
+        hdr_fill = hdr_font = hdr_align = dat_align = a_fill = None
+
+    # Fila 1: headers
+    full_row = [headers_sheet[0]] + headers_sheet[1:64]
+    for col_idx, hdr in enumerate(full_row, start=1):
+        cell = ws2.cell(row=1, column=col_idx, value=hdr)
+        if hdr_fill:
+            cell.fill    = hdr_fill if col_idx > 1 else a_fill
+            cell.font    = hdr_font if col_idx > 1 else Font(bold=True, size=9)
+            cell.alignment = hdr_align
+        ws2.row_dimensions[1].height = 30
+
+    # Fila 2: datos
+    data_row = [_fecha_str] + row_values
+    for col_idx, val in enumerate(data_row, start=1):
+        cell = ws2.cell(row=2, column=col_idx, value=val)
+        if dat_align:
+            cell.alignment = dat_align
+
+    # Anchos de columna
+    ws2.column_dimensions["A"].width = 14
+    for col_letter in "BCDEFGHIJKLMNOPQRSTUVWXYZ":
+        ws2.column_dimensions[col_letter].width = 10
+    # BK, BL (columnas >26)
+    for extra in range(27, 65):
+        col_letter = openpyxl.utils.get_column_letter(extra)
+        ws2.column_dimensions[col_letter].width = 10
+
+    buf2 = _io.BytesIO()
+    wb.save(buf2)
+    return buf2.getvalue()
 
 
 # ── HELPER: PDF Controlador de Depósito ────────────────────────────────────
@@ -8135,10 +8379,20 @@ def render_tab_tablero():
         if car_file_tr is not None:
             try:
                 car_file_tr.seek(0)
-                _raw_ve = pd.read_excel(car_file_tr, sheet_name=0, header=None, nrows=41)
+                # v4.65: leer TODO el CAR y encontrar el separador dinámicamente
+                _raw_ve_full = pd.read_excel(car_file_tr, sheet_name=0, header=None)
                 car_file_tr.seek(0)
-                _hdr_ve = _raw_ve.iloc[0].tolist()
-                _body_ve = _raw_ve.iloc[1:41].copy()
+                _hdr_ve = _raw_ve_full.iloc[0].tolist()
+                # Buscar fila separadora (todas NaN) → todo antes = VE
+                _sep_ve = None
+                for _vi in range(1, min(60, len(_raw_ve_full))):
+                    _rv = _raw_ve_full.iloc[_vi]
+                    if _rv.isna().all():
+                        _sep_ve = _vi
+                        break
+                _end_ve = _sep_ve if _sep_ve is not None else min(41, len(_raw_ve_full))
+                _raw_ve = _raw_ve_full.iloc[0:_end_ve]
+                _body_ve = _raw_ve.iloc[1:].copy()
                 _body_ve.columns = _hdr_ve
                 def _fc(df, *opts):
                     up = [str(c).upper().strip() for c in df.columns]
@@ -8213,8 +8467,9 @@ def render_tab_tablero():
         col_fecha_a  = _get_col(anr_w, "FECHA", "S")
         col_up       = _get_col(anr_w, "UNIDAD PAQUETE", "Q")
         col_clientes = _get_col(anr_w, "TOTAL CLIENTES", "AY")
-        col_peso     = _get_col(anr_w, "PESO KG", "AZ")
-        col_hl       = _get_col(anr_w, "HL", "BB")
+        # v4.65: ANR tiene "UNIDAD DE MEDIDA" = HL (no "HL" ni "PESO KG")
+        col_peso     = _get_col(anr_w, "PESO KG", "AZ")   # generalmente None en Chess ANR
+        col_hl       = _get_col(anr_w, "UNIDAD DE MEDIDA", "HL", "BB")  # ← fix v4.65
         col_rechazo  = _get_col(anr_w, "BULTOS RECHAZADOS", "L")
         col_sku_anr  = _get_col(anr_w, "ARTÍCULO", "ARTICULO", "SKU", "CÓDIGO", "CODIGO")
         col_blt_anr  = _get_col(anr_w, "BULTOS", "K")
@@ -8374,13 +8629,13 @@ def render_tab_tablero():
                 except Exception:
                     pass
 
-        # Caption fuente HL/Peso
-        if col_hl is not None and col_peso is not None and _ddm_disponible:
-            _fuente_hlkg = "✅ HL y Peso: ANR real (fila a fila) + DDM para SKUs sin valor en ANR + VE del CAR vía DDM."
-        elif col_hl is not None and col_peso is not None:
-            _fuente_hlkg = "✅ HL y Peso: columnas PESO KG y HL del ANR (valores reales Chess). Sin DDM cargado."
+        # Caption fuente HL/Peso — v4.65: ANR usa "UNIDAD DE MEDIDA" (col O) = HL
+        if col_hl is not None and _ddm_disponible:
+            _fuente_hlkg = "✅ HL: ANR col 'Unidad de Medida' (HL real) + DDM complemento. Peso: DDM × Bultos (ANR+VE). v4.65"
+        elif col_hl is not None:
+            _fuente_hlkg = "⚠️ HL: ANR col 'Unidad de Medida'. Peso: sin DDM (cargá Frescura 3.0)."
         elif _ddm_disponible:
-            _fuente_hlkg = "⚠️ HL y Peso: calculados 100% desde DDM × Bultos (ANR sin columnas PESO KG / HL)."
+            _fuente_hlkg = "⚠️ HL y Peso: calculados 100% desde DDM × Bultos (ANR sin col HL). Frescura cargada."
         else:
             _fuente_hlkg = "⚠️ HL y Peso: sin datos (cargá la Frescura/DDM para calcularlos)."
         st.caption(_fuente_hlkg)
@@ -8762,6 +9017,41 @@ def render_tab_tablero():
                         for ci3, tv3 in enumerate(_totv, 1):
                             _c4 = _ws2.cell(row, ci3, tv3); _c4.fill = _fx("E8EAF6"); _c4.font = _fo(True, _NX, 10); _c4.alignment = _al(); _c4.border = _bd()
                         _ws2.row_dimensions[row].height = 16; row += 2
+                    # Gráfico PDV vs Bultos UP por camión en Excel
+                    if tabla_rows:
+                        try:
+                            from openpyxl.chart import BarChart, Reference
+                            # Tabla auxiliar de datos para el gráfico (columnas N+, fuera del área visible)
+                            _gcol_start = 14  # columna N = cabecera gráfico
+                            _ws2.cell(row, _gcol_start, "N° Cam").font = _fo(True, _NX, 8)
+                            _ws2.cell(row, _gcol_start + 1, "Bultos UP").font = _fo(True, _NX, 8)
+                            _ws2.cell(row, _gcol_start + 2, "PDV").font = _fo(True, _NX, 8)
+                            _gr_start_row = row
+                            for _gi, _gr in enumerate(tabla_rows, 1):
+                                _ws2.cell(row + _gi, _gcol_start,     str(_gr["N° Cam"]))
+                                _ws2.cell(row + _gi, _gcol_start + 1, round(_gr["Bultos UP"], 1))
+                                _ws2.cell(row + _gi, _gcol_start + 2, _gr["PDV"])
+                            _gr_end_row = row + len(tabla_rows)
+                            # Gráfico combinado
+                            _bar_ch = BarChart()
+                            _bar_ch.type = "col"; _bar_ch.grouping = "clustered"
+                            _bar_ch.title = f"Bultos UP y PDV por Camión — {fecha_dia.strftime('%d/%m/%Y')}"
+                            _bar_ch.style = 10; _bar_ch.width = 18; _bar_ch.height = 9
+                            _ref_bup = Reference(_ws2, min_col=_gcol_start + 1,
+                                min_row=_gr_start_row, max_row=_gr_end_row)
+                            _ref_pdv = Reference(_ws2, min_col=_gcol_start + 2,
+                                min_row=_gr_start_row, max_row=_gr_end_row)
+                            _ref_cats = Reference(_ws2, min_col=_gcol_start,
+                                min_row=_gr_start_row + 1, max_row=_gr_end_row)
+                            from openpyxl.chart import Series as ChSeries
+                            _s1 = ChSeries(_ref_bup, title="Bultos UP")
+                            _s2 = ChSeries(_ref_pdv, title="PDV (clientes)")
+                            _bar_ch.series = [_s1, _s2]
+                            _bar_ch.set_categories(_ref_cats)
+                            _ws2.add_chart(_bar_ch, f"A{row}")
+                            row += 16
+                        except Exception as _ge_xl:
+                            pass  # gráfico Excel opcional — no interrumpir si falla
                     # Footer
                     _ws2.merge_cells(f"A{row}:L{row}")
                     _ws2.cell(row, 1, f"Generado: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')} · Picking Orchestrator v{APP_VERSION} · Beccacece Hnos SA — DPO 2.1").font = _fo(False, "888888", 8)
@@ -8880,42 +9170,58 @@ def render_tab_tablero():
                     ]))
                     _story.append(_tot); _story.append(Spacer(1, 2*mm))
 
-                    # Gráfico barras — compacto
+                    # Gráficos — dos barras lado a lado: Bultos UP y PDV por camión
                     if tabla_rows:
                         try:
-                            _cam_labels = [str(r["N° Cam"]) for r in tabla_rows]
-                            _cam_vals   = [r["Bultos UP"] for r in tabla_rows]
+                            _cam_labels   = [str(r["N° Cam"]) for r in tabla_rows]
+                            _cam_bup      = [r["Bultos UP"] for r in tabla_rows]
+                            _cam_pdv      = [r["PDV"] for r in tabla_rows]
                             _n = len(_cam_labels)
-                            _chart_w = float(_usable_w)
-                            _chart_h = 38.0 * mm
-                            _margin_l = 10*mm; _margin_b = 9*mm
-                            _plot_w = _chart_w - _margin_l - 5*mm
-                            _plot_h = _chart_h - _margin_b - 4*mm
-                            _x_step = _plot_w / max(_n, 1)
-                            _max_val = max(_cam_vals) if _cam_vals else 1
-                            _d = Drawing(_chart_w, _chart_h + 5*mm)
-                            _d.add(String(_chart_w/2, _chart_h + 2*mm, "Bultos UP por Camión",
-                                          fontSize=9, fontName="Helvetica-Bold",
-                                          fillColor=_NAVY, textAnchor="middle"))
-                            for _bi, (_lbl, _val) in enumerate(zip(_cam_labels, _cam_vals)):
-                                _bx = _margin_l + _bi * _x_step + _x_step * 0.1
-                                _bw = _x_step * 0.8
-                                _bh = (_val / _max_val) * _plot_h if _max_val > 0 else 0
-                                _d.add(Rect(_bx, _margin_b, _bw, max(_bh, 1),
-                                            fillColor=_BLUE2, strokeColor=colors.white, strokeWidth=0.5))
-                                _d.add(String(_bx + _bw/2, _margin_b + _bh + 1.5*mm,
-                                              f"{_val:.0f}", fontSize=6, fontName="Helvetica",
-                                              fillColor=_NAVY, textAnchor="middle"))
-                                _d.add(String(_bx + _bw/2, _margin_b - 3.5*mm,
-                                              _lbl, fontSize=6, fontName="Helvetica",
-                                              fillColor=_NAVY, textAnchor="middle"))
-                            _d.add(Line(_margin_l, _margin_b, _margin_l, _margin_b + _plot_h,
-                                        strokeColor=_NAVY, strokeWidth=0.8))
-                            _d.add(Line(_margin_l, _margin_b, _margin_l + _plot_w, _margin_b,
-                                        strokeColor=_NAVY, strokeWidth=0.8))
-                            _story.append(_d); _story.append(Spacer(1, 1*mm))
+                            _half_w = float(_usable_w) / 2 - 2*mm
+                            _chart_h = 36.0 * mm
+                            _margin_l = 9*mm; _margin_b = 8*mm
+
+                            def _make_bar_chart(labels, vals, title, bar_color):
+                                _cw = _half_w
+                                _pw = _cw - _margin_l - 4*mm
+                                _ph = _chart_h - _margin_b - 4*mm
+                                _xs = _pw / max(len(labels), 1)
+                                _mv = max(vals) if vals else 1
+                                _dr = Drawing(_cw, _chart_h + 5*mm)
+                                _dr.add(String(_cw/2, _chart_h + 2*mm, title,
+                                    fontSize=8, fontName="Helvetica-Bold",
+                                    fillColor=_NAVY, textAnchor="middle"))
+                                for _bi, (_lbl, _val) in enumerate(zip(labels, vals)):
+                                    _bx = _margin_l + _bi * _xs + _xs * 0.1
+                                    _bw = _xs * 0.8
+                                    _bh = (_val / _mv) * _ph if _mv > 0 else 0
+                                    _dr.add(Rect(_bx, _margin_b, _bw, max(_bh, 1),
+                                        fillColor=bar_color, strokeColor=colors.white, strokeWidth=0.5))
+                                    _dr.add(String(_bx + _bw/2, _margin_b + _bh + 1.2*mm,
+                                        f"{_val:.0f}", fontSize=5.5, fontName="Helvetica",
+                                        fillColor=_NAVY, textAnchor="middle"))
+                                    _dr.add(String(_bx + _bw/2, _margin_b - 3.5*mm,
+                                        _lbl, fontSize=5.5, fontName="Helvetica",
+                                        fillColor=_NAVY, textAnchor="middle"))
+                                _dr.add(Line(_margin_l, _margin_b, _margin_l, _margin_b + _ph,
+                                    strokeColor=_NAVY, strokeWidth=0.8))
+                                _dr.add(Line(_margin_l, _margin_b, _margin_l + _pw, _margin_b,
+                                    strokeColor=_NAVY, strokeWidth=0.8))
+                                return _dr
+
+                            _d_bup = _make_bar_chart(_cam_labels, _cam_bup, "Bultos UP por Camión", _BLUE2)
+                            _d_pdv = _make_bar_chart(_cam_labels, _cam_pdv, "Clientes (PDV) por Camión", colors.HexColor("#00796B"))
+                            _charts_tbl = Table([[_d_bup, _d_pdv]],
+                                colWidths=[_half_w + 2*mm, _half_w + 2*mm])
+                            _charts_tbl.setStyle(TableStyle([
+                                ("ALIGN", (0,0), (-1,-1), "CENTER"),
+                                ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+                                ("LEFTPADDING", (0,0), (-1,-1), 0),
+                                ("RIGHTPADDING", (0,0), (-1,-1), 0),
+                            ]))
+                            _story.append(_charts_tbl); _story.append(Spacer(1, 1*mm))
                         except Exception as _ge:
-                            _story.append(_p(f"[Gráfico no disponible: {_ge}]", 7, color=colors.grey))
+                            _story.append(_p(f"[Gráficos no disponibles: {_ge}]", 7, color=colors.grey))
 
                     # Tabla detalle por camión — 12 cols compactas + Licencias + Validación
                     if tabla_rows:
