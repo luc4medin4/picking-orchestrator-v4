@@ -123,7 +123,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.58.0"
+APP_VERSION = "4.58.1"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -3872,12 +3872,12 @@ def render_tab_proyeccion():
     # Persistir estado completo — PRE-tabla lo leerá en el próximo rerun
     st.session_state["t4_asign"] = live_asign
 
-    # ── v4.56.0: Botón "Recalcular horarios" ────────────────────────────────
-    # Al hacer cambios en ASIGN, live_asign ya está correcto en este ciclo
-    # para los cálculos POST-tabla. El header PRE-tabla (encima del editor)
-    # se actualiza al ciclo SIGUIENTE. El botón fuerza ese rerun inmediatamente.
-    _rcol1, _rcol2 = st.columns([1, 5])
-    with _rcol1:
+    # ── v4.58.1: Botón "Recalcular horarios" + caption alineado con tabla ──────
+    # Layout: columna botón + espacio offset (simula las cols # y Camión de la
+    # tabla) + columna caption alineada con el inicio de los datos de cancha.
+    # Proporción: botón ocupa ~1/6 del ancho; el caption arranca donde la tabla.
+    _rcol_btn, _rcol_gap, _rcol_info = st.columns([1, 0, 4])
+    with _rcol_btn:
         if st.button(
             "🔄 Recalcular horarios",
             key="t4_recalc_btn",
@@ -3885,18 +3885,17 @@ def render_tab_proyeccion():
             use_container_width=True,
             help="Aplica las reasignaciones y actualiza los horarios estimados por cancha.",
         ):
-            # t4_asign ya fue persistido con live_asign arriba → rerun lo lee
             st.rerun()
-    with _rcol2:
+    with _rcol_info:
         if live_asign:
             _asign_count = len(live_asign)
             _asign_desc = " | ".join(
                 f"Cam {k[0]} {k[1].replace('CANCHA ','C')}→{v.replace('CANCHA ','C')}"
                 for k, v in sorted(live_asign.items())
             )
-            st.caption(f"✏️ {_asign_count} reasignación(es) activa(s): {_asign_desc}")
+            st.info(f"✏️ {_asign_count} reasignación(es) activa(s): {_asign_desc}", icon="🔀")
         else:
-            st.caption("Sin reasignaciones activas.")
+            st.caption("✔ Sin reasignaciones activas.")
 
     # ── Recalcular totales con live_asign (UNA sola vez) ─────────────────────
     totales_calc   = _t4_calcular_pall_por_cancha(df_display, live_asign)
