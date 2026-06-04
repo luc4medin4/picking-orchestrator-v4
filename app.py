@@ -5147,23 +5147,45 @@ def render_tab_proyeccion():
                 if _agr_sheet is None:
                     st.warning("No se encontró hoja AGR en el CAR.")
                 else:
+                    # ── Detección inteligente de header (igual que load_agr) ──
                     _car_p3.seek(0)
-                    _df_agr_p3 = pd.read_excel(_car_p3, sheet_name=_agr_sheet, header=0)
+                    _raw_p3 = pd.read_excel(_car_p3, sheet_name=_agr_sheet, header=None)
+                    _car_p3.seek(0)
+                    _hdr_row_p3 = None
+                    for _hi in range(min(15, len(_raw_p3))):
+                        _row_s = " ".join(str(v) for v in _raw_p3.iloc[_hi].values if pd.notna(v))
+                        if ("chofer" in _row_s.lower() or "camion" in _row_s.lower()) and \
+                           ("cantidad" in _row_s.lower() or "bulto" in _row_s.lower()):
+                            _hdr_row_p3 = _hi
+                            break
+                    if _hdr_row_p3 is None:
+                        # fallback: buscar cualquier fila con cod producto / descripcion
+                        for _hi in range(min(15, len(_raw_p3))):
+                            _row_s = " ".join(str(v) for v in _raw_p3.iloc[_hi].values if pd.notna(v))
+                            if "descrip" in _row_s.lower() and ("cod" in _row_s.lower() or "art" in _row_s.lower()):
+                                _hdr_row_p3 = _hi
+                                break
+                    if _hdr_row_p3 is None:
+                        _hdr_row_p3 = 0
+
+                    _car_p3.seek(0)
+                    _df_agr_p3 = pd.read_excel(_car_p3, sheet_name=_agr_sheet, header=_hdr_row_p3)
+                    _df_agr_p3.columns = [str(c).strip() for c in _df_agr_p3.columns]
                     _car_p3.seek(0)
 
                     # Identificar columnas clave
-                    _cols_p3 = [str(c).strip() for c in _df_agr_p3.columns]
+                    _cols_p3 = list(_df_agr_p3.columns)
                     def _fc3(*names):
                         for n in names:
-                            for i, c in enumerate(_cols_p3):
+                            for c in _cols_p3:
                                 if n.lower() in c.lower():
-                                    return _df_agr_p3.columns[i]
+                                    return c
                         return None
 
-                    _col_sku3   = _fc3("cod producto","almac","sku","artículo","codigo")
+                    _col_sku3   = _fc3("cod producto", "codproducto", "codigo producto", "almac", "artículo", "articulo", "codigo", "sku")
                     _col_desc3  = _fc3("descrip")
-                    _col_bult3  = _fc3("cantidad","bultos")
-                    _col_cam3   = _fc3("chofer","camion","cam")
+                    _col_bult3  = _fc3("cantidad", "bultos")
+                    _col_cam3   = _fc3("chofer", "camion", "cam")
 
                     if not all([_col_sku3, _col_bult3, _col_cam3]):
                         st.warning(f"No se pudieron identificar columnas AGR. Cols: {_cols_p3}")
@@ -5266,19 +5288,27 @@ def render_tab_proyeccion():
                             except Exception:
                                 pass
 
-                            _pivot_p3["FEFO"] = _pivot_p3["SKU"].map(lambda s: _frescura_fefo.get(int(s), "—"))
+                            _pivot_p3["F.E.FO"] = _pivot_p3["SKU"].map(lambda s: _frescura_fefo.get(int(s), "—"))
                             _pivot_p3["STOCK"] = _pivot_p3["SKU"].map(lambda s: _frescura_stk.get(int(s), 0))
 
-                            # Reordenar columnas finales
-                            _final_cols_p3 = ["SKU","DESCRIPCION"] + _cam_cols_p3 + ["TOTAL","FEFO","STOCK"]
+                            # Agregar Bs x p (BXP) desde DDM
+                            _pivot_p3["Bs x p"] = _pivot_p3["SKU"].map(
+                                lambda s: _ddm_p3.get(int(s), {}).get("bxp", 0))
+
+                            # Reordenar: Cod | Descripcion | Bs x p | camiones... | TOTALES | F.E.FO | STOCK
+                            _final_cols_p3 = ["SKU", "DESCRIPCION", "Bs x p"] + _cam_cols_p3 + ["TOTAL", "F.E.FO", "STOCK"]
                             _pivot_p3 = _pivot_p3[[c for c in _final_cols_p3 if c in _pivot_p3.columns]]
                             # Filtrar solo filas con TOTAL > 0
                             _pivot_p3 = _pivot_p3[_pivot_p3["TOTAL"] > 0].reset_index(drop=True)
 
+                            # Renombrar columnas para display/export (igual imagen referencia)
+                            _rename_p3 = {"SKU": "Cod", "DESCRIPCION": "Descripcion", "TOTAL": "TOTALES"}
+                            _pivot_p3_disp = _pivot_p3.rename(columns=_rename_p3)
+
                             if _skus_sin_ddm:
                                 st.warning(f"⚠️ SKUs sin BXP en DDM (excluidos): {_skus_sin_ddm}")
 
-                            st.dataframe(_pivot_p3, use_container_width=True, hide_index=True)
+                            st.dataframe(_pivot_p3_disp, use_container_width=True, hide_index=True)
 
                             # Exportar Excel
                             try:
@@ -5287,15 +5317,15 @@ def render_tab_proyeccion():
                                                              Alignment as _AL3)
                                 _wb3 = _opx_p3.Workbook()
                                 _ws3 = _wb3.active; _ws3.title = "AE_Pallets"
-                                # Header
-                                _hdrs3 = list(_pivot_p3.columns)
+                                # Header con nombres renombrados
+                                _hdrs3 = list(_pivot_p3_disp.columns)
                                 for ci3, h3 in enumerate(_hdrs3, 1):
                                     _c3 = _ws3.cell(1, ci3, str(h3))
                                     _c3.fill = _PF3("solid", fgColor="1F3864")
                                     _c3.font = _FO3(bold=True, color="FFFFFF", size=10)
                                     _c3.alignment = _AL3(horizontal="center")
                                 # Datos
-                                for ri3, row3 in _pivot_p3.iterrows():
+                                for ri3, row3 in _pivot_p3_disp.iterrows():
                                     for ci3, v3 in enumerate(row3, 1):
                                         _c3d = _ws3.cell(ri3+2, ci3, v3)
                                         _c3d.alignment = _AL3(horizontal="center")
@@ -5318,6 +5348,7 @@ def render_tab_proyeccion():
                                 )
                             except Exception as _ep3x:
                                 st.warning(f"⚠️ No se pudo generar Excel: {_ep3x}")
+
 
         except Exception as _ep3:
             st.error(f"❌ Error en Paso 3: {_ep3}")
