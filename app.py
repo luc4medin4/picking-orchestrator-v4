@@ -1,5 +1,11 @@
 """
-Picking Orchestrator v4.75.1 — Beccacece Hnos SA
+Picking Orchestrator v4.75.2 — Beccacece Hnos SA
+
+CAMBIOS v4.75.2 — FIX ORDEN COLUMNAS CAMIONES PASO 3:
+  1. Orden canónico fijo: COL F./TRE/PON/BEL J./BAR/CAN/TOTH/ALM/PRA/CEB/QUI/
+     VAL M./COL S./VIL/ARA/GAR/ROB/MINI/IBAX/PER/SCA/BEL P./CHA/KAR/JER/VILL/DÍAZ.
+  2. Solo se muestran los camiones con reparto en el CAR del día.
+  3. Labels de cabecera son las abreviaciones de referencia (no el ID numérico).
 
 CAMBIOS v4.75.1 — FIX PASO 3 AE PALLETS:
   1. TODOS LOS CAMIONES en columnas: incluye todos los camiones del CAR con 0
@@ -5272,14 +5278,25 @@ def render_tab_proyeccion():
                             if _ce3 in _pivot_p3.columns:
                                 _pivot_p3[_ce3] = 0
 
-                        # solo columnas numéricas = camiones (sin np dependency)
-                        _cam_cols_p3 = sorted(
-                            [c for c in _pivot_p3.columns
-                             if c != "_sku" and isinstance(c, (int, float))]
-                        )
+                        # Orden canónico de camiones (ID → label abreviado referencia)
+                        _CAM_ORDER_ALL = [
+                            (101,"COL F."),(102,"TRE"),(103,"PON"),(104,"BEL J."),
+                            (105,"BAR"),(106,"CAN"),(107,"TOTH"),(108,"ALM"),
+                            (109,"PRA"),(110,"CEB"),(111,"QUI"),(112,"VAL M."),
+                            (113,"COL S."),(114,"VIL"),(115,"ARA"),(117,"GAR"),
+                            (118,"ROB"),(119,"MINI"),(120,"IBAX"),(121,"PER"),
+                            (122,"SCA"),(123,"BEL P."),(124,"CHA"),(125,"KAR"),
+                            (127,"JER"),(128,"VILL"),(129,"DÍAZ"),
+                        ]
+                        # Solo camiones con reparto en este CAR
+                        _cams_con_reparto3 = set(int(c) for c in _df_car3["_cam"].unique())
+                        _CAM_ORDER = [(cid, lbl) for cid, lbl in _CAM_ORDER_ALL if cid in _cams_con_reparto3]
+                        # Asegurar que todos estén como columnas en el pivot
+                        for _cid3x, _ in _CAM_ORDER:
+                            if _cid3x not in _pivot_p3.columns:
+                                _pivot_p3[_cid3x] = 0
+                        _cam_cols_p3 = [cid for cid, _ in _CAM_ORDER]
                         _pivot_p3["_TOTAL"] = _pivot_p3[_cam_cols_p3].sum(axis=1)
-                        # NO filtrar por _TOTAL > 0: se muestran todos los SKUs con paletas completas
-                        # (las columnas de camiones sin paletas de ese SKU quedan en 0)
                         _pivot_p3 = _pivot_p3[_pivot_p3["_TOTAL"] > 0].copy()
                         _pivot_p3["_DESC"] = _pivot_p3["_sku"].map(
                             lambda s: _desc3_map.get(int(s), str(s)))
@@ -5338,8 +5355,7 @@ def render_tab_proyeccion():
                                 "Descripcion": _rp3["_DESC"],
                                 "Bs x p":      int(_rp3["_BXP"]),
                             }
-                            for _cc3 in _cam_cols_p3:
-                                _lbl3 = _trans3_map.get(int(_cc3), str(int(_cc3)))
+                            for _cc3, _lbl3 in _CAM_ORDER:
                                 _row3[_lbl3] = int(_rp3.get(_cc3, 0))
                             _row3["TOTALES"] = int(_rp3["_TOTAL"])
                             _row3["F.E.FO"]  = _rp3["_FEFO"]
