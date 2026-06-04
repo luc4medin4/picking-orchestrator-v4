@@ -294,7 +294,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.72.0"
+APP_VERSION = "4.73.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -1893,82 +1893,148 @@ def render_tab_archivos():
     Tab central de carga de archivos. CAR.xlsx, Frescura 3.0.xlsx, ANR.xlsx y SR.xlsx
     se suben aquí una sola vez. Todas las demás pestañas consumen los archivos
     desde session_state (sin uploaders propios redundantes).
+    v4.73: rediseño visual — badges de estado, descripción por archivo, ANR requerido,
+           SR D+1 y ANR -1 sin ❌ cuando no están cargados.
     """
-    st.subheader("📁 Archivos del Día")
-    st.caption(
-        "Subí aquí los archivos fuente. Quedan disponibles para **todas las pestañas** "
-        "de la sesión sin necesidad de volver a cargarlos."
-    )
-    # CSS simétrico v4.71: todos los uploaders con el mismo alto/ancho fijo
+    # ── CSS v4.73 ──────────────────────────────────────────────────────────
     st.markdown(
         """
         <style>
+        /* Ocultar texto auxiliar de tamaño de archivo */
         [data-testid="stFileUploader"] small,
         [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzoneInstructions"] small {
             display: none !important;
         }
+        /* Dropzone compacto y uniforme */
         [data-testid="stFileUploaderDropzone"] {
-            padding: 0.55rem 0.4rem !important;
-            min-height: 58px !important;
-            max-height: 58px !important;
+            padding: 0.5rem 0.4rem !important;
+            min-height: 56px !important;
+            max-height: 56px !important;
         }
         [data-testid="stFileUploaderDropzoneInstructions"] {
-            gap: 0.2rem !important;
+            gap: 0.15rem !important;
         }
+        /* Alertas compactas */
         [data-testid="stColumn"] .stAlert {
-            padding: 4px 10px !important;
-            font-size: 12px !important;
+            padding: 3px 8px !important;
+            font-size: 11.5px !important;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+            border-radius: 6px !important;
         }
-        /* Igualar alto de los títulos de uploader */
-        [data-testid="stColumn"] h4 {
-            min-height: 28px !important;
-            font-size: 13px !important;
-            white-space: nowrap;
+        /* Bloque de tarjeta por uploader */
+        .arch-card {
+            background: #1a1a2e;
+            border: 1px solid #2d2d4e;
+            border-radius: 10px;
+            padding: 10px 10px 6px 10px;
+            margin-bottom: 4px;
         }
+        /* Título del archivo grande */
+        .arch-title {
+            font-size: 15px !important;
+            font-weight: 700 !important;
+            letter-spacing: 0.3px;
+            margin-bottom: 2px !important;
+            color: #e8e8f0;
+        }
+        /* Badge de tipo */
+        .arch-badge {
+            display: inline-block;
+            font-size: 10px;
+            font-weight: 600;
+            padding: 1px 7px;
+            border-radius: 20px;
+            margin-bottom: 5px;
+            letter-spacing: 0.4px;
+        }
+        .badge-req   { background:#1a3a5c; color:#60b4ff; border:1px solid #2a5a8c; }
+        .badge-opt   { background:#1e2e1e; color:#6dbf6d; border:1px solid #2e4e2e; }
+        .badge-miss  { background:#3a1a1a; color:#ff7070; border:1px solid #5a2a2a; }
+        /* Descripción */
+        .arch-desc {
+            font-size: 10.5px;
+            color: #8888aa;
+            margin-top: 4px;
+            line-height: 1.35;
+        }
+        /* Tabla de estado */
+        .status-table { width:100%; border-collapse:collapse; font-size:12.5px; margin-top:4px; }
+        .status-table th {
+            background:#1a1a2e; color:#8888aa; font-weight:600;
+            padding:5px 8px; text-align:left; border-bottom:1px solid #2d2d4e;
+        }
+        .status-table td { padding:5px 8px; border-bottom:1px solid #1e1e32; vertical-align:top; }
+        .status-table tr:last-child td { border-bottom:none; }
+        .dot-ok  { color:#4caf50; font-size:14px; }
+        .dot-warn{ color:#ff9800; font-size:14px; }
+        .dot-off { color:#555577; font-size:14px; }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
+    st.markdown(
+        "<p style='font-size:13px;color:#8888aa;margin-bottom:12px'>"
+        "Subí los archivos fuente una sola vez. Quedan disponibles para "
+        "<strong>todas las pestañas</strong> de la sesión.</p>",
+        unsafe_allow_html=True,
+    )
+
     col_a, col_b, col_c, col_d, col_e, col_f = st.columns(6)
 
+    # ── COL A — CAR ────────────────────────────────────────────────────────
     with col_a:
-        st.markdown("#### 🗂️ CAR")
+        st.markdown(
+            "<div class='arch-card'>"
+            "<div class='arch-title'>🗂️ CAR</div>"
+            "<span class='arch-badge badge-miss'>Requerido</span>"
+            "<div class='arch-desc'>Planilla de Carga · Resumen · Camiones T2 · Proyección</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
         car_file = st.file_uploader(
-            "CAR.xlsx *",
+            "CAR.xlsx",
             type=["xlsx"],
             key="arch_car",
             accept_multiple_files=False,
+            label_visibility="collapsed",
         )
         if car_file:
-            st.session_state["t1_car"]  = car_file
-            st.session_state["t2_car"]  = car_file
-            st.session_state["t3_car"]  = car_file
-            st.session_state["t4_car"]  = car_file
-            st.session_state["tc_car"]  = car_file
+            st.session_state["t1_car"] = car_file
+            st.session_state["t2_car"] = car_file
+            st.session_state["t3_car"] = car_file
+            st.session_state["t4_car"] = car_file
+            st.session_state["tc_car"] = car_file
             st.success(f"✅ {car_file.name}")
         elif st.session_state.get("t1_car"):
             st.info(f"📎 {st.session_state['t1_car'].name}")
         else:
             st.warning("Sin archivo")
 
+    # ── COL B — FRESCURA ───────────────────────────────────────────────────
     with col_b:
-        st.markdown("#### 🌿 Frescura")
+        st.markdown(
+            "<div class='arch-card'>"
+            "<div class='arch-title'>🌿 Frescura</div>"
+            "<span class='arch-badge badge-miss'>Requerido</span>"
+            "<div class='arch-desc'>Planilla de Carga · Proyección Picking · Clasificación</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
         fr_file = st.file_uploader(
-            "Frescura 3.0.xlsx *",
+            "Frescura 3.0.xlsx",
             type=["xlsx"],
             key="arch_fr",
             accept_multiple_files=False,
+            label_visibility="collapsed",
         )
         if fr_file:
-            st.session_state["t1_fr"]  = fr_file
-            st.session_state["t4_fr"]  = fr_file
-            st.session_state["tc_fr"]  = fr_file
-            # v4.67: Parsear DDM inmediatamente y guardar en session_state
-            # para que el Tablero Ruteador tenga HL/Peso disponibles.
+            st.session_state["t1_fr"] = fr_file
+            st.session_state["t4_fr"] = fr_file
+            st.session_state["tc_fr"] = fr_file
+            # v4.67: Parsear DDM inmediatamente
             try:
                 import openpyxl as _ox67
                 _wb67 = _ox67.load_workbook(fr_file, read_only=True, data_only=True)
@@ -1982,16 +2048,15 @@ def render_tab_archivos():
                             if n in _hdr67:
                                 return _hdr67.index(n)
                         return -1
-                    _ic  = _ci67(["ARTÍCULO", "ARTICULO"])
-                    _ig  = _ci67(["BULTOS X PALLET", "BULTOS X PALLET"])
-                    _ihl = _ci67(["VALOR HL"])
-                    _ikg = _ci67(["PESO KG"])
+                    _ic   = _ci67(["ARTÍCULO", "ARTICULO"])
+                    _ig   = _ci67(["BULTOS X PALLET"])
+                    _ihl  = _ci67(["VALOR HL"])
+                    _ikg  = _ci67(["PESO KG"])
                     _ican = _ci67(["CAN", "CANCHA"])
-                    _iun = _ci67(["UNIDADES", "UN BULTO", "UN/BULTO", "UN X BULTO"])
-                    # Fallbacks por posición (0-indexed): C=2, G=6, N=13, P=15, Q=16, O=14
+                    _iun  = _ci67(["UNIDADES", "UN BULTO", "UN/BULTO", "UN X BULTO"])
                     if _ic  < 0: _ic  = 2
                     if _ig  < 0: _ig  = 6
-                    if _iun < 0: _iun = 13  # col N = UNIDADES por bulto
+                    if _iun < 0: _iun = 13
                     if _ihl < 0: _ihl = 15
                     if _ikg < 0: _ikg = 16
                     if _ican < 0: _ican = 14
@@ -1999,38 +2064,50 @@ def render_tab_archivos():
                     for _r67 in _rows67[1:]:
                         try:
                             _s = _r67[_ic]
-                            if _s is None: continue
+                            if _s is None:
+                                continue
                             _sid = int(float(str(_s)))
                             _ddm_dict67[_sid] = {
-                                "bxp":      float(_r67[_ig])  if _r67[_ig]  else 50.0,
-                                "hl_unit":  float(_r67[_ihl]) if _r67[_ihl] else 0.0,
-                                "kg_unit":  float(_r67[_ikg]) if _r67[_ikg] else 0.0,
-                                "un_bulto": float(_r67[_iun]) if _r67[_iun] else 0.0,
+                                "bxp":      float(_r67[_ig])   if _r67[_ig]   else 50.0,
+                                "hl_unit":  float(_r67[_ihl])  if _r67[_ihl]  else 0.0,
+                                "kg_unit":  float(_r67[_ikg])  if _r67[_ikg]  else 0.0,
+                                "un_bulto": float(_r67[_iun])  if _r67[_iun]  else 0.0,
                                 "can":      str(_r67[_ican]).strip() if _r67[_ican] else "",
                             }
                         except Exception:
                             pass
                     st.session_state["df_ddm_dict"] = _ddm_dict67
                 _wb67.close()
-            except Exception as _e67:
+            except Exception:
                 st.session_state["df_ddm_dict"] = {}
-            st.success(f"✅ {fr_file.name[:14]}… · {len(st.session_state.get('df_ddm_dict', {}))} SKUs")
+            st.success(
+                f"✅ {fr_file.name[:14]}… · "
+                f"{len(st.session_state.get('df_ddm_dict', {}))} SKUs"
+            )
         elif st.session_state.get("t1_fr"):
             st.info(f"📎 {st.session_state['t1_fr'].name[:16]}…")
         else:
             st.warning("Sin archivo")
 
+    # ── COL C — ANR ────────────────────────────────────────────────────────
     with col_c:
-        st.markdown("#### 📊 ANR")
+        st.markdown(
+            "<div class='arch-card'>"
+            "<div class='arch-title'>📊 ANR</div>"
+            "<span class='arch-badge badge-miss'>Requerido</span>"
+            "<div class='arch-desc'>Clasificación · Top SKUs · Top Clientes · Cierre · 🖨️ Boletas</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
         anr_file = st.file_uploader(
             "ANR.xlsx",
             type=["xlsx"],
             key="arch_anr",
             accept_multiple_files=False,
+            label_visibility="collapsed",
         )
         if anr_file:
             st.session_state["tc_anr"] = anr_file
-            # Parse y guardar como DataFrame crudo para que Boletas/_build_anr_lookup lo encuentre
             try:
                 anr_file.seek(0)
                 xl_anr = pd.ExcelFile(anr_file)
@@ -2043,21 +2120,30 @@ def render_tab_archivos():
                 _df_anr_raw = pd.read_excel(anr_file, sheet_name=_sheet_anr, header=0)
                 st.session_state["anr_df"] = _df_anr_raw
                 anr_file.seek(0)
-            except Exception as _e:
+            except Exception:
                 st.session_state["anr_df"] = None
             st.success(f"✅ {anr_file.name}")
         elif st.session_state.get("tc_anr"):
             st.info(f"📎 {st.session_state['tc_anr'].name}")
         else:
-            st.info("Opcional — D+1")
+            st.warning("Sin archivo")
 
+    # ── COL D — SR ─────────────────────────────────────────────────────────
     with col_d:
-        st.markdown("#### 💰 SR")
+        st.markdown(
+            "<div class='arch-card'>"
+            "<div class='arch-title'>💰 SR</div>"
+            "<span class='arch-badge badge-req'>Req. Cierre</span>"
+            "<div class='arch-desc'>Cierre del día · Totales por camión desde Chess</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
         sr_file = st.file_uploader(
             "SR.xlsx",
             type=["xlsx"],
             key="arch_sr",
             accept_multiple_files=False,
+            label_visibility="collapsed",
         )
         if sr_file:
             st.session_state["cierre_sr"] = sr_file
@@ -2065,15 +2151,24 @@ def render_tab_archivos():
         elif st.session_state.get("cierre_sr"):
             st.info(f"📎 {st.session_state['cierre_sr'].name}")
         else:
-            st.info("Req. 💰 Cierre")
+            st.warning("Sin archivo")
 
+    # ── COL E — SR D+1 ─────────────────────────────────────────────────────
     with col_e:
-        st.markdown("#### 📅 SR D+1")
+        st.markdown(
+            "<div class='arch-card'>"
+            "<div class='arch-title'>📅 SR D+1</div>"
+            "<span class='arch-badge badge-opt'>Opcional D+1</span>"
+            "<div class='arch-desc'>Cierre D+1 · TotVal real con rechazos incluidos</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
         sr_d1_file = st.file_uploader(
             "SR D+1.xlsx",
             type=["xlsx"],
             key="arch_sr_d1",
             accept_multiple_files=False,
+            label_visibility="collapsed",
         )
         if sr_d1_file:
             st.session_state["cierre_sr_d1"] = sr_d1_file
@@ -2081,15 +2176,24 @@ def render_tab_archivos():
         elif st.session_state.get("cierre_sr_d1"):
             st.info(f"📎 {st.session_state['cierre_sr_d1'].name}")
         else:
-            st.info("Opcional — D+1")
+            st.info("Disponible D+1")
 
+    # ── COL F — ANR -1 ─────────────────────────────────────────────────────
     with col_f:
-        st.markdown("#### 📊 ANR -1")
+        st.markdown(
+            "<div class='arch-card'>"
+            "<div class='arch-title'>📊 ANR -1</div>"
+            "<span class='arch-badge badge-opt'>Opcional D+1</span>"
+            "<div class='arch-desc'>Cierre D+1 · CTA CTE del día anterior (exclusivo)</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
         anr_m1_file = st.file_uploader(
             "ANR -1.xlsx",
             type=["xlsx"],
             key="arch_anr_m1",
             accept_multiple_files=False,
+            label_visibility="collapsed",
         )
         if anr_m1_file:
             st.session_state["cierre_anr_m1"] = anr_m1_file
@@ -2097,25 +2201,58 @@ def render_tab_archivos():
         elif st.session_state.get("cierre_anr_m1"):
             st.info(f"📎 {st.session_state['cierre_anr_m1'].name}")
         else:
-            st.info("Opcional — D+1")
+            st.info("Disponible D+1")
 
-    # Estado global
-    st.markdown("#### 📋 Estado de archivos cargados")
-    rows = [
-        ("CAR.xlsx",          "t1_car",          "Planilla de Carga, Resumen, Camiones T2, Proyección"),
-        ("Frescura 3.0.xlsx", "t1_fr",           "Planilla de Carga, Proyección Picking, Clasificación"),
-        ("ANR.xlsx",          "tc_anr",          "Clasificación, Top SKUs, Top Clientes, Cierre del día, 🖨️ Boletas"),
-        ("SR.xlsx",           "cierre_sr",       "💰 Cierre — totales por camión desde Chess"),
-        ("SR D+1.xlsx",       "cierre_sr_d1",    "📅 Cierre D+1 — TotVal real con rechazos"),
-        ("ANR -1.xlsx",       "cierre_anr_m1",   "📅 Cierre D+1 — CTA CTE del día anterior (exclusivo)"),
+    # ── TABLA DE ESTADO ────────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("##### 📋 Estado de archivos cargados")
+
+    _status_rows = [
+        ("CAR.xlsx",          "t1_car",       "req",  "Planilla de Carga · Resumen · Camiones T2 · Proyección"),
+        ("Frescura 3.0.xlsx", "t1_fr",        "req",  "Planilla de Carga · Proyección Picking · Clasificación"),
+        ("ANR.xlsx",          "tc_anr",       "req",  "Clasificación · Top SKUs · Top Clientes · Cierre · 🖨️ Boletas"),
+        ("SR.xlsx",           "cierre_sr",    "req",  "💰 Cierre — totales por camión desde Chess"),
+        ("SR D+1.xlsx",       "cierre_sr_d1", "opt",  "📅 Cierre D+1 — TotVal real con rechazos"),
+        ("ANR -1.xlsx",       "cierre_anr_m1","opt",  "📅 Cierre D+1 — CTA CTE día anterior (exclusivo)"),
     ]
-    for nombre, key, usado_en in rows:
-        f = st.session_state.get(key)
-        icon = "✅" if f else "❌"
-        label = f.name if f else "—"
-        st.markdown(f"| {icon} | **{nombre}** | `{label}` | *{usado_en}* |")
 
-    st.caption("Los archivos persisten durante toda la sesión. Si cambia el día, recargá los archivos aquí.")
+    _table_html = (
+        "<table class='status-table'>"
+        "<tr>"
+        "<th style='width:20px'></th>"
+        "<th>Archivo</th>"
+        "<th>Nombre cargado</th>"
+        "<th>Alimenta</th>"
+        "</tr>"
+    )
+    for _nombre, _key, _tipo, _desc in _status_rows:
+        _f = st.session_state.get(_key)
+        if _f:
+            _dot   = "<span class='dot-ok'>●</span>"
+            _label = f"<span style='color:#c8ffc8'>{_f.name}</span>"
+        elif _tipo == "opt":
+            _dot   = "<span class='dot-off'>●</span>"
+            _label = "<span style='color:#555577'>— (D+1)</span>"
+        else:
+            _dot   = "<span class='dot-warn'>●</span>"
+            _label = "<span style='color:#ff9898'>Sin cargar</span>"
+        _table_html += (
+            f"<tr>"
+            f"<td>{_dot}</td>"
+            f"<td><strong>{_nombre}</strong></td>"
+            f"<td>{_label}</td>"
+            f"<td style='color:#8888aa'>{_desc}</td>"
+            f"</tr>"
+        )
+    _table_html += "</table>"
+    st.markdown(_table_html, unsafe_allow_html=True)
+
+    st.markdown(
+        "<p style='font-size:11px;color:#555577;margin-top:8px'>"
+        "Los archivos persisten durante toda la sesión. "
+        "Si cambia el día, recargá los archivos aquí.</p>",
+        unsafe_allow_html=True,
+    )
 
 
 def render_tab_planilla():
