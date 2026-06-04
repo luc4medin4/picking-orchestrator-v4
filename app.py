@@ -294,7 +294,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.70.0"
+APP_VERSION = "4.71.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -422,7 +422,63 @@ LEMAS = [
     "Picking nocturno = concentracion maxima. El dia descansa, vos construis.",
     "Cada producto en su lugar es una promesa cumplida al cliente.",
     "Ultima caja, mismo cuidado que la primera. Asi se hace el trabajo bien hecho.",
+    "Un error de picking cuesta mas que diez movimientos correctos. Tomaste el camino del control.",
+    "El deposito en orden es un equipo en orden. Vos sos parte de eso.",
+    "No dejes pasar un faltante sin reportarlo. Una alerta a tiempo salva una entrega.",
+    "Carga bien hecha desde el deposito = cero devoluciones = todos ganan.",
+    "El mejor momento para revisar es antes de cerrar el pallet. Despues es tarde.",
+    "Sos el ultimo control de calidad antes del cliente. Eso tiene un valor enorme.",
+    "Hoy puede ser el dia con mas bultos del mes. Vamos con fuerza y precision.",
+    "El cansancio de las 3 AM no puede mas que el orgullo de cero errores.",
+    "Cada producto bien colocado es un compromiso cumplido con quien lo espera.",
+    "La productividad no se mide en velocidad, se mide en entregas perfectas.",
+    "Controlador: tu ojo critico es lo que separa lo bueno de lo excelente.",
+    "El picking es un arte logistico. Esta noche, vos sos el artista.",
+    "Conoces el deposito mejor que nadie. Esa experiencia vale oro para el equipo.",
+    "Cero accidentes, cero errores, cero reclamos. El estandar DPO empieza con vos.",
+    "Cada vez que hacemos esto bien, le ganamos terreno a la excelencia operativa.",
 ]
+
+# ─── ENSEÑANZA / FRASE DEL DÍA ─────────────────────────────────────────────
+# Una por día, rotación automática por número de día del año. Sin repetición.
+ENSEÑANZAS_DIA = [
+    "📖 «El éxito no es definitivo, el fracaso no es fatal: lo que cuenta es el coraje de continuar.» — Churchill",
+    "🧠 «La calidad nunca es un accidente; siempre es el resultado de un esfuerzo inteligente.» — John Ruskin",
+    "⚙️ «Si no puedes medir algo, no puedes mejorarlo.» — Peter Drucker | Control: medí tus bultos por hora hoy.",
+    "🔁 «Pequeñas mejoras diarias llevan a resultados sorprendentes.» — Kaizen | Lean: 1% mejor cada turno.",
+    "👁️ «El que mira hacia afuera sueña; el que mira hacia adentro despierta.» — Jung | Autocontrol: revisá tu postura al cargar.",
+    "🎯 «Los planes son inútiles, pero la planificación es indispensable.» — Eisenhower | Revisá el orden de canchas antes de arrancar.",
+    "🏆 «La excelencia no es un acto, es un hábito.» — Aristóteles | Hoy: un control extra por pallet.",
+    "🔍 «En Dios confiamos. Todos los demás traigan datos.» — W. Edwards Deming | DPO: lo que no se registra no se mejora.",
+    "🛡️ «La seguridad no es una prioridad — es un valor.» — DuPont | EPI completo antes de arrancar.",
+    "📦 «El stock es como agua: fluye si el canal está limpio.» — FIFO/FEFO: mover lo más viejo primero.",
+    "🤝 «El trabajo en equipo divide el esfuerzo y multiplica el éxito.» — Equidistribución de carga entre canchas.",
+    "📋 «Lo que se escribe se recuerda; lo que se registra se mejora.» — OWD: cada observación cuenta.",
+    "⏱️ «El tiempo de ciclo solo mejora si lo conocés.» — Midí tu tiempo de picking hoy y compará.",
+    "💡 «Un problema bien definido está medio resuelto.» — 5 Porqués: antes de culpar, entender.",
+    "🔧 «El mantenimiento preventivo es mil veces más barato que el correctivo.» — Checklist AE antes de operar.",
+    "🌱 «La cultura se come a la estrategia en el desayuno.» — Peter Drucker | Cada hábito correcto construye cultura.",
+    "📊 «Sin estándares no hay mejora.» — Taiichi Ohno | SOP: la planilla de carga es el estándar. Seguirla es respetarlo.",
+    "🧩 «El todo es más que la suma de sus partes.» — Aristóteles | Picking, AE y control: los tres juntos hacen la diferencia.",
+    "🚀 «La velocidad sin dirección solo genera accidentes.» — Rápido con precisión, no rápido con errores.",
+    "🔄 «La mejora continua es mejor que la perfección tardía.» — Mark Twain | Un ajuste pequeño hoy vale más que un gran plan mañana.",
+    "🧘 «La pausa de un segundo de control evita una hora de corrección.» — Verificá el SKU antes de palletizar.",
+    "📍 «Si no sabés dónde estás parado, no podés saber hacia dónde vas.» — El DQI empieza con inventario real.",
+    "🎓 «El experto fue alguna vez un principiante que no se rindió.» — Capacitá a alguien hoy, aunque sea una cosa.",
+    "⚡ «La eficiencia es hacer bien las cosas; la eficacia es hacer las cosas correctas.» — Drucker",
+    "📉 «El desperdicio más peligroso es el que no vemos.» — Lean | ¿Cuántos movimientos innecesarios hacés por turno?",
+    "🏗️ «La estructura que soporta el negocio se construye bulto a bulto, noche a noche.» — Beccacece Hnos",
+    "🧭 «La brújula del buen operador siempre apunta al cliente.» — Cada error de picking es un cliente insatisfecho.",
+    "🔗 «La cadena es tan fuerte como su eslabón más débil.» — El eslabón esta noche sos vos. Sé el más fuerte.",
+    "📌 «Organización es el arte de hacer que las cosas sucedan.» — Antes de empezar: cancha ordenada, planilla en mano.",
+    "🌟 «El reconocimiento comienza por el autocontrol.» — Los mejores operadores se evalúan solos primero.",
+]
+
+def get_ensenanza_dia() -> str:
+    """Retorna la enseñanza del día — rota automáticamente por día del año, sin repetición."""
+    import datetime as _dte
+    day_of_year = _dte.date.today().timetuple().tm_yday
+    return ENSEÑANZAS_DIA[day_of_year % len(ENSEÑANZAS_DIA)]
 
 # ─── UTILIDADES ─────────────────────────────────────────────────────────────
 
@@ -1843,7 +1899,7 @@ def render_tab_archivos():
         "Subí aquí los archivos fuente. Quedan disponibles para **todas las pestañas** "
         "de la sesión sin necesidad de volver a cargarlos."
     )
-    # CSS simétrico: todos los uploaders con el mismo alto/ancho, badge de estado uniforme
+    # CSS simétrico v4.71: todos los uploaders con el mismo alto/ancho fijo
     st.markdown(
         """
         <style>
@@ -1859,10 +1915,18 @@ def render_tab_archivos():
         [data-testid="stFileUploaderDropzoneInstructions"] {
             gap: 0.2rem !important;
         }
-        /* Normalizar alto de los st.success/info/warning dentro de uploaders */
         [data-testid="stColumn"] .stAlert {
             padding: 4px 10px !important;
             font-size: 12px !important;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        /* Igualar alto de los títulos de uploader */
+        [data-testid="stColumn"] h4 {
+            min-height: 28px !important;
+            font-size: 13px !important;
+            white-space: nowrap;
         }
         </style>
         """,
@@ -1872,7 +1936,7 @@ def render_tab_archivos():
     col_a, col_b, col_c, col_d, col_e, col_f = st.columns(6)
 
     with col_a:
-        st.markdown("#### 🗂️ CAR.xlsx")
+        st.markdown("#### 🗂️ CAR")
         car_file = st.file_uploader(
             "CAR.xlsx *",
             type=["xlsx"],
@@ -1887,12 +1951,12 @@ def render_tab_archivos():
             st.session_state["tc_car"]  = car_file
             st.success(f"✅ {car_file.name}")
         elif st.session_state.get("t1_car"):
-            st.info(f"📎 En uso: {st.session_state['t1_car'].name}")
+            st.info(f"📎 {st.session_state['t1_car'].name}")
         else:
-            st.warning("Sin archivo cargado")
+            st.warning("Sin archivo")
 
     with col_b:
-        st.markdown("#### 🌿 Frescura 3.0.xlsx")
+        st.markdown("#### 🌿 Frescura")
         fr_file = st.file_uploader(
             "Frescura 3.0.xlsx *",
             type=["xlsx"],
@@ -1950,14 +2014,14 @@ def render_tab_archivos():
                 _wb67.close()
             except Exception as _e67:
                 st.session_state["df_ddm_dict"] = {}
-            st.success(f"✅ {fr_file.name} · DDM: {len(st.session_state.get('df_ddm_dict', {}))} SKUs")
+            st.success(f"✅ {fr_file.name[:14]}… · {len(st.session_state.get('df_ddm_dict', {}))} SKUs")
         elif st.session_state.get("t1_fr"):
-            st.info(f"📎 En uso: {st.session_state['t1_fr'].name}")
+            st.info(f"📎 {st.session_state['t1_fr'].name[:16]}…")
         else:
-            st.warning("Sin archivo cargado")
+            st.warning("Sin archivo")
 
     with col_c:
-        st.markdown("#### 📊 ANR.xlsx")
+        st.markdown("#### 📊 ANR")
         anr_file = st.file_uploader(
             "ANR.xlsx",
             type=["xlsx"],
@@ -1983,12 +2047,12 @@ def render_tab_archivos():
                 st.session_state["anr_df"] = None
             st.success(f"✅ {anr_file.name}")
         elif st.session_state.get("tc_anr"):
-            st.info(f"📎 En uso: {st.session_state['tc_anr'].name}")
+            st.info(f"📎 {st.session_state['tc_anr'].name}")
         else:
-            st.info("Opcional — Cierre D+1")
+            st.info("Opcional — D+1")
 
     with col_d:
-        st.markdown("#### 💰 SR.xlsx")
+        st.markdown("#### 💰 SR")
         sr_file = st.file_uploader(
             "SR.xlsx",
             type=["xlsx"],
@@ -1999,12 +2063,12 @@ def render_tab_archivos():
             st.session_state["cierre_sr"] = sr_file
             st.success(f"✅ {sr_file.name}")
         elif st.session_state.get("cierre_sr"):
-            st.info(f"📎 En uso: {st.session_state['cierre_sr'].name}")
+            st.info(f"📎 {st.session_state['cierre_sr'].name}")
         else:
-            st.info("Requerido para 💰 Cierre")
+            st.info("Req. 💰 Cierre")
 
     with col_e:
-        st.markdown("#### 📅 SR D+1.xlsx")
+        st.markdown("#### 📅 SR D+1")
         sr_d1_file = st.file_uploader(
             "SR D+1.xlsx",
             type=["xlsx"],
@@ -2015,12 +2079,12 @@ def render_tab_archivos():
             st.session_state["cierre_sr_d1"] = sr_d1_file
             st.success(f"✅ {sr_d1_file.name}")
         elif st.session_state.get("cierre_sr_d1"):
-            st.info(f"📎 En uso: {st.session_state['cierre_sr_d1'].name}")
+            st.info(f"📎 {st.session_state['cierre_sr_d1'].name}")
         else:
-            st.info("Opcional — Cierre D+1")
+            st.info("Opcional — D+1")
 
     with col_f:
-        st.markdown("#### 📊 ANR -1.xlsx")
+        st.markdown("#### 📊 ANR -1")
         anr_m1_file = st.file_uploader(
             "ANR -1.xlsx",
             type=["xlsx"],
@@ -2031,9 +2095,9 @@ def render_tab_archivos():
             st.session_state["cierre_anr_m1"] = anr_m1_file
             st.success(f"✅ {anr_m1_file.name}")
         elif st.session_state.get("cierre_anr_m1"):
-            st.info(f"📎 En uso: {st.session_state['cierre_anr_m1'].name}")
+            st.info(f"📎 {st.session_state['cierre_anr_m1'].name}")
         else:
-            st.info("Opcional — Cierre D+1")
+            st.info("Opcional — D+1")
 
     # Estado global
     st.markdown("#### 📋 Estado de archivos cargados")
@@ -3946,7 +4010,33 @@ def render_tab_proyeccion():
         inicio_custom[cn] = (base_dt + _dt.timedelta(minutes=i * _OFFSET_MIN)).time()
 
     # ── Filtrar: siempre sin ceros ────────────────────────────────────────────
-    df_display = df_cam[df_cam["TOTAL_PICK"] > 0].reset_index(drop=True)
+    df_display_base = df_cam[df_cam["TOTAL_PICK"] > 0].reset_index(drop=True)
+
+    # ── v4.71: Exclusión de camiones ─────────────────────────────────────────
+    # Misma metodología que el Tablero Ruteador. Los camiones excluidos se
+    # omiten de TODOS los cálculos, PDFs, Excel y exportaciones de esta sección.
+    _all_cams = sorted(df_display_base["Camión"].astype(int).tolist())
+    with st.expander("🚫 Excluir camiones de la proyección (opcional)", expanded=False):
+        st.caption(
+            "Los camiones excluidos no aparecen en la tabla, ni en PDFs ni en Excel de esta sección. "
+            "Usalo para salidas parciales, camiones sin reparto o situaciones especiales."
+        )
+        _cams_excluir = st.multiselect(
+            "Camiones a excluir:",
+            options=_all_cams,
+            default=st.session_state.get("t4_cams_excluir", []),
+            key="t4_cams_excluir_widget",
+            format_func=lambda x: f"Cam {x}",
+        )
+        st.session_state["t4_cams_excluir"] = _cams_excluir
+        if _cams_excluir:
+            st.warning(f"⚠️ Excluidos: {', '.join(str(c) for c in _cams_excluir)}")
+
+    _cams_excluir_set = set(st.session_state.get("t4_cams_excluir", []))
+    if _cams_excluir_set:
+        df_display = df_display_base[~df_display_base["Camión"].astype(int).isin(_cams_excluir_set)].reset_index(drop=True)
+    else:
+        df_display = df_display_base
 
     # ── v4.55.2: Botón "Enviar a Sheets" PROMINENTE al inicio ─────────────────
     # Se muestra antes de la tabla para recordar al usuario que debe enviarlo
@@ -4140,8 +4230,8 @@ def render_tab_proyeccion():
         "TOT PALL": st.column_config.ProgressColumn(
             "TOT PALL",
             help="Pallets totales por camión — AE + picking (barra verde, escala 0–12).",
-            format="%.1f", min_value=0.0, max_value=12.0,
-            width="medium",
+            format="%.2f", min_value=0.0, max_value=12.0,
+            width="small",
         ),
         "STATUS":   st.column_config.TextColumn("OK?", disabled=True, width="small"),
     }
@@ -4151,7 +4241,7 @@ def render_tab_proyeccion():
         col_cfg[f"UP {short}"] = st.column_config.ProgressColumn(
             f"UP {disp}",
             help=f"UP picking en {cn} — fracción de pallet. Usá esto para reasignar.",
-            format="%.3f",
+            format="%.2f" if cn != "MKPL" else "%.3f",
             min_value=0.0,
             max_value=up_max_scale,
             width="small",
@@ -4469,8 +4559,18 @@ def render_tab_proyeccion():
         "alertas":         _alertas,
     }
 
-    cp1, cp2 = st.columns([1, 2])
-    with cp1:
+    cp1, cp2 = st.columns([1, 1])
+    # v4.71: layout vertical — pickeros arriba, controladores abajo
+
+    # ── v4.71: Enseñanza/frase del día ──────────────────────────────────────
+    _ensenanza = get_ensenanza_dia()
+    st.info(f"💡 **Enseñanza del día** — {_ensenanza}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # SECCIÓN A: PDF PICKEROS
+    # ─────────────────────────────────────────────────────────────────────────
+    with st.container(border=True):
+        st.markdown("#### 📄 PDF Pickeros — Resumen por cancha (C1/C2/C3/C4/MKPL+Merch)")
         if st.button("📄 Resumen Pickeros — C1/C2/C3/C4/MKPL+Merch (sin paletas completas)", type="primary",
                      use_container_width=True, key="t4_pdf_btn"):
             with st.spinner("Generando PDF…"):
@@ -4546,7 +4646,10 @@ def render_tab_proyeccion():
         except Exception as _ex_xlsx:
             st.warning(f"⚠️ XLSX no disponible: {_ex_xlsx}")
 
-    with cp2:
+    # ─────────────────────────────────────────────────────────────────────────
+    # SECCIÓN B: RESUMEN CONTROLADOR + PDF CONTROLADORES
+    # ─────────────────────────────────────────────────────────────────────────
+    with st.container(border=True):
         # ── v4.37: Resumen para el Controlador ───────────────────────────────
         # v4.41: _top_skus_lines y _alertas ya computados antes del bloque columns
 
@@ -4562,6 +4665,91 @@ def render_tab_proyeccion():
                 _horas_lines.append(f"  • **{_short_cn}**: {_ini_s} → {_fin_s} ({_blt_s})")
 
         _fecha_str_res = pdata["fecha"].strftime("%d/%m/%Y") if hasattr(pdata["fecha"], "strftime") else str(pdata["fecha"])
+
+        # ── v4.71: Top 3 por CANCHA ──────────────────────────────────────────
+        _top3_por_cancha_lines = []
+        try:
+            _car_b71 = st.session_state.get("t1_car") or st.session_state.get("t4_car")
+            _fr_b71  = st.session_state.get("t1_fr")
+            if _car_b71 and _fr_b71:
+                _df_top71 = _build_top10_skus(_car_b71.getvalue(), _fr_b71.getvalue())
+                if not _df_top71.empty and "CANCHA" in _df_top71.columns:
+                    for _cn71 in _T4_CANCHAS:
+                        _cn71_short = _cn71.replace("CANCHA ", "C")
+                        _df_cn = _df_top71[_df_top71["CANCHA"].str.upper().str.contains(
+                            _cn71.upper().replace("CANCHA ", "").strip(), na=False)]
+                        if _df_cn.empty:
+                            continue
+                        _t3 = _df_cn.nlargest(3, "BULTOS")
+                        _items = []
+                        for _, _sk71 in _t3.iterrows():
+                            _cod71  = int(_sk71["CODIGO"]) if not pd.isna(_sk71["CODIGO"]) else "—"
+                            _desc71 = str(_sk71.get("DESCRIPCION","")).strip()[:28] or "—"
+                            _blt71  = int(_sk71["BULTOS"])
+                            _items.append(f"{_cod71} {_desc71} ({_blt71}b)")
+                        if _items:
+                            _top3_por_cancha_lines.append(f"  • **{_cn71_short}**: " + " | ".join(_items))
+        except Exception:
+            pass
+
+        # ── v4.71: Info de Frescura (FEFO críticos por cancha) ──────────────
+        _frescura_lines = []
+        try:
+            _fr_b71f = st.session_state.get("t1_fr")
+            _ddm_d71 = st.session_state.get("df_ddm_dict", {})
+            if _fr_b71f and _ddm_d71:
+                import openpyxl as _ox71
+                _wb71 = _ox71.load_workbook(_fr_b71f, read_only=True, data_only=True)
+                _fr_b71f.seek(0)
+                if "Frescura" in _wb71.sheetnames:
+                    _wsfr71 = _wb71["Frescura"]
+                    _rfr71 = list(_wsfr71.iter_rows(min_row=1, values_only=True))
+                    if _rfr71:
+                        _hfr71 = [str(v).strip().upper() if v else "" for v in _rfr71[0]]
+                        _isku71  = next((i for i, h in enumerate(_hfr71) if "ALM" in h or "CÓD" in h or "COD" in h), 1)
+                        _idate71 = next((i for i, h in enumerate(_hfr71) if "FECHA" in h or "VENC" in h), 5)
+                        _ican71  = next((i for i, h in enumerate(_hfr71) if "CAN" in h), -1)
+                        _istk71  = next((i for i, h in enumerate(_hfr71) if "STOCK" in h and "TOTAL" in h), 14)
+                        _can_skus = {}
+                        for _rr71 in _rfr71[1:]:
+                            try:
+                                _sku71 = int(float(str(_rr71[_isku71]))) if _rr71[_isku71] else 0
+                                if not _sku71: continue
+                                _fecha71 = _rr71[_idate71]
+                                _can71   = str(_rr71[_ican71]).strip() if _ican71 >= 0 and _rr71[_ican71] else ""
+                                _stk71   = float(_rr71[_istk71]) if _istk71 < len(_rr71) and _rr71[_istk71] else 0
+                                if not _can71: continue
+                                if _sku71 not in _can_skus:
+                                    _can_skus[_sku71] = {"can": _can71, "fecha": _fecha71, "stk": _stk71}
+                            except Exception:
+                                pass
+                        # Filtrar los de fecha más próxima (FEFO)
+                        import datetime as _dt71
+                        _today71 = _dt71.date.today()
+                        _venc_prox = []
+                        for _s71, _v71 in _can_skus.items():
+                            try:
+                                _f71 = _v71["fecha"]
+                                if isinstance(_f71, (int, float)):
+                                    _f71 = _dt71.date(1899,12,30) + _dt71.timedelta(days=int(_f71))
+                                elif hasattr(_f71, "date"):
+                                    _f71 = _f71.date()
+                                elif isinstance(_f71, str):
+                                    _f71 = pd.to_datetime(_f71, dayfirst=True, errors="coerce").date()
+                                if _f71 and not pd.isna(_f71) and _f71 >= _today71:
+                                    _dias = (_f71 - _today71).days
+                                    _venc_prox.append((_dias, _s71, _v71["can"], _f71, _v71["stk"]))
+                            except Exception:
+                                pass
+                        _venc_prox.sort()
+                        for _dias71, _sku71, _can71, _f71, _stk71 in _venc_prox[:5]:
+                            _alert_icon = "🔴" if _dias71 <= 10 else ("🟡" if _dias71 <= 30 else "🟢")
+                            _frescura_lines.append(
+                                f"  {_alert_icon} SKU **{_sku71}** ({_can71}) — vence {_f71.strftime('%d/%m/%Y')} en {_dias71}d · stock {_stk71:.0f}b"
+                            )
+                _wb71.close()
+        except Exception:
+            pass
 
         _resumen_md = (
             f"### 📋 Resumen Controlador — {_fecha_str_res}\n\n"
@@ -4579,14 +4767,19 @@ def render_tab_proyeccion():
         )
         if _top_skus_lines:
             _resumen_md += f"**🏆 Top 3 SKUs del día (por bultos):**\n{_top_skus_lines}\n\n"
+        if _top3_por_cancha_lines:
+            _resumen_md += f"**📍 Top 3 por cancha:**\n" + "\n".join(_top3_por_cancha_lines) + "\n\n"
+        if _frescura_lines:
+            _resumen_md += f"**📅 FEFO críticos (próximos a vencer):**\n" + "\n".join(_frescura_lines) + "\n\n"
         if _alertas:
             _resumen_md += "**⚠️ Alertas:**\n" + "\n".join(f"  {a}" for a in _alertas) + "\n"
+        _resumen_md += f"\n---\n💡 *{_ensenanza}*"
 
         st.info(_resumen_md)
 
         st.divider()
-        st.subheader("📋 PDF Controladores — Resumen operativo enriquecido")
-        st.caption("Incluye: Top 5 SKUs por cancha, análisis de carga, horarios, recomendaciones SOPs. Se genera por separado del PDF Pickeros.")
+        st.markdown("#### 📋 PDF Controladores — Resumen operativo enriquecido")
+        st.caption("Incluye: Top 5 SKUs por cancha, análisis de carga, horarios, recomendaciones SOPs, FEFO y enseñanza del día.")
 
         if st.button("📄 PDF Controladores", type="secondary",
                      use_container_width=True, key="t4_pdf_ctrl_btn",
@@ -4621,7 +4814,6 @@ def render_tab_proyeccion():
                     with st.expander("Stack trace"):
                         import traceback
                         st.code(traceback.format_exc())
-
 
     # ── Paso 2 — Enviar resumen (fx) Picking a Google Sheets ─────────────────
     # v4.65: Se ubica al FINAL de la sección, después de generar los PDFs,
@@ -4792,6 +4984,387 @@ def render_tab_proyeccion():
             )
         except Exception as _ex_xl:
             st.warning(f"No se pudo generar el Excel: {_ex_xl}")
+
+    # ── Paso 3 — Exportar líneas AE Pallets completos por SKU/Camión ─────────
+    st.divider()
+    with st.container(border=True):
+        st.markdown("#### 🏗️ Paso 3 — Paletas completas AE (por SKU × Camión)")
+        st.caption(
+            "Exporta el detalle de paletas completas que carga el autoelevador por SKU por camión. "
+            "Fuente: hoja AGR del CAR — `floor(bultos / BXP)` por SKU × camión. "
+            "Los camiones excluidos arriba figuran con 0 en todas sus columnas."
+        )
+
+        try:
+            _car_p3 = st.session_state.get("t1_car") or st.session_state.get("t4_car")
+            _fr_p3  = st.session_state.get("t1_fr")
+            _ddm_p3 = st.session_state.get("df_ddm_dict", {})
+
+            if not (_car_p3 and _fr_p3):
+                st.info("Necesitás CAR.xlsx y Frescura 3.0 cargados.")
+            else:
+                # Leer hoja AGR del CAR
+                _car_p3.seek(0)
+                _xl_p3 = pd.ExcelFile(_car_p3)
+                _agr_sheet = next((s for s in _xl_p3.sheet_names if s.upper() == "AGR"), None)
+                if _agr_sheet is None:
+                    st.warning("No se encontró hoja AGR en el CAR.")
+                else:
+                    _car_p3.seek(0)
+                    _df_agr_p3 = pd.read_excel(_car_p3, sheet_name=_agr_sheet, header=0)
+                    _car_p3.seek(0)
+
+                    # Identificar columnas clave
+                    _cols_p3 = [str(c).strip() for c in _df_agr_p3.columns]
+                    def _fc3(*names):
+                        for n in names:
+                            for i, c in enumerate(_cols_p3):
+                                if n.lower() in c.lower():
+                                    return _df_agr_p3.columns[i]
+                        return None
+
+                    _col_sku3   = _fc3("cod producto","almac","sku","artículo","codigo")
+                    _col_desc3  = _fc3("descrip")
+                    _col_bult3  = _fc3("cantidad","bultos")
+                    _col_cam3   = _fc3("chofer","camion","cam")
+
+                    if not all([_col_sku3, _col_bult3, _col_cam3]):
+                        st.warning(f"No se pudieron identificar columnas AGR. Cols: {_cols_p3}")
+                    else:
+                        _df_agr_p3 = _df_agr_p3.dropna(subset=[_col_sku3, _col_bult3, _col_cam3])
+
+                        # Obtener lista de todos los camiones con picking (incluyendo excluidos)
+                        _all_cams_p3 = sorted(df_display_base["Camión"].astype(int).tolist())
+                        _excluidos_p3 = set(st.session_state.get("t4_cams_excluir", []))
+
+                        # Construir pivot: SKU × Camión → paletas completas
+                        _p3_rows = []
+                        _skus_sin_ddm = []
+                        for _, _rp3 in _df_agr_p3.iterrows():
+                            try:
+                                _sku3  = int(float(str(_rp3[_col_sku3])))
+                                _bult3 = float(_rp3[_col_bult3])
+                                _cam3  = int(float(str(_rp3[_col_cam3])))
+                                _bxp3  = _ddm_p3.get(_sku3, {}).get("bxp", 0)
+                                if _bxp3 <= 0:
+                                    if _sku3 not in _skus_sin_ddm:
+                                        _skus_sin_ddm.append(_sku3)
+                                    continue
+                                _pall_comp = int(_bult3 // _bxp3)
+                                if _pall_comp <= 0:
+                                    continue
+                                _p3_rows.append({
+                                    "SKU": _sku3,
+                                    "DESCRIPCION": str(_rp3[_col_desc3]).strip()[:40] if _col_desc3 else str(_sku3),
+                                    "CAMION": _cam3,
+                                    "BULTOS": _bult3,
+                                    "BXP": _bxp3,
+                                    "PALL_COMP": _pall_comp,
+                                })
+                            except Exception:
+                                pass
+
+                        if not _p3_rows:
+                            st.info("No se encontraron paletas completas en el AGR.")
+                        else:
+                            _df_p3 = pd.DataFrame(_p3_rows)
+                            # Pivot: SKU/Desc como filas, camiones como columnas
+                            _pivot_p3 = _df_p3.pivot_table(
+                                index=["SKU","DESCRIPCION"],
+                                columns="CAMION",
+                                values="PALL_COMP",
+                                aggfunc="sum",
+                                fill_value=0,
+                            ).reset_index()
+
+                            # Asegurar que todos los camiones con picking están presentes
+                            for _cam_all in _all_cams_p3:
+                                if _cam_all not in _pivot_p3.columns:
+                                    _pivot_p3[_cam_all] = 0
+
+                            # Aplicar exclusión: camiones excluidos → 0
+                            for _cam_exc in _excluidos_p3:
+                                if _cam_exc in _pivot_p3.columns:
+                                    _pivot_p3[_cam_exc] = 0
+
+                            # Ordenar columnas: SKU, DESC, camiones ordenados, TOTAL
+                            _cam_cols_p3 = sorted([c for c in _pivot_p3.columns
+                                                   if isinstance(c, (int, float))])
+                            _pivot_p3["TOTAL"] = _pivot_p3[_cam_cols_p3].sum(axis=1)
+
+                            # Agregar FEFO y STOCK desde Frescura DDM
+                            _frescura_fefo = {}
+                            _frescura_stk  = {}
+                            try:
+                                _fr_p3.seek(0)
+                                import openpyxl as _ox_p3
+                                _wb_p3 = _ox_p3.load_workbook(_fr_p3, read_only=True, data_only=True)
+                                _fr_p3.seek(0)
+                                if "Frescura" in _wb_p3.sheetnames:
+                                    _ws_p3 = _wb_p3["Frescura"]
+                                    _rws_p3 = list(_ws_p3.iter_rows(min_row=1, values_only=True))
+                                    if _rws_p3:
+                                        _h_p3 = [str(v).strip().upper() if v else "" for v in _rws_p3[0]]
+                                        _isku_p3  = next((i for i,h in enumerate(_h_p3) if "ALM" in h or "COD" in h), 1)
+                                        _idate_p3 = next((i for i,h in enumerate(_h_p3) if "FECHA" in h), 5)
+                                        _istk_p3  = next((i for i,h in enumerate(_h_p3) if "STOCK" in h and "TOTAL" in h), 14)
+                                        for _rp3f in _rws_p3[1:]:
+                                            try:
+                                                _s3 = int(float(str(_rp3f[_isku_p3]))) if _rp3f[_isku_p3] else 0
+                                                if not _s3: continue
+                                                _f3 = _rp3f[_idate_p3]
+                                                if hasattr(_f3, "strftime"):
+                                                    _f3_str = _f3.strftime("%d/%m/%Y")
+                                                elif _f3:
+                                                    _f3_str = str(_f3)
+                                                else:
+                                                    _f3_str = ""
+                                                _stk3 = float(_rp3f[_istk_p3]) if _istk_p3 < len(_rp3f) and _rp3f[_istk_p3] else 0
+                                                if _s3 not in _frescura_fefo:
+                                                    _frescura_fefo[_s3] = _f3_str
+                                                    _frescura_stk[_s3]  = _stk3
+                                            except Exception:
+                                                pass
+                                _wb_p3.close()
+                            except Exception:
+                                pass
+
+                            _pivot_p3["FEFO"] = _pivot_p3["SKU"].map(lambda s: _frescura_fefo.get(int(s), "—"))
+                            _pivot_p3["STOCK"] = _pivot_p3["SKU"].map(lambda s: _frescura_stk.get(int(s), 0))
+
+                            # Reordenar columnas finales
+                            _final_cols_p3 = ["SKU","DESCRIPCION"] + _cam_cols_p3 + ["TOTAL","FEFO","STOCK"]
+                            _pivot_p3 = _pivot_p3[[c for c in _final_cols_p3 if c in _pivot_p3.columns]]
+                            # Filtrar solo filas con TOTAL > 0
+                            _pivot_p3 = _pivot_p3[_pivot_p3["TOTAL"] > 0].reset_index(drop=True)
+
+                            if _skus_sin_ddm:
+                                st.warning(f"⚠️ SKUs sin BXP en DDM (excluidos): {_skus_sin_ddm}")
+
+                            st.dataframe(_pivot_p3, use_container_width=True, hide_index=True)
+
+                            # Exportar Excel
+                            try:
+                                import io as _io_p3, openpyxl as _opx_p3
+                                from openpyxl.styles import (PatternFill as _PF3, Font as _FO3,
+                                                             Alignment as _AL3)
+                                _wb3 = _opx_p3.Workbook()
+                                _ws3 = _wb3.active; _ws3.title = "AE_Pallets"
+                                # Header
+                                _hdrs3 = list(_pivot_p3.columns)
+                                for ci3, h3 in enumerate(_hdrs3, 1):
+                                    _c3 = _ws3.cell(1, ci3, str(h3))
+                                    _c3.fill = _PF3("solid", fgColor="1F3864")
+                                    _c3.font = _FO3(bold=True, color="FFFFFF", size=10)
+                                    _c3.alignment = _AL3(horizontal="center")
+                                # Datos
+                                for ri3, row3 in _pivot_p3.iterrows():
+                                    for ci3, v3 in enumerate(row3, 1):
+                                        _c3d = _ws3.cell(ri3+2, ci3, v3)
+                                        _c3d.alignment = _AL3(horizontal="center")
+                                        if ri3 % 2 == 0:
+                                            _c3d.fill = _PF3("solid", fgColor="EEF2FF")
+                                # Autowidth
+                                for _col3 in _ws3.columns:
+                                    _ws3.column_dimensions[_col3[0].column_letter].width = 12
+                                _ws3.column_dimensions["B"].width = 30  # descripcion
+                                _buf3 = _io_p3.BytesIO()
+                                _wb3.save(_buf3); _buf3.seek(0)
+                                _fecha_p3 = pdata["fecha"].strftime("%d-%m-%Y") if hasattr(pdata["fecha"],"strftime") else "hoy"
+                                st.download_button(
+                                    "⬇️ Descargar Excel AE Pallets",
+                                    data=_buf3.getvalue(),
+                                    file_name=f"{_fecha_p3}_AE_pallets_bkcc.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    use_container_width=True,
+                                    key="t4_paso3_dl",
+                                )
+                            except Exception as _ep3x:
+                                st.warning(f"⚠️ No se pudo generar Excel: {_ep3x}")
+
+        except Exception as _ep3:
+            st.error(f"❌ Error en Paso 3: {_ep3}")
+            with st.expander("Stack trace"):
+                import traceback
+                st.code(traceback.format_exc())
+
+    # ── Paso 4 — Reposición de canchas de picking ─────────────────────────────
+    st.divider()
+    with st.container(border=True):
+        st.markdown("#### 🔄 Paso 4 — Reposición de canchas de picking")
+        st.caption(
+            "Calcula qué SKUs necesitan reposición en cancha. "
+            "Fuente: Frescura (posiciones × BXP = bultos en cancha) vs picking total (ANR + sub-pallet AGR). "
+            "Reposición negativa = hay que traer bultos del depósito. "
+            "**⚠️ Clave de seguridad: revisá antes de que arranque el picking.**"
+        )
+
+        # Posiciones especiales por SKU (sobreescriben pos=1 del DDM)
+        _POSICIONES_ESPECIALES = {7038: 7, 7634: 2, 31434: 2, 19019: 2}
+
+        try:
+            _car_p4  = st.session_state.get("t1_car") or st.session_state.get("t4_car")
+            _anr_p4  = st.session_state.get("tc_anr")
+            _fr_p4   = st.session_state.get("t1_fr")
+            _ddm_p4  = st.session_state.get("df_ddm_dict", {})
+            _anr_df4 = st.session_state.get("anr_df")
+
+            if not (_car_p4 and _fr_p4):
+                st.info("Necesitás CAR.xlsx y Frescura 3.0 cargados. ANR opcional pero recomendado.")
+            else:
+                # ── 1. PICK desde ANR (hoja BASE, picking normal) ───────────
+                _pick_anr = {}  # {sku: bultos}
+                if _anr_df4 is not None and not _anr_df4.empty:
+                    _ac = [str(c).strip() for c in _anr_df4.columns]
+                    def _fc4(*nms):
+                        for n in nms:
+                            for i, c in enumerate(_ac):
+                                if n.lower() in c.lower(): return _anr_df4.columns[i]
+                        return None
+                    _col_sku4  = _fc4("almac","artíc","cod")
+                    _col_bult4 = _fc4("bultos","cantidad","cant")
+                    _col_sc4   = _fc4("sin cargo","sincarg")
+                    if _col_sku4 and _col_bult4:
+                        _df4 = _anr_df4.copy()
+                        if _col_sc4:
+                            _df4 = _df4[~_df4[_col_sc4].astype(str).str.upper().str.strip().isin(["SI","SÍ","S","1","TRUE"])]
+                        for _, _ra4 in _df4.iterrows():
+                            try:
+                                _s4 = int(float(str(_ra4[_col_sku4])))
+                                _b4 = float(_ra4[_col_bult4])
+                                _pick_anr[_s4] = _pick_anr.get(_s4, 0) + _b4
+                            except Exception:
+                                pass
+
+                # ── 2. Sub-pallet desde AGR (CAR) ──────────────────────────
+                _pick_agr_sub = {}  # {sku: bultos sub-pallet}
+                try:
+                    _car_p4.seek(0)
+                    _xl_p4 = pd.ExcelFile(_car_p4)
+                    _agr4 = next((s for s in _xl_p4.sheet_names if s.upper() == "AGR"), None)
+                    if _agr4:
+                        _car_p4.seek(0)
+                        _df_agr4 = pd.read_excel(_car_p4, sheet_name=_agr4, header=0)
+                        _car_p4.seek(0)
+                        _cols4 = [str(c).strip() for c in _df_agr4.columns]
+                        def _fca4(*nms):
+                            for n in nms:
+                                for i, c in enumerate(_cols4):
+                                    if n.lower() in c.lower(): return _df_agr4.columns[i]
+                            return None
+                        _csku4  = _fca4("cod","almac","artíc")
+                        _cblt4  = _fca4("cantidad","bultos")
+                        _ccam4  = _fca4("chofer","camion")
+                        if _csku4 and _cblt4:
+                            for _, _rr4 in _df_agr4.dropna(subset=[_csku4,_cblt4]).iterrows():
+                                try:
+                                    _s4  = int(float(str(_rr4[_csku4])))
+                                    _b4  = float(_rr4[_cblt4])
+                                    _bxp4 = _ddm_p4.get(_s4, {}).get("bxp", 0)
+                                    if _bxp4 > 0:
+                                        _sub4 = _b4 % _bxp4  # solo fracción sub-pallet
+                                        if _sub4 > 0:
+                                            _pick_agr_sub[_s4] = _pick_agr_sub.get(_s4, 0) + _sub4
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+
+                # ── 3. Leer posiciones y cancha desde Frescura DDM ──────────
+                # Usamos df_ddm_dict que ya está en session_state
+                # La cancha la tomamos de col O (ya en df_ddm_dict["can"])
+                # Posiciones = 1 por defecto (1 pallet en cancha) salvo especiales
+                # En cancha = posiciones × BXP
+
+                # ── 4. Construir tabla reposición ───────────────────────────
+                _repos_rows = []
+                import datetime as _dt_p4
+                for _sku4, _ddm_v4 in _ddm_p4.items():
+                    _bxp4  = _ddm_v4.get("bxp", 0)
+                    _can4  = _ddm_v4.get("can", "")
+                    if _bxp4 <= 0 or not _can4:
+                        continue
+                    # Posiciones en cancha
+                    _pos4 = _POSICIONES_ESPECIALES.get(_sku4, 1)
+                    _en_cancha4 = _pos4 * _bxp4
+                    # PICK total = ANR + sub-pallet AGR
+                    _pick_tot4 = _pick_anr.get(_sku4, 0) + _pick_agr_sub.get(_sku4, 0)
+                    if _pick_tot4 <= 0:
+                        continue  # si no hay picking, no hay reposición
+                    _repos4 = _en_cancha4 - _pick_tot4
+                    # Solo mostrar los que necesitan reposición (negativo)
+                    _repos_rows.append({
+                        "Almacén": _sku4,
+                        "Descripción": "",  # se podría enriquecer con ANR
+                        "Cancha": _can4,
+                        "BXP": int(_bxp4),
+                        "Posiciones": _pos4,
+                        "En cancha (bult)": int(_en_cancha4),
+                        "PICK (bult)": round(_pick_tot4, 2),
+                        "Reposición": round(_repos4, 2),
+                        "¿Reponer?": "⚠️ SÍ" if _repos4 < 0 else "✅ OK",
+                    })
+
+                if not _repos_rows:
+                    st.info("No hay datos suficientes para calcular reposiciones. Verificá que ANR esté cargado.")
+                else:
+                    _df_repos = pd.DataFrame(_repos_rows)
+                    _df_repos_neg = _df_repos[_df_repos["Reposición"] < 0].sort_values("Reposición")
+                    _df_repos_ok  = _df_repos[_df_repos["Reposición"] >= 0]
+
+                    _r4c1, _r4c2, _r4c3 = st.columns(3)
+                    _r4c1.metric("🔄 SKUs a reponer", len(_df_repos_neg))
+                    _r4c2.metric("✅ SKUs OK", len(_df_repos_ok))
+                    _r4c3.metric("📦 Total SKUs picking", len(_df_repos))
+
+                    if not _df_repos_neg.empty:
+                        st.error(f"⚠️ **{len(_df_repos_neg)} SKU(s) necesitan reposición en cancha antes del picking:**")
+                        st.dataframe(_df_repos_neg, use_container_width=True, hide_index=True)
+                    else:
+                        st.success("✅ Todas las canchas tienen stock suficiente para el picking de hoy.")
+
+                    with st.expander("Ver todos los SKUs (incluyendo OK)", expanded=False):
+                        st.dataframe(_df_repos.sort_values("Reposición"), use_container_width=True, hide_index=True)
+
+                    # Exportar Excel reposición
+                    try:
+                        import io as _io_r4, openpyxl as _opx_r4
+                        from openpyxl.styles import PatternFill as _PFr4, Font as _FOr4, Alignment as _ALr4
+                        _wbr4 = _opx_r4.Workbook()
+                        _wsr4 = _wbr4.active; _wsr4.title = "Reposición Cancha"
+                        _hdrs_r4 = list(_df_repos_neg.columns) if not _df_repos_neg.empty else list(_df_repos.columns)
+                        _df_exp_r4 = _df_repos_neg if not _df_repos_neg.empty else _df_repos
+                        for ci_r4, h_r4 in enumerate(_hdrs_r4, 1):
+                            _cr4 = _wsr4.cell(1, ci_r4, str(h_r4))
+                            _cr4.fill = _PFr4("solid", fgColor="1F3864")
+                            _cr4.font = _FOr4(bold=True, color="FFFFFF", size=10)
+                            _cr4.alignment = _ALr4(horizontal="center")
+                        for ri_r4, row_r4 in _df_exp_r4.iterrows():
+                            for ci_r4, v_r4 in enumerate(row_r4, 1):
+                                _cr4d = _wsr4.cell(ri_r4 + 2, ci_r4, v_r4)
+                                _cr4d.alignment = _ALr4(horizontal="center")
+                                if str(v_r4) == "⚠️ SÍ":
+                                    _cr4d.fill = _PFr4("solid", fgColor="FFE0E0")
+                        for _colr4 in _wsr4.columns:
+                            _wsr4.column_dimensions[_colr4[0].column_letter].width = 14
+                        _bufr4 = _io_r4.BytesIO(); _wbr4.save(_bufr4); _bufr4.seek(0)
+                        _fecha_r4 = pdata["fecha"].strftime("%d-%m-%Y") if hasattr(pdata["fecha"],"strftime") else "hoy"
+                        st.download_button(
+                            "⬇️ Descargar Excel Reposición Cancha",
+                            data=_bufr4.getvalue(),
+                            file_name=f"{_fecha_r4}_reposicion_cancha_bkcc.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                            key="t4_paso4_dl",
+                        )
+                    except Exception as _er4x:
+                        st.warning(f"⚠️ No se pudo generar Excel reposición: {_er4x}")
+
+        except Exception as _ep4:
+            st.error(f"❌ Error en Paso 4: {_ep4}")
+            with st.expander("Stack trace"):
+                import traceback
+                st.code(traceback.format_exc())
 
 
 # ── HELPER: (fx) Picking — Paso 2 ─────────────────────────────────────────
@@ -8373,7 +8946,7 @@ def _tr_time_to_min(t):
 
 def render_tab_tablero():
     import io
-    _tr_subtabs = st.tabs(["📊 Tablero del día", "📅 Histórico Mensual"])
+    _tr_subtabs = st.tabs(["📊 Tablero del día", "📅 Histórico Mensual", "📆 Histórico Anual"])
 
     # ══════════════════════════════════════════════════════════════════
     # TAB 1 — TABLERO DEL DÍA
@@ -10452,7 +11025,238 @@ def render_tab_tablero():
                     file_name=ss.get("hist_pdf_fname","historico.pdf"),
                     mime="application/pdf", key="hist_dl_pdf", use_container_width=True)
 
-def main():
+    # ══════════════════════════════════════════════════════════════════
+    # TAB 3 — HISTÓRICO ANUAL
+    # ══════════════════════════════════════════════════════════════════
+    with _tr_subtabs[2]:
+        import pandas as pd
+        import io
+        ss = st.session_state
+        if "hist_anual_data" not in ss:
+            ss["hist_anual_data"] = []
+
+        st.markdown("## 📆 Histórico Anual — Dashboard")
+        st.caption(
+            "Subí los Excel de histórico mensual generados desde el Tablero. "
+            "Podés subir meses de 2025 y 2026 — cada archivo agrega un mes cerrado."
+        )
+
+        _ha1, _ha2 = st.columns([3, 1])
+        with _ha1:
+            uploaded_anual = st.file_uploader(
+                "📁 Excel(s) de Histórico Mensual (uno por mes)",
+                type=["xlsx"], accept_multiple_files=True, key="hist_anual_uploader"
+            )
+        with _ha2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("🗑️ Limpiar anual", key="hist_anual_clear", use_container_width=True):
+                ss["hist_anual_data"] = []
+                st.rerun()
+
+        if uploaded_anual:
+            nuevos_a = 0
+            for fa in uploaded_anual:
+                try:
+                    _xl_a = pd.ExcelFile(fa)
+                    # Intentar leer hoja KPIs primero (mismo formato que histórico mensual)
+                    _sheet_a = "KPIs" if "KPIs" in _xl_a.sheet_names else _xl_a.sheet_names[0]
+                    df_ka = pd.read_excel(fa, sheet_name=_sheet_a, header=0)
+                    if "KPI" in df_ka.columns and "Valor" in df_ka.columns:
+                        kva = dict(zip(df_ka["KPI"].astype(str), df_ka["Valor"].astype(str)))
+                        _fecha_a_str = kva.get("Fecha","")
+                        if not _fecha_a_str:
+                            continue
+                        _fecha_a = pd.to_datetime(_fecha_a_str, dayfirst=True, errors="coerce")
+                        if pd.isna(_fecha_a):
+                            continue
+                        _mes_key = _fecha_a.strftime("%Y-%m")
+                        if _mes_key in [r["mes_key"] for r in ss["hist_anual_data"]]:
+                            continue
+                        # Leer hoja Histórico para promediar el mes
+                        _df_hist_a = None
+                        if "Histórico" in _xl_a.sheet_names:
+                            _df_hist_a = pd.read_excel(fa, sheet_name="Histórico", header=0)
+                        ss["hist_anual_data"].append({
+                            "mes_key":       _mes_key,
+                            "mes_str":       _fecha_a.strftime("%b %Y"),
+                            "anio":          _fecha_a.year,
+                            "mes_num":       _fecha_a.month,
+                            "n_dias":        int(kva.get("Días registrados", 0)) or 1,
+                            "pedidos_prom":  _safe_float(kva.get("PDV promedio/día", 0)),
+                            "bultos_up":     _safe_float(kva.get("Bultos UP promedio/día", 0)),
+                            "hl_prom":       _safe_float(kva.get("HL promedio/día", 0)),
+                            "drop_size":     _safe_float(kva.get("Drop Size promedio", 0)),
+                            "eficiencia":    _safe_float(kva.get("Eficiencia promedio", "0").replace("%","")),
+                            "util_veh":      _safe_float(kva.get("Util. Vehículos promedio", "0").replace("%","")),
+                            "prod_ruteo":    _safe_float(kva.get("Productividad Ruteo promedio", "0").replace("%","")),
+                        })
+                        nuevos_a += 1
+                except Exception:
+                    pass
+            if nuevos_a > 0:
+                ss["hist_anual_data"].sort(key=lambda x: x["mes_key"])
+                st.success(f"✅ {nuevos_a} mes(es) agregado(s).")
+
+        if not ss["hist_anual_data"]:
+            st.info("Sin datos anuales. Subí los Excel de histórico mensual de cada mes.")
+            st.markdown("""
+**¿Cómo usar?**
+1. Cada mes, exportá el **Excel mensual** desde Histórico Mensual.
+2. Guardalo en una carpeta local por año (ej: `2025/`, `2026/`).
+3. Subí todos aquí — el dashboard anual se arma automáticamente.
+4. Podés subir meses de 2025 y 2026 juntos.
+""")
+        else:
+            df_a = pd.DataFrame(ss["hist_anual_data"]).sort_values("mes_key").reset_index(drop=True)
+            _anios = sorted(df_a["anio"].unique())
+            _anio_str = " / ".join(str(a) for a in _anios)
+            n_meses = len(df_a)
+
+            # ── HEADER ANUAL ───────────────────────────────────────────────────
+            _prod_a = df_a["prod_ruteo"].mean()
+            _efic_a = df_a["eficiencia"].mean()
+            st.markdown(
+                f'<div style="background:linear-gradient(90deg,#1F3864 0%,#2e5fa3 100%);'
+                f'padding:14px 22px;border-radius:10px;margin:8px 0 18px 0;'
+                f'color:white;display:flex;align-items:center;gap:14px;">'
+                f'<div style="font-size:22px;font-weight:800;">📆 Dashboard Anual — {_anio_str}</div>'
+                f'<div style="margin-left:auto;font-size:14px;font-weight:700;'
+                f'background:{"#00C853" if _prod_a >= 0.7 else "#FF4B4B"};'
+                f'padding:5px 14px;border-radius:20px;">'
+                f'Prod. Ruteo prom: {_prod_a:.0%}</div>'
+                f'</div>', unsafe_allow_html=True)
+
+            # ── MÉTRICAS RESUMEN ──────────────────────────────────────────────
+            _ra = st.columns(6)
+            _ra[0].metric("📆 Meses", n_meses)
+            _ra[1].metric("📦 PDV prom/mes", f"{df_a['pedidos_prom'].mean():.0f}")
+            _ra[2].metric("💧 HL prom/mes", f"{df_a['hl_prom'].mean():.2f}")
+            _ra[3].metric("📊 Eficiencia prom", f"{_efic_a:.1%}")
+            _ra[4].metric("🚗 Util. Veh. prom", f"{df_a['util_veh'].mean():.1%}")
+            _ra[5].metric("📈 Drop Size prom", f"{df_a['drop_size'].mean():.2f}")
+
+            # ── ALERTAS ANUALES ───────────────────────────────────────────────
+            _alertas_a = []
+            if _efic_a < _TR_TARGET_EFICIENCIA:
+                _alertas_a.append(f"🔴 Eficiencia anual **{_efic_a:.1%}** < target {_TR_TARGET_EFICIENCIA:.0%}")
+            if df_a["util_veh"].mean() < _TR_TARGET_UTIL_VEH:
+                _alertas_a.append(f"🔴 Util. vehículos **{df_a['util_veh'].mean():.1%}** < target {_TR_TARGET_UTIL_VEH:.0%}")
+            _meses_baja_efic = (df_a["eficiencia"] < _TR_TARGET_EFICIENCIA).sum()
+            if _meses_baja_efic > 0:
+                _alertas_a.append(f"⚠️ **{_meses_baja_efic}** mes(es) con eficiencia < target")
+            if _alertas_a:
+                for _aa in _alertas_a:
+                    st.warning(_aa)
+            else:
+                st.success("✅ Todos los KPIs anuales en rango objetivo.")
+
+            # ── TABLA MENSUAL ─────────────────────────────────────────────────
+            try:
+                import plotly.graph_objects as go
+                _fig_a = go.Figure()
+                _fig_a.add_trace(go.Bar(
+                    x=df_a["mes_str"], y=df_a["eficiencia"]*100,
+                    name="Eficiencia (%)", marker_color="#2e5fa3",
+                ))
+                _fig_a.add_trace(go.Scatter(
+                    x=df_a["mes_str"], y=df_a["prod_ruteo"]*100,
+                    name="Prod. Ruteo (%)", mode="lines+markers",
+                    line=dict(color="#FF8C00", width=2),
+                ))
+                _fig_a.add_hline(y=_TR_TARGET_EFICIENCIA*100, line_dash="dash",
+                                  line_color="red", annotation_text="Target Efic.")
+                _fig_a.update_layout(
+                    title="Evolución mensual — Eficiencia & Productividad Ruteo",
+                    height=320, template="plotly_dark",
+                    legend=dict(orientation="h", y=-0.2),
+                    margin=dict(l=20,r=20,t=40,b=20),
+                )
+                st.plotly_chart(_fig_a, use_container_width=True)
+            except Exception:
+                pass  # Plotly no disponible — solo tabla
+
+            # Tabla detalle
+            _df_show_a = df_a[["mes_str","n_dias","pedidos_prom","bultos_up","hl_prom",
+                                "drop_size","eficiencia","util_veh","prod_ruteo"]].copy()
+            _df_show_a.columns = ["Mes","Días","PDV/día","UP/día","HL/día",
+                                   "Drop Size","Eficiencia","Util.Veh.","Prod.Ruteo"]
+            for _col_a in ["Eficiencia","Util.Veh.","Prod.Ruteo"]:
+                _df_show_a[_col_a] = _df_show_a[_col_a].map(lambda x: f"{x:.1%}" if pd.notna(x) else "—")
+            st.dataframe(_df_show_a, use_container_width=True, hide_index=True)
+
+            # ── ANÁLISIS Y RECOMENDACIONES ────────────────────────────────────
+            with st.expander("🔍 Análisis y recomendaciones anuales", expanded=True):
+                _mejor_mes = df_a.loc[df_a["eficiencia"].idxmax(), "mes_str"]
+                _peor_mes  = df_a.loc[df_a["eficiencia"].idxmin(), "mes_str"]
+                _tendencia = "📈 en mejora" if len(df_a) >= 3 and df_a["eficiencia"].iloc[-1] > df_a["eficiencia"].iloc[0] else "📉 en baja" if len(df_a) >= 3 else "—"
+                st.markdown(f"""
+**📊 Análisis automático del período {_anio_str}:**
+
+- **Mejor mes (eficiencia):** {_mejor_mes} — {df_a.loc[df_a['eficiencia'].idxmax(), 'eficiencia']:.1%}
+- **Peor mes (eficiencia):** {_peor_mes} — {df_a.loc[df_a['eficiencia'].idxmin(), 'eficiencia']:.1%}
+- **Tendencia:** {_tendencia}
+- **Meses sobre target ({_TR_TARGET_EFICIENCIA:.0%}):** {(df_a['eficiencia'] >= _TR_TARGET_EFICIENCIA).sum()} / {n_meses}
+
+**🎯 Recomendaciones DPO:**
+- Si eficiencia < target en más del 30% de los meses → revisar SLA y proceso de ruteo.
+- Si util. vehículos baja consistentemente → analizar carga por camión y mix de clientes.
+- Meses de alta temporada (Nov-Feb) naturalmente más exigentes — comparar YoY.
+- Cruzar con períodos de rechazos altos (ANR) para identificar meses críticos.
+""")
+
+            # ── EXPORTAR ──────────────────────────────────────────────────────
+            st.markdown("#### 📤 Exportar Histórico Anual")
+            _ea1, _ea2 = st.columns(2)
+            with _ea1:
+                if st.button("📊 Generar Excel anual", key="hist_anual_xl", use_container_width=True):
+                    try:
+                        import openpyxl as _oxa
+                        from openpyxl.styles import (PatternFill as _PFa, Font as _FOa,
+                                                     Alignment as _ALa, Border as _BDa, Side as _SDa)
+                        _wba = _oxa.Workbook()
+                        _wsa = _wba.active; _wsa.title = "Histórico Anual"
+                        _NXa = "1F3864"
+                        def _fxa(c): return _PFa("solid", fgColor=c)
+                        def _foa(b=False, c="000000", s=10): return _FOa(bold=b, color=c, size=s, name="Calibri")
+                        def _ala(h="center"): return _ALa(horizontal=h, vertical="center")
+                        def _bda():
+                            _s = _SDa(style="thin", color="CCCCCC")
+                            return _BDa(left=_s, right=_s, top=_s, bottom=_s)
+                        _hdrs_a = ["Mes","Días","PDV/día","UP/día","HL/día","Drop Size",
+                                   "Eficiencia","Util.Veh.","Prod.Ruteo"]
+                        for ci_a, h_a in enumerate(_hdrs_a, 1):
+                            _c_a = _wsa.cell(1, ci_a, h_a)
+                            _c_a.fill = _fxa(_NXa); _c_a.font = _foa(True,"FFFFFF",11)
+                            _c_a.alignment = _ala(); _c_a.border = _bda()
+                        for ri_a, row_a in df_a.iterrows():
+                            _vals_a = [
+                                row_a["mes_str"], row_a["n_dias"],
+                                round(row_a["pedidos_prom"],1), round(row_a["bultos_up"],1),
+                                round(row_a["hl_prom"],2), round(row_a["drop_size"],2),
+                                f"{row_a['eficiencia']:.1%}", f"{row_a['util_veh']:.1%}",
+                                f"{row_a['prod_ruteo']:.1%}",
+                            ]
+                            for ci_a2, v_a in enumerate(_vals_a, 1):
+                                _c_a2 = _wsa.cell(ri_a+2, ci_a2, v_a)
+                                _c_a2.fill = _fxa("F5F5F5") if ri_a % 2 == 0 else _fxa("FFFFFF")
+                                _c_a2.font = _foa(sz=10); _c_a2.alignment = _ala()
+                                _c_a2.border = _bda()
+                        for _col_a2 in _wsa.columns:
+                            _wsa.column_dimensions[_col_a2[0].column_letter].width = 14
+                        _buf_a = io.BytesIO(); _wba.save(_buf_a); _buf_a.seek(0)
+                        ss["hist_anual_xl_bytes"] = _buf_a.getvalue()
+                        ss["hist_anual_xl_fname"] = f"{_anio_str.replace(' / ','_')}_historico_anual_bkcc.xlsx"
+                        st.success("✅ Excel anual generado")
+                    except Exception as _exa:
+                        st.error(f"Error: {_exa}")
+                if ss.get("hist_anual_xl_bytes"):
+                    st.download_button("⬇️ Descargar Excel anual",
+                        data=ss["hist_anual_xl_bytes"],
+                        file_name=ss.get("hist_anual_xl_fname","historico_anual.xlsx"),
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="hist_anual_dl_xl", use_container_width=True)
+
+
     st.set_page_config(
         page_title=f"Picking Orchestrator v{APP_VERSION}",
         page_icon="📦",
