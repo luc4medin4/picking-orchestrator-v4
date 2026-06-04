@@ -5127,9 +5127,8 @@ def render_tab_proyeccion():
     with st.container(border=True):
         st.markdown("#### 🏗️ Paso 3 — Paletas completas AE (por SKU × Camión)")
         st.caption(
-            "Fuente: CAR Hoja1 (Bultos por SKU × camión) + Frescura DDM col G (BXP). "
-            "floor(bultos_totales / BXP) = paletas completas AE. "
-            "Todos los camiones del CAR aparecen siempre, con 0 si no aplica."
+            "Fuente: CAR Hoja1 · bultos_eq = Bultos + Unids/UnidadesPorBulto (DDM col N) · "
+            "paletas = floor(bultos_eq / BXP) · FEFO = venc. más próximo · STOCK = bultos totales en depósito."
         )
 
         try:
@@ -5140,41 +5139,70 @@ def render_tab_proyeccion():
             if not (_car_p3 and _fr_p3):
                 st.info("Necesitás CAR.xlsx y Frescura 3.0 cargados.")
             else:
-                # ── Leer CAR Hoja1 ────────────────────────────────────────────
+                # ── 1. Leer CAR Hoja1 ─────────────────────────────────────────
                 _car_p3.seek(0)
                 _df_car3 = pd.read_excel(_car_p3, sheet_name=0, header=0)
                 _car_p3.seek(0)
                 _df_car3.columns = [str(c).strip() for c in _df_car3.columns]
 
-                # Identificar columnas clave en CAR
-                def _fc3_car(df, *names):
+                def _fc3(df3, *names):
                     for n in names:
-                        for c in df.columns:
+                        for c in df3.columns:
                             if n.lower() in c.lower():
                                 return c
                     return None
 
-                _col3_sku  = _fc3_car(_df_car3, "artículo", "articulo", "sku", "cod")
-                _col3_desc = _fc3_car(_df_car3, "descripción artículo", "descripcion artículo",
-                                      "descripcion articulo", "descripción", "descrip")
-                _col3_bult = _fc3_car(_df_car3, "bultos")
-                _col3_cam  = _fc3_car(_df_car3, "transporte")
-                _col3_dtrans = _fc3_car(_df_car3, "descripción transporte", "descripcion transporte")
+                _col3_sku    = _fc3(_df_car3, "artículo", "articulo", "sku")
+                _col3_desc   = _fc3(_df_car3, "descripción artículo", "descripcion artículo",
+                                    "descripcion articulo")
+                _col3_bult   = _fc3(_df_car3, "bultos")
+                _col3_unids  = _fc3(_df_car3, "unids", "unidades")
+                _col3_cam    = _fc3(_df_car3, "transporte")
+                _col3_dtrans = _fc3(_df_car3, "descripción transporte", "descripcion transporte")
 
                 if not all([_col3_sku, _col3_bult, _col3_cam]):
-                    st.warning(f"No se pudieron identificar columnas en CAR Hoja1. Cols: {list(_df_car3.columns)}")
+                    st.warning(f"Columnas no identificadas en CAR Hoja1: {list(_df_car3.columns)}")
                 else:
-                    # Limpiar filas sin datos clave
                     _df_car3 = _df_car3[
-                        _df_car3[_col3_sku].notna() &
-                        _df_car3[_col3_bult].notna() &
-                        _df_car3[_col3_cam].notna()
+                        _df_car3[_col3_sku].notna() & _df_car3[_col3_cam].notna()
                     ].copy()
-                    _df_car3["_sku"]  = _df_car3[_col3_sku].astype(float).astype(int)
-                    _df_car3["_cam"]  = _df_car3[_col3_cam].astype(float).astype(int)
-                    _df_car3["_bult"] = _df_car3[_col3_bult].astype(float)
+                    _df_car3["_sku"]   = _df_car3[_col3_sku].astype(float).astype(int)
+                    _df_car3["_cam"]   = _df_car3[_col3_cam].astype(float).astype(int)
+                    _df_car3["_bult"]  = pd.to_numeric(_df_car3[_col3_bult], errors="coerce").fillna(0)
+                    _df_car3["_unids"] = (
+                        pd.to_numeric(_df_car3[_col3_unids], errors="coerce").fillna(0)
+                        if _col3_unids else 0.0
+                    )
 
-                    # Descripcion por SKU
+                    # ── 2. Dict un_x_bulto desde DDM col N (UNIDADES) ─────────
+                    # _ddm_p3 ya tiene bxp; necesitamos leer un_x_bulto directamente
+                    _un_dict3 = {}
+                    try:
+                        _fr_p3.seek(0)
+                        _df_ddm3 = pd.read_excel(_fr_p3, sheet_name="DDM", header=0)
+                        _fr_p3.seek(0)
+                        _col3_art = _fc3(_df_ddm3, "artículo", "articulo")
+                        _col3_un  = _fc3(_df_ddm3, "unidades")
+                        if _col3_art and _col3_un:
+                            for _, _r3u in _df_ddm3.iterrows():
+                                try:
+                                    _sk3u = int(float(str(_r3u[_col3_art])))
+                                    _un3u = float(_r3u[_col3_un]) if pd.notna(_r3u[_col3_un]) else 0
+                                    if _un3u > 0:
+                                        _un_dict3[_sk3u] = _un3u
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+
+                    # ── 3. bultos_eq = Bultos + Unids / un_x_bulto ────────────
+                    def _bultos_eq3(row3):
+                        _un = _un_dict3.get(row3["_sku"], 0)
+                        return row3["_bult"] + (row3["_unids"] / _un if _un > 0 else 0)
+
+                    _df_car3["_beq"] = _df_car3.apply(_bultos_eq3, axis=1)
+
+                    # Mapas auxiliares
                     _desc3_map = {}
                     if _col3_desc:
                         _desc3_map = (
@@ -5183,8 +5211,6 @@ def render_tab_proyeccion():
                             .apply(lambda x: str(x).strip()[:40])
                             .to_dict()
                         )
-
-                    # Mapa camion → descripcion transporte (abreviada)
                     _trans3_map = {}
                     if _col3_dtrans:
                         _trans3_map = (
@@ -5194,38 +5220,27 @@ def render_tab_proyeccion():
                             .to_dict()
                         )
 
-                    # Lista completa de camiones en el CAR (siempre fija)
                     _all_cams_p3 = sorted(_df_car3["_cam"].unique().tolist())
 
-                    # Agregar bultos por SKU × camión
-                    _agg3 = (
-                        _df_car3.groupby(["_sku", "_cam"])["_bult"]
-                        .sum()
-                        .reset_index()
-                    )
-
-                    # BXP desde DDM (dict ya cargado)
+                    # ── 4. Agregar bultos_eq por SKU × camión ─────────────────
+                    _agg3 = _df_car3.groupby(["_sku", "_cam"])["_beq"].sum().reset_index()
                     _agg3["BXP"] = _agg3["_sku"].map(
-                        lambda s: _ddm_p3.get(int(s), {}).get("bxp", 0)
-                    ).fillna(0).astype(int)
+                        lambda s: float(_ddm_p3.get(int(s), {}).get("bxp", 0))
+                    ).fillna(0)
                     _agg3["PALL"] = 0
-                    _mask3 = _agg3["BXP"] > 0
-                    _agg3.loc[_mask3, "PALL"] = (
-                        (_agg3.loc[_mask3, "_bult"] // _agg3.loc[_mask3, "BXP"]).astype(int)
+                    _m3 = _agg3["BXP"] > 0
+                    _agg3.loc[_m3, "PALL"] = (
+                        (_agg3.loc[_m3, "_beq"] / _agg3.loc[_m3, "BXP"])
+                        .apply(lambda x: int(x))  # floor via int()
                     )
 
-                    # Filtrar solo filas con al menos 1 paleta completa
+                    _skus_sin_bxp3 = sorted(_agg3.loc[_agg3["BXP"] <= 0, "_sku"].unique().tolist())
                     _agg3_pall = _agg3[_agg3["PALL"] > 0].copy()
 
                     if _agg3_pall.empty:
                         st.info("No se encontraron paletas completas en el CAR.")
                     else:
-                        # SKUs sin BXP
-                        _skus_sin_bxp3 = sorted(
-                            _agg3.loc[(_agg3["BXP"] <= 0), "_sku"].unique().tolist()
-                        )
-
-                        # Pivot: filas=SKU, columnas=camión, valores=PALL
+                        # ── 5. Pivot ──────────────────────────────────────────
                         _pivot_p3 = _agg3_pall.pivot_table(
                             index="_sku",
                             columns="_cam",
@@ -5235,105 +5250,96 @@ def render_tab_proyeccion():
                         ).reset_index()
                         _pivot_p3.columns.name = None
 
-                        # Agregar TODOS los camiones aunque tengan 0
                         for _c3a in _all_cams_p3:
                             if _c3a not in _pivot_p3.columns:
                                 _pivot_p3[_c3a] = 0
 
-                        # Aplicar exclusión (camiones excluidos en paso anterior → 0)
                         _excl_p3 = set(st.session_state.get("t4_cams_excluir", []))
                         for _ce3 in _excl_p3:
                             if _ce3 in _pivot_p3.columns:
                                 _pivot_p3[_ce3] = 0
 
-                        # Columnas de camiones ordenadas
-                        _cam_cols_p3 = sorted([c for c in _pivot_p3.columns
-                                               if isinstance(c, (int, float, np.integer))])
-
-                        # TOTAL paletas
+                        # solo columnas numéricas = camiones (sin np dependency)
+                        _cam_cols_p3 = sorted(
+                            [c for c in _pivot_p3.columns
+                             if c != "_sku" and isinstance(c, (int, float))]
+                        )
                         _pivot_p3["_TOTAL"] = _pivot_p3[_cam_cols_p3].sum(axis=1)
-
-                        # Filtrar filas con TOTAL > 0 (solo SKUs con alguna paleta)
                         _pivot_p3 = _pivot_p3[_pivot_p3["_TOTAL"] > 0].copy()
-
-                        # Metadatos: Descripcion, BXP
                         _pivot_p3["_DESC"] = _pivot_p3["_sku"].map(
                             lambda s: _desc3_map.get(int(s), str(s)))
-                        _pivot_p3["_BXP"] = _pivot_p3["_sku"].map(
+                        _pivot_p3["_BXP"]  = _pivot_p3["_sku"].map(
                             lambda s: _ddm_p3.get(int(s), {}).get("bxp", 0))
 
-                        # FEFO y STOCK desde Frescura hoja DDM
+                        # ── 6. FEFO y STOCK desde Frescura hoja "Frescura" ────
+                        # FEFO = min(FECHA DE VENC.) por SKU (excluyendo NaT)
+                        # STOCK = sum(STOCK LOTE) por SKU = total bultos en depósito
                         _fefo3 = {}
                         _stk3  = {}
                         try:
-                            import openpyxl as _ox3
                             _fr_p3.seek(0)
-                            _wb3f = _ox3.load_workbook(_fr_p3, read_only=True, data_only=True)
+                            _df_fr3 = pd.read_excel(_fr_p3, sheet_name="Frescura", header=0)
                             _fr_p3.seek(0)
-                            # Usar hoja Frescura para FEFO y STOCK
-                            _ws3f_name = next(
-                                (s for s in _wb3f.sheetnames if s.lower() == "frescura"), None
-                            )
-                            if _ws3f_name:
-                                _ws3f = _wb3f[_ws3f_name]
-                                _rows3f = list(_ws3f.iter_rows(min_row=1, values_only=True))
-                                if _rows3f:
-                                    _h3f = [str(v).strip().upper() if v else "" for v in _rows3f[0]]
-                                    _i3sku  = next((i for i,h in enumerate(_h3f) if "ALM" in h or "COD" in h), 1)
-                                    _i3date = next((i for i,h in enumerate(_h3f) if "FECHA" in h), 5)
-                                    _i3stk  = next((i for i,h in enumerate(_h3f)
-                                                    if "STOCK" in h and "TOTAL" in h), 14)
-                                    for _r3f in _rows3f[1:]:
-                                        try:
-                                            _s3f = int(float(str(_r3f[_i3sku]))) if _r3f[_i3sku] else 0
-                                            if not _s3f:
-                                                continue
-                                            _d3f = _r3f[_i3date]
-                                            _d3str = (_d3f.strftime("%d/%m/%Y")
-                                                      if hasattr(_d3f, "strftime")
-                                                      else (str(_d3f) if _d3f else "—"))
-                                            _st3f = float(_r3f[_i3stk]) if _i3stk < len(_r3f) and _r3f[_i3stk] else 0
-                                            if _s3f not in _fefo3:
-                                                _fefo3[_s3f] = _d3str
-                                                _stk3[_s3f]  = _st3f
-                                        except Exception:
-                                            pass
-                            _wb3f.close()
+                            _col3_fsku  = _fc3(_df_fr3, "cód", "cod")
+                            _col3_fecha = _fc3(_df_fr3, "fecha de venc", "fecha venc")
+                            _col3_stklote = _fc3(_df_fr3, "stock lote")
+                            if _col3_fsku and _col3_fecha and _col3_stklote:
+                                _df_fr3["_fsku"]  = pd.to_numeric(
+                                    _df_fr3[_col3_fsku], errors="coerce")
+                                _df_fr3["_fecha"] = pd.to_datetime(
+                                    _df_fr3[_col3_fecha], errors="coerce")
+                                _df_fr3["_stk"]   = pd.to_numeric(
+                                    _df_fr3[_col3_stklote], errors="coerce").fillna(0)
+                                _df_fr3 = _df_fr3[_df_fr3["_fsku"].notna()].copy()
+                                _df_fr3["_fsku"] = _df_fr3["_fsku"].astype(int)
+                                # FEFO: min fecha válida
+                                _fefo_s = (
+                                    _df_fr3[_df_fr3["_fecha"].notna()]
+                                    .groupby("_fsku")["_fecha"].min()
+                                )
+                                for _sk3f, _dt3f in _fefo_s.items():
+                                    _fefo3[int(_sk3f)] = (
+                                        _dt3f.strftime("%d/%m/%Y") if pd.notna(_dt3f) else "—"
+                                    )
+                                # STOCK: suma de STOCK LOTE (bultos)
+                                _stk_s = _df_fr3.groupby("_fsku")["_stk"].sum()
+                                for _sk3s, _sv3 in _stk_s.items():
+                                    _stk3[int(_sk3s)] = int(_sv3) if pd.notna(_sv3) else 0
                         except Exception:
                             pass
 
-                        _pivot_p3["_FEFO"]  = _pivot_p3["_sku"].map(lambda s: _fefo3.get(int(s), "—"))
-                        _pivot_p3["_STOCK"] = _pivot_p3["_sku"].map(lambda s: _stk3.get(int(s), 0))
+                        _pivot_p3["_FEFO"]  = _pivot_p3["_sku"].map(
+                            lambda s: _fefo3.get(int(s), "—"))
+                        _pivot_p3["_STOCK"] = _pivot_p3["_sku"].map(
+                            lambda s: _stk3.get(int(s), 0))
 
-                        # ── Construir DataFrame final con estructura exacta ───
-                        # Cod | Descripcion | Bs x p | cam1..camN | TOTALES | "" | "" | STOCK
-                        # (las 2 cols vacías = separadores visuales ag/ah antes de STOCK)
-                        _rows_final = []
+                        # ── 7. Construir DataFrame final ──────────────────────
+                        # Cod | Descripcion | Bs x p | [cams] | TOTALES | F.E.FO | "" | " " | STOCK
+                        _rows_final3 = []
                         for _, _rp3 in _pivot_p3.iterrows():
-                            _row = {
+                            _row3 = {
                                 "Cod":         int(_rp3["_sku"]),
                                 "Descripcion": _rp3["_DESC"],
                                 "Bs x p":      int(_rp3["_BXP"]),
                             }
                             for _cc3 in _cam_cols_p3:
-                                # Header = descripcion transporte abreviada si existe, sino número
                                 _lbl3 = _trans3_map.get(int(_cc3), str(int(_cc3)))
-                                _row[_lbl3] = int(_rp3.get(_cc3, 0))
-                            _row["TOTALES"] = int(_rp3["_TOTAL"])
-                            _row["F.E.FO"]  = _rp3["_FEFO"]
-                            _row[""]        = ""   # separador ag
-                            _row[" "]       = ""   # separador ah
-                            _row["STOCK"]   = _rp3["_STOCK"]
-                            _rows_final.append(_row)
+                                _row3[_lbl3] = int(_rp3.get(_cc3, 0))
+                            _row3["TOTALES"] = int(_rp3["_TOTAL"])
+                            _row3["F.E.FO"]  = _rp3["_FEFO"]
+                            _row3[""]        = ""
+                            _row3[" "]       = ""
+                            _row3["STOCK"]   = _rp3["_STOCK"]
+                            _rows_final3.append(_row3)
 
-                        _df_final3 = pd.DataFrame(_rows_final)
+                        _df_final3 = pd.DataFrame(_rows_final3)
 
                         if _skus_sin_bxp3:
-                            st.warning(f"⚠️ SKUs sin BXP en DDM (excluidos del cálculo): {_skus_sin_bxp3}")
+                            st.warning(f"⚠️ SKUs sin BXP en DDM (excluidos): {_skus_sin_bxp3}")
 
                         st.dataframe(_df_final3, use_container_width=True, hide_index=True)
 
-                        # ── Exportar Excel ────────────────────────────────────
+                        # ── 8. Exportar Excel ─────────────────────────────────
                         try:
                             import io as _io3, openpyxl as _opx3
                             from openpyxl.styles import (PatternFill as _PF3x, Font as _FO3x,
@@ -5342,20 +5348,17 @@ def render_tab_proyeccion():
                             _ws3x = _wb3x.active
                             _ws3x.title = "AE_Pallets"
                             _hdrs3x = list(_df_final3.columns)
-                            # Header row
                             for _ci3, _h3 in enumerate(_hdrs3x, 1):
                                 _c3h = _ws3x.cell(1, _ci3, str(_h3))
                                 _c3h.fill = _PF3x("solid", fgColor="1F3864")
                                 _c3h.font = _FO3x(bold=True, color="FFFFFF", size=9)
                                 _c3h.alignment = _AL3x(horizontal="center")
-                            # Data rows
                             for _ri3, _rw3 in _df_final3.iterrows():
                                 for _ci3, _v3 in enumerate(_rw3, 1):
                                     _c3d = _ws3x.cell(_ri3 + 2, _ci3, _v3)
                                     _c3d.alignment = _AL3x(horizontal="center")
                                     if _ri3 % 2 == 0:
                                         _c3d.fill = _PF3x("solid", fgColor="EEF2FF")
-                            # Column widths
                             for _col3x in _ws3x.columns:
                                 _ws3x.column_dimensions[_col3x[0].column_letter].width = 11
                             _ws3x.column_dimensions["B"].width = 32
