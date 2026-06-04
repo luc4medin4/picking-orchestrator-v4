@@ -1,7 +1,43 @@
 """
-Picking Orchestrator v4.69.0 — Beccacece Hnos SA
+Picking Orchestrator v4.70.0 — Beccacece Hnos SA
 
-CAMBIOS v4.68.0 — TABLERO RUTEADOR: FUENTE CAR + TABLERO MENSUAL:
+CAMBIOS v4.70.0 — 9 CORRECCIONES OPERATIVAS:
+
+  1. TAB ARCHIVOS — alineacion simetrica de uploaders (6 columnas igual ancho,
+     estado como badge coloreado debajo de cada uploader).
+
+  2. PROYECCION PICKING — PDF x5: renombrado boton/seccion. Pagina resumen
+     controladores separada del PDF x5 (boton propio "PDF Controladores").
+     Numerales arabigos en canchas (C1/C2/C3/C4/MKPL+Merch). Resumen enriquecido:
+     Top 5 SKUs por cancha, analisis de carga, recomendaciones SOPs.
+     PDF x5 omite la hoja de resumen controladores.
+
+  3. TABLERO RUTEADOR — fecha default = ultima fecha del ANR col S.
+
+  4. TABLERO RUTEADOR — boton "Calcular tablero" explicito: los campos de carga
+     del dia no disparan calculo automatico. El tablero calcula solo al presionar.
+
+  5. TABLERO RUTEADOR — Licencias conductores: tabla editable persistente (como
+     Productividad por cancha). Sin uploader. Datos no se borran con F5.
+
+  6. FIX CRITICO UP/PALETAS — Tablero ruteador alineado con Proyeccion Picking:
+     UP = bultos_eq / BXP (paletas reales, NO normalizado base 50).
+     Paletas = floor(UP) por SKU sumadas (paletas AE completas).
+     Picking UP = fraccion restante. TOT PALL = AE_pall + picking_up.
+
+  7. TABLERO — Cap.(kg) reemplazada por semaforo de peso:
+     verde si peso < capacidad, rojo si excede. Solo icono en tabla.
+
+  8. TABLERO — Venc. Lic. y Lic. siempre completos (tomados de la tabla editable).
+     Aplica tambien a PDF y Excel exportados.
+
+  9. EXCEL/PDF TABLERO — formato como imagen de referencia: grafico dual
+     (barras UP + linea PDV), tabla proporcional A4 landscape, sin Cap.(kg),
+     con semaforo peso, licencias siempre visibles.
+
+"""
+# ── Picking Orchestrator v4.70.0 — Beccacece Hnos SA ─────────────────────────
+_CHANGELOG = """
 
   1. FIX CRÍTICO UP — fuente única CAR (no más ANR para Bultos UP):
      - Los Bultos UP, HL y Peso se calculan EXCLUSIVAMENTE desde el CAR.
@@ -258,7 +294,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.67.0"
+APP_VERSION = "4.70.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -1807,22 +1843,26 @@ def render_tab_archivos():
         "Subí aquí los archivos fuente. Quedan disponibles para **todas las pestañas** "
         "de la sesión sin necesidad de volver a cargarlos."
     )
-    # Ocultar el texto "per file" y normalizar tamaño del área de drop en uploaders
+    # CSS simétrico: todos los uploaders con el mismo alto/ancho, badge de estado uniforme
     st.markdown(
         """
         <style>
-        /* Ocultar "200MB per file • XLSX" y texto de límite en todos los uploaders del tab */
         [data-testid="stFileUploader"] small,
         [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzoneInstructions"] small {
             display: none !important;
         }
-        /* Compactar el área de drop para que todos los uploaders sean del mismo tamaño */
         [data-testid="stFileUploaderDropzone"] {
-            padding: 0.6rem 0.5rem !important;
-            min-height: unset !important;
+            padding: 0.55rem 0.4rem !important;
+            min-height: 58px !important;
+            max-height: 58px !important;
         }
         [data-testid="stFileUploaderDropzoneInstructions"] {
-            gap: 0.25rem !important;
+            gap: 0.2rem !important;
+        }
+        /* Normalizar alto de los st.success/info/warning dentro de uploaders */
+        [data-testid="stColumn"] .stAlert {
+            padding: 4px 10px !important;
+            font-size: 12px !important;
         }
         </style>
         """,
@@ -2424,7 +2464,7 @@ _ROMAN_TO_NAT = {
     "CANCHA II":  "C2",
     "CANCHA III": "C3",
     "CANCHA IV":  "C4",
-    "MKPL":       "MKPL",
+    "MKPL":       "MKPL+Merch",
 }
 
 def _cn_short(cn: str) -> str:
@@ -4386,7 +4426,7 @@ def render_tab_proyeccion():
 
     # ── Generar PDF ×5 + Excel ────────────────────────────────────────────────
     st.divider()
-    st.subheader("📄 Generar PDF ×5 (una copia por cancha, incluye MKPL)")
+    st.subheader("📄 PDF Pickeros — Resumen por cancha (C1/C2/C3/C4/MKPL+Merch)")
 
     # v4.41: calcular ctrl_params ANTES de los columns, para pasarlo al PDF ×5
     import datetime as _dt_res
@@ -4431,7 +4471,7 @@ def render_tab_proyeccion():
 
     cp1, cp2 = st.columns([1, 2])
     with cp1:
-        if st.button("📄 Generar PDF ×5", type="primary",
+        if st.button("📄 Resumen Pickeros — C1/C2/C3/C4/MKPL+Merch (sin paletas completas)", type="primary",
                      use_container_width=True, key="t4_pdf_btn"):
             with st.spinner("Generando PDF…"):
                 try:
@@ -4448,11 +4488,11 @@ def render_tab_proyeccion():
                         mix_picking=pdata["mix_picking"],
                         fin_calc=fin_calc_dict,
                         asign_detail=totales_calc.get("asign_detail", {}),
-                        ctrl_params=_ctrl_params_for_pdf,  # v4.41: incluye hoja Controlador
+                        ctrl_params=None,   # v4.70: hoja controlador se genera por separado
                     )
                     fname = f"proyeccion_picking_{pdata['fecha']}.pdf"
                     st.download_button(
-                        "⬇ Descargar PDF (6 páginas — LANDSCAPE)",
+                        "⬇ Descargar PDF Pickeros (C1/C2/C3/C4/MKPL+Merch — LANDSCAPE)",
                         data=pdf_bytes, file_name=fname,
                         mime="application/pdf", use_container_width=True,
                         key="t4_pdf_dl",
@@ -4544,8 +4584,11 @@ def render_tab_proyeccion():
 
         st.info(_resumen_md)
 
-        # ── v4.39: PDF Controlador ────────────────────────────────────────
-        if st.button("📄 PDF Controlador", type="secondary",
+        st.divider()
+        st.subheader("📋 PDF Controladores — Resumen operativo enriquecido")
+        st.caption("Incluye: Top 5 SKUs por cancha, análisis de carga, horarios, recomendaciones SOPs. Se genera por separado del PDF Pickeros.")
+
+        if st.button("📄 PDF Controladores", type="secondary",
                      use_container_width=True, key="t4_pdf_ctrl_btn",
                      help="Genera PDF landscape con el resumen completo para imprimir junto a las copias de canchas"):
             with st.spinner("Generando PDF Controlador…"):
@@ -8458,34 +8501,96 @@ def render_tab_tablero():
 
         es_sabado = fecha_dia.weekday() == 5
 
-        # ── LICENCIAS ──────────────────────────────────────────────────────────
+        # ── LICENCIAS — tabla editable persistente (v4.70) ────────────────────
         st.markdown("### 🪪 Licencias conductores")
-        _lc1, _lc2 = st.columns([2, 4])
-        with _lc1:
-            lic_file = st.file_uploader(
-                "Licencias.xlsx",
-                type=["xlsx", "xls"], key="tr_lic_file",
-                help="Col D = nombre corto (ej: ARANDA, COLOMBO F.) | Col I = Vencimiento Registro")
-        df_lic = pd.DataFrame()
-        if lic_file:
-            try:
-                _lic_raw = pd.read_excel(lic_file, header=0)
-                # Col D = idx 3 = (fx)Nombre/apellido corto  |  Col I = idx 8 = Vencimiento
-                if _lic_raw.shape[1] >= 9:
-                    df_lic = _lic_raw.iloc[:, [3, 8]].copy()
-                    df_lic.columns = ["nombre", "vencimiento"]
-                    df_lic = df_lic.dropna(subset=["nombre"])
-                    df_lic["nombre"] = df_lic["nombre"].astype(str).str.strip().str.upper()
-                    df_lic["vencimiento"] = pd.to_datetime(df_lic["vencimiento"], errors="coerce")
-                    df_lic = df_lic.dropna(subset=["vencimiento"])
-                    with _lc2:
-                        st.success(f"✅ {len(df_lic)} conductores cargados")
-                        _bloqueados_preview = df_lic[df_lic["vencimiento"] <= pd.Timestamp(fecha_dia)]
-                        if not _bloqueados_preview.empty:
-                            st.warning(f"⚠️ {len(_bloqueados_preview)} licencia(s) vencida(s) a la fecha seleccionada")
-            except Exception as _e_lic:
-                with _lc2:
-                    st.warning(f"No se pudo leer licencias: {_e_lic}")
+        st.caption("Editá directamente la tabla. Los datos persisten durante la sesión (no se borran con F5 mientras no se recargue la página).")
+
+        # Inicializar tabla de licencias desde datos hardcoded si no existe
+        _LICENCIAS_DEFAULT = [
+            {"Chofer": "ALMARAZ",     "N° Licencia": "29468526", "Venc. Licencia": "15/10/2026", "Clases": "A.1.2 B.1 B.2"},
+            {"Chofer": "ARANDA",      "N° Licencia": "28817797", "Venc. Licencia": "9/4/2027",   "Clases": "A.1.4 B.2 C.1"},
+            {"Chofer": "BARRETO",     "N° Licencia": "29691454", "Venc. Licencia": "1/12/2027",  "Clases": "A.1.2 B.1 B.2"},
+            {"Chofer": "BELLOCQ J",   "N° Licencia": "27547515", "Venc. Licencia": "7/1/2026",   "Clases": "B.1 C.1 C.3"},
+            {"Chofer": "BELLOCQ P",   "N° Licencia": "31435975", "Venc. Licencia": "21/2/2026",  "Clases": "A.1.3 B.1 B.2"},
+            {"Chofer": "CANTERO B.",  "N° Licencia": "92174412", "Venc. Licencia": "29/12/2026", "Clases": "A.1.2 B.1 B.2"},
+            {"Chofer": "CEBALLOS",    "N° Licencia": "26597201", "Venc. Licencia": "21/8/2026",  "Clases": "A.1.2 B.1 B."},
+            {"Chofer": "CHAVES",      "N° Licencia": "21161122", "Venc. Licencia": "13/1/2027",  "Clases": "A.1.2 B.2 C.1"},
+            {"Chofer": "COLOMBO F.",  "N° Licencia": "26060015", "Venc. Licencia": "1/12/2026",  "Clases": "A.1.2 B.1 B.2"},
+            {"Chofer": "COLOMBO S",   "N° Licencia": "32757797", "Venc. Licencia": "23/9/2026",  "Clases": "A.1.4 B.1"},
+            {"Chofer": "DIAZ JAVIER", "N° Licencia": "28894519", "Venc. Licencia": "12/6/2026",  "Clases": "A.1.2 B.1 C.1"},
+            {"Chofer": "GARCIA",      "N° Licencia": "21597244", "Venc. Licencia": "14/11/2026", "Clases": "A.1.2 B.2 C.1"},
+            {"Chofer": "IBAX",        "N° Licencia": "36577450", "Venc. Licencia": "10/3/2028",  "Clases": "A.1.2 D.1 E.1"},
+            {"Chofer": "KARCZEWSKI",  "N° Licencia": "33706322", "Venc. Licencia": "8/10/2026",  "Clases": "B.2 C.1 C"},
+            {"Chofer": "PERALTA",     "N° Licencia": "33195760", "Venc. Licencia": "13/5/2026",  "Clases": "A.1.3 B.2 C.1"},
+            {"Chofer": "PEREYRA",     "N° Licencia": "28545116", "Venc. Licencia": "17/11/2027", "Clases": "B.1 B.2 C.1 C"},
+            {"Chofer": "PONCE",       "N° Licencia": "38361533", "Venc. Licencia": "23/4/2027",  "Clases": "A.1.2 B.1 C.3"},
+            {"Chofer": "PRADIE",      "N° Licencia": "24907184", "Venc. Licencia": "6/5/2026",   "Clases": ""},
+            {"Chofer": "QUIROGA",     "N° Licencia": "24390067", "Venc. Licencia": "6/5/2027",   "Clases": "A.1.4 B.1 B.2"},
+            {"Chofer": "ROBLES",      "N° Licencia": "32946103", "Venc. Licencia": "6/1/2027",   "Clases": "A.1.2 B.1 B.2"},
+            {"Chofer": "SCARAFIA",    "N° Licencia": "29468871", "Venc. Licencia": "10/12/2026", "Clases": "A.1.4 B.2 C.2"},
+            {"Chofer": "TOTH",        "N° Licencia": "32101353", "Venc. Licencia": "16/4/2026",  "Clases": "A.1.2 B.1 B.2"},
+            {"Chofer": "TREJO",       "N° Licencia": "32342194", "Venc. Licencia": "2/7/2027",   "Clases": "B.1 B.2 C.1 C"},
+            {"Chofer": "VALDEZ M",    "N° Licencia": "34214857", "Venc. Licencia": "12/11/2027", "Clases": "A.1.3 B.2 C.1"},
+            {"Chofer": "VILLAN",      "N° Licencia": "23720949", "Venc. Licencia": "30/1/2027",  "Clases": "A.1.2 B.2 C.3"},
+            {"Chofer": "VILLALOBOS",  "N° Licencia": "30874160", "Venc. Licencia": "3/7/2027",   "Clases": "B.1 C.3"},
+            {"Chofer": "VESPA",       "N° Licencia": "23874258", "Venc. Licencia": "21/5/2026",  "Clases": "A.1.2 B.1 B."},
+            {"Chofer": "GARABATO",    "N° Licencia": "25909446", "Venc. Licencia": "27/5/2026",  "Clases": "A.2.1 B.1 B.2"},
+            {"Chofer": "PETROV",      "N° Licencia": "22466598", "Venc. Licencia": "18/12/2029", "Clases": "A.1.4 B.1 B.2"},
+            {"Chofer": "SIERRA",      "N° Licencia": "24406077", "Venc. Licencia": "5/9/2026",   "Clases": "A.1.4 B.1 B.2"},
+            {"Chofer": "COLQUE",      "N° Licencia": "26691373", "Venc. Licencia": "28/5/2026",  "Clases": "A.1.2 B.2 C.1"},
+        ]
+
+        if "tr_licencias_data" not in ss:
+            ss["tr_licencias_data"] = _LICENCIAS_DEFAULT.copy()
+
+        _df_lic_edit = pd.DataFrame(ss["tr_licencias_data"])
+
+        _lc_exp = st.expander("🪪 Ver / editar licencias de conductores", expanded=False)
+        with _lc_exp:
+            st.caption("Doble click en una celda para editar. Los cambios se mantienen durante la sesión.")
+            _lcol1, _lcol2 = st.columns([6, 1])
+            with _lcol1:
+                _df_lic_edited = st.data_editor(
+                    _df_lic_edit,
+                    use_container_width=True,
+                    hide_index=True,
+                    num_rows="dynamic",
+                    key="tr_lic_editor",
+                    column_config={
+                        "Chofer":        st.column_config.TextColumn("Chofer", width="medium"),
+                        "N° Licencia":   st.column_config.TextColumn("N° Licencia", width="medium"),
+                        "Venc. Licencia": st.column_config.TextColumn("Venc. Licencia (dd/mm/aaaa)", width="medium"),
+                        "Clases":        st.column_config.TextColumn("Clases habilitantes", width="large"),
+                    }
+                )
+            with _lcol2:
+                if st.button("💾 Guardar", key="tr_lic_save", use_container_width=True, type="primary"):
+                    ss["tr_licencias_data"] = _df_lic_edited.to_dict("records")
+                    st.success("✅ Guardado")
+                    st.rerun()
+                if st.button("↩️ Restaurar", key="tr_lic_reset", use_container_width=True):
+                    ss["tr_licencias_data"] = _LICENCIAS_DEFAULT.copy()
+                    st.rerun()
+
+        # Construir df_lic para uso en la tabla (parsear fechas)
+        df_lic = pd.DataFrame(ss["tr_licencias_data"]).copy()
+        if not df_lic.empty and "Chofer" in df_lic.columns:
+            df_lic.rename(columns={"Chofer": "nombre", "Venc. Licencia": "vencimiento"}, inplace=True)
+            df_lic["nombre"] = df_lic["nombre"].astype(str).str.strip().str.upper()
+            df_lic["vencimiento"] = pd.to_datetime(df_lic["vencimiento"], dayfirst=True, errors="coerce")
+            df_lic = df_lic.dropna(subset=["vencimiento"])
+            # Preview alertas
+            _bloq_prev = df_lic[df_lic["vencimiento"] <= pd.Timestamp(fecha_dia)]
+            _prox_prev = df_lic[
+                (df_lic["vencimiento"] > pd.Timestamp(fecha_dia)) &
+                (df_lic["vencimiento"] <= pd.Timestamp(fecha_dia) + pd.Timedelta(days=30))
+            ]
+            if not _bloq_prev.empty:
+                st.error(f"🚫 {len(_bloq_prev)} licencia(s) VENCIDA(S): {', '.join(_bloq_prev['nombre'].tolist())}")
+            if not _prox_prev.empty:
+                st.warning(f"⚠️ {len(_prox_prev)} licencia(s) próximas a vencer (≤30 días): {', '.join(_prox_prev['nombre'].tolist())}")
+        else:
+            df_lic = pd.DataFrame(columns=["nombre", "vencimiento"])
 
         # ── VENTAS ESPECIALES (informativas) ──────────────────────────────────
         # v4.68: el CAR cubre TODO el despacho (VE + CHESS).
@@ -8541,6 +8646,23 @@ def render_tab_tablero():
                              })
 
         st.markdown("---")
+
+        # ── BOTÓN CALCULAR (v4.70) ──────────────────────────────────────────────
+        # El tablero NO calcula automáticamente al cambiar los campos del día.
+        # Solo calcula al presionar el botón o si ya hubo un cálculo previo en sesión.
+        _btn_calcular = st.button(
+            "⚡ Calcular Tablero",
+            type="primary",
+            use_container_width=False,
+            key="tr_btn_calcular",
+            help="Presioná después de completar todos los campos del día"
+        )
+        if _btn_calcular:
+            ss["tr_calculado"] = True
+
+        if not ss.get("tr_calculado", False):
+            st.info("📋 Completá los campos del día y presioná **⚡ Calcular Tablero** para generar el informe.")
+            return
 
         # ── REQUIERE ANR ────────────────────────────────────────────────────────
         if anr_raw is None and tc_anr is None:
@@ -8632,25 +8754,26 @@ def render_tab_tablero():
 
         rechazo_por_cam = df_dia.groupby(col_camion)[col_rechazo].sum() if col_rechazo else pd.Series(dtype=float)
 
-        # ── UP · PALETAS · HL · PESO — fuente: CAR completo + DDM (v4.69) ─────
+        # ── UP · PALETAS · HL · PESO — fuente: CAR completo + DDM (v4.70) ─────
         #
-        # Terminología DEFINITIVA (no cambiar más):
-        #   bultos_eq = bultos_enteros + (unidades_sueltas / unidades_x_bulto)
-        #                └─ fraccionado donde corresponde
-        #   UP        = (50 / BXP) × bultos_eq
-        #                └─ espacio normalizado (base pallet estándar de 50)
-        #                └─ equivale a: UP = 50 × paletas
-        #   Paletas   = bultos_eq / BXP  =  UP / 50
-        #   HL        = hl_unit(DDM) × bultos_eq
-        #   Peso      = kg_unit(DDM) × bultos_eq
+        # Terminología ALINEADA con Proyección Picking (v4.70 — NO cambiar más):
+        #   bultos_eq  = bultos_enteros + (unidades_sueltas / unidades_x_bulto)
+        #   UP_sku     = bultos_eq / BXP          ← paletas reales (fraccionadas)
+        #   AE_pall    = floor(UP_sku) por SKU    ← paletas enteras al AE
+        #   pick_up    = UP_sku - AE_pall         ← fracción picking
+        #   TOT_UP_cam = Σ pick_up  (suma fracciones = UP picking total camión)
+        #   AE_pall_cam= Σ AE_pall  (suma paletas AE completas)
+        #   TOT_PALL   = AE_pall_cam + TOT_UP_cam (total paletas equivalentes)
+        #   HL         = hl_unit(DDM) × bultos_eq
+        #   Peso       = kg_unit(DDM) × bultos_eq
         #
-        # Ejemplo SKU 6582 (BXP=70):  140 bultos → UP = (50/70)×140 = 100 UP
-        # Ejemplo SKU 7038 (BXP=50):  100 bultos → UP = (50/50)×100 = 100 UP
+        # Ejemplo SKU BXP=50: 140 blt → UP=2.8 → AE=2 pall, pick=0.8 UP
+        # Ejemplo SKU BXP=70: 140 blt → UP=2.0 → AE=2 pall, pick=0.0 UP
         #
         # El CAR contiene TODAS las líneas: VE (bloque azul) + CHESS juntos.
 
         bult_eq_por_cam = pd.Series(dtype=float)   # bultos equivalentes (informativo)
-        up_por_cam      = pd.Series(dtype=float)   # "Bultos UP" del tablero = (50/BXP)×beq
+        up_por_cam      = pd.Series(dtype=float)   # UP picking por camion (fracciones, v4.70)
         paletas_por_cam = pd.Series(dtype=float)   # paletas reales = beq/BXP = UP/50
         hl_por_cam      = pd.Series(dtype=float)
         peso_por_cam    = pd.Series(dtype=float)
@@ -8667,9 +8790,11 @@ def render_tab_tablero():
                 _wb69.close()
 
                 from collections import defaultdict as _dd69
+                import math as _math_tr
                 _beq69 = _dd69(float)
-                _up69  = _dd69(float)
-                _pal69 = _dd69(float)
+                _up69  = _dd69(float)   # UP picking (fracciones)
+                _ae69  = _dd69(float)   # paletas AE (enteras)
+                _pal69 = _dd69(float)   # TOT PALL = AE + pick_up
                 _hl69  = _dd69(float)
                 _kg69  = _dd69(float)
 
@@ -8688,17 +8813,23 @@ def render_tab_tablero():
                         # bultos equivalentes (enteros + fracción de sueltas)
                         _be69  = _blt69 + (_uni69 / _unb69 if _unb69 > 0 and _uni69 > 0 else 0)
                         _cam_i = int(float(str(_cam69)))
+                        # UP = bultos_eq / BXP  (paletas reales, igual que Proyección Picking)
+                        _up_sku = _be69 / _bxp69 if _bxp69 > 0 else 0.0
+                        _ae_sku = float(_math_tr.floor(_up_sku))   # paletas AE completas
+                        _pk_sku = _up_sku - _ae_sku                # fracción picking
                         _beq69[_cam_i] += _be69
-                        _up69[_cam_i]  += (50.0 / _bxp69) * _be69   # UP normalizado
-                        _pal69[_cam_i] += _be69 / _bxp69             # paletas reales
+                        _up69[_cam_i]  += _pk_sku    # UP picking (fracción)
+                        _ae69[_cam_i]  += _ae_sku    # paletas AE (enteras)
+                        _pal69[_cam_i] += _up_sku    # TOT PALL = AE + pick_up
                         _hl69[_cam_i]  += _hl_u * _be69
                         _kg69[_cam_i]  += _kg_u * _be69
                     except Exception:
                         pass
 
                 bult_eq_por_cam = pd.Series(dict(_beq69), dtype=float)
-                up_por_cam      = pd.Series(dict(_up69),  dtype=float)
-                paletas_por_cam = pd.Series(dict(_pal69), dtype=float)
+                up_por_cam      = pd.Series(dict(_up69),  dtype=float)   # picking UP (fracción)
+                ae_pall_por_cam = pd.Series(dict(_ae69),  dtype=float)   # paletas AE
+                paletas_por_cam = pd.Series(dict(_pal69), dtype=float)   # TOT PALL
                 hl_por_cam      = pd.Series(dict(_hl69),  dtype=float)
                 peso_por_cam    = pd.Series(dict(_kg69),  dtype=float)
                 _car_disponible = True
@@ -8707,10 +8838,12 @@ def render_tab_tablero():
 
         if not _car_disponible:
             # Fallback: columna UNIDAD PAQUETE del ANR
+            ae_pall_por_cam = pd.Series(dtype=float)
             if col_up is not None:
                 up_por_cam      = df_dia.groupby(col_camion)[col_up].sum()
                 bult_eq_por_cam = up_por_cam.copy()
-                paletas_por_cam = up_por_cam / 50
+                paletas_por_cam = up_por_cam.copy()
+                ae_pall_por_cam = up_por_cam.apply(lambda x: float(int(x)))
                 st.warning("⚠️ **UP calculado desde ANR** (cargá CAR + Frescura para mayor precisión).", icon="⚠️")
             if col_hl is not None:
                 hl_por_cam = df_dia.groupby(col_camion)[col_hl].apply(
@@ -8718,10 +8851,12 @@ def render_tab_tablero():
             if col_peso is not None:
                 peso_por_cam = df_dia.groupby(col_camion)[col_peso].apply(
                     lambda x: pd.to_numeric(x, errors="coerce").fillna(0).sum())
+        else:
+            ae_pall_por_cam = ss.get("_tr_ae_pall", ae_pall_por_cam) if "_tr_ae_pall" not in dir() else ae_pall_por_cam
 
         # Caption fuente
         if _car_disponible and _ddm_disponible:
-            _fuente_hlkg = "✅ UP=(50/BXP)×bultos_eq | Paletas=UP/50 | HL/Peso=DDM×bultos_eq — fuente CAR+DDM. v4.69"
+            _fuente_hlkg = "✅ UP=bultos_eq/BXP | Paletas=floor(UP/sku) | HL/Peso=DDM×bultos_eq — fuente CAR+DDM. v4.70"
         elif _car_disponible:
             _fuente_hlkg = "⚠️ UP desde CAR. HL/Peso sin DDM — cargá Frescura 3.0 para activarlos."
         else:
@@ -8744,26 +8879,28 @@ def render_tab_tablero():
             _ped  = pedidos_por_cam[pedidos_por_cam.index.isin(_mask)]  if not pedidos_por_cam.empty  else pd.Series(dtype=float)
             _up   = up_por_cam[up_por_cam.index.isin(_mask)]            if not up_por_cam.empty       else pd.Series(dtype=float)
             _pal  = paletas_por_cam[paletas_por_cam.index.isin(_mask)]  if not paletas_por_cam.empty  else pd.Series(dtype=float)
+            _ae   = ae_pall_por_cam[ae_pall_por_cam.index.isin(_mask)]  if not ae_pall_por_cam.empty  else pd.Series(dtype=float)
             _bup  = bult_eq_por_cam[bult_eq_por_cam.index.isin(_mask)]  if not bult_eq_por_cam.empty  else pd.Series(dtype=float)
             _hl_s = hl_por_cam[hl_por_cam.index.isin(_mask)]            if not hl_por_cam.empty       else pd.Series(dtype=float)
             _kg   = peso_por_cam[peso_por_cam.index.isin(_mask)]        if not peso_por_cam.empty     else pd.Series(dtype=float)
             _rec  = rechazo_por_cam[rechazo_por_cam.index.isin(_mask)]  if not rechazo_por_cam.empty  else pd.Series(dtype=float)
             c_rep   = int((_ped > 0).sum())
             t_pdv   = int(_ped.sum())
-            t_up    = float(_up.sum())    # UP normalizado: (50/BXP)×bultos_eq
-            t_pal   = float(_pal.sum())   # paletas reales: bultos_eq/BXP  = t_up/50
+            t_up    = float(_up.sum())    # UP picking (fracciones)
+            t_pal   = float(_pal.sum())   # TOT PALL (AE + pick_up)
+            t_ae    = float(_ae.sum())    # paletas AE completas
             t_bup   = float(_bup.sum())   # bultos equivalentes totales
             t_hl    = float(_hl_s.sum())
             t_kg    = float(_kg.sum())
             t_rec   = float(_rec.sum())
             _denom  = c_rep + segundas_vueltas
-            t_ocup  = (t_up - t_rec) / _denom if _denom > 0 else 0.0
+            t_ocup  = (t_pal - t_rec) / _denom if _denom > 0 else 0.0
             t_fzpct = fuera_zona_real / t_pdv if t_pdv > 0 else 0.0
             t_efic  = t_pdv / visitas_teoricas if visitas_teoricas > 0 else 0.0
             t_util  = c_rep / total_camiones_flota if total_camiones_flota > 0 else 0.0
-            t_drop  = t_up / t_pdv if t_pdv > 0 else 0.0
+            t_drop  = t_pal / t_pdv if t_pdv > 0 else 0.0
             t_ppal  = t_pal / c_rep if c_rep > 0 else 0.0
-            return dict(c_rep=c_rep, t_pdv=t_pdv, t_up=t_up, t_pal=t_pal, t_bup=t_bup,
+            return dict(c_rep=c_rep, t_pdv=t_pdv, t_up=t_up, t_pal=t_pal, t_ae=t_ae, t_bup=t_bup,
                         t_hl=t_hl, t_kg=t_kg, t_rec=t_rec, t_ocup=t_ocup,
                         t_fzpct=t_fzpct, t_efic=t_efic, t_util=t_util,
                         t_drop=t_drop, t_ppal=t_ppal)
@@ -8771,7 +8908,7 @@ def render_tab_tablero():
         tv = _calc_totales(set(ss["tr_excluidos"]))
         camiones_en_reparto = tv["c_rep"]; total_pedidos = tv["t_pdv"]
         total_up = tv["t_up"]; total_bup = tv["t_bup"]; total_hl = tv["t_hl"]; total_peso_kg = tv["t_kg"]
-        total_rechazos_up = tv["t_rec"]; paletas_total = tv["t_pal"]
+        total_rechazos_up = tv["t_rec"]; paletas_total = tv["t_pal"]; ae_total = tv["t_ae"]
         ocup_bodega = tv["t_ocup"]; fuera_zona_pct = tv["t_fzpct"]
         eficiencia = tv["t_efic"]; util_vehiculos = tv["t_util"]
         drop_size = tv["t_drop"]; prom_paletas = tv["t_ppal"]
@@ -8844,7 +8981,7 @@ def render_tab_tablero():
         _ms = st.columns(6)
         _ms[0].metric("🚚 Camiones",        f"{camiones_en_reparto}/{total_camiones_flota}")
         _ms[1].metric("📦 PDV",             total_pedidos)
-        _ms[2].metric("🏋 Bultos UP",       f"{total_bup:.0f}", help="Bultos equivalentes totales")
+        _ms[2].metric("🏋 Bultos UP",       f"{paletas_total:.2f}", help="TOT PALL = paletas AE + UP picking (fracciones)")
         _ms[3].metric("📐 Paletas",         f"{paletas_total:.2f}", f"{prom_paletas:.2f}/cam")
         _ms[4].metric("💧 HL",              f"{total_hl:.2f}" if total_hl > 0 else "—")
         _ms[5].metric("⚖️ Peso (kg)",       f"{total_peso_kg:,.0f}")
@@ -8886,7 +9023,7 @@ def render_tab_tablero():
             tv = _calc_totales(_excluidos)
             camiones_en_reparto = tv["c_rep"]; total_pedidos = tv["t_pdv"]
             total_up = tv["t_up"]; total_bup = tv["t_bup"]; total_hl = tv["t_hl"]; total_peso_kg = tv["t_kg"]
-            total_rechazos_up = tv["t_rec"]; paletas_total = tv["t_pal"]
+            total_rechazos_up = tv["t_rec"]; paletas_total = tv["t_pal"]; ae_total = tv["t_ae"]
             ocup_bodega = tv["t_ocup"]; fuera_zona_pct = tv["t_fzpct"]
             eficiencia = tv["t_efic"]; util_vehiculos = tv["t_util"]
             drop_size = tv["t_drop"]; prom_paletas = tv["t_ppal"]
@@ -8906,6 +9043,9 @@ def render_tab_tablero():
             rec_c = float(rechazo_por_cam.get(cam, 0.0)) if not rechazo_por_cam.empty else 0.0
             pate  = str(cam_patente.get(cam, ""))
             cap_kg = cam_capkg.get(pate, 0) if pate else 0
+            # v4.70: semáforo de peso (verde/rojo) en lugar de columna Cap.(kg)
+            _peso_ok = (kg_c <= cap_kg) if cap_kg > 0 else None
+            _peso_semaforo = ("🟢" if _peso_ok else "🔴") if _peso_ok is not None else "—"
 
             chofer = ""
             if col_chofer_d is not None:
@@ -8940,16 +9080,18 @@ def render_tab_tablero():
                 "Chofer":    chofer,
                 "PDV":       int(pedidos_por_cam.get(cam, 0)),
                 "Bultos":    round(beq,  2),   # bultos equivalentes
-                "Bultos UP": round(up_c, 2),   # (50/BXP) × bultos_eq
-                "Paletas":   round(pals, 2),   # Bultos UP / 50 = beq/BXP
+                "Bultos UP": round(pals, 2),   # TOT PALL = AE + pick_up (= paletas_por_cam)
+                "Paletas":   round(float(ae_pall_por_cam.get(cam, 0.0)) if not ae_pall_por_cam.empty else 0.0, 0),
                 "Patente":   pate,
-                "Cap.(kg)":  int(cap_kg) if cap_kg else 0,
-                "HL":        round(hl_c, 2),
                 "Peso(kg)":  round(kg_c, 1),
+                "⚖️":         _peso_semaforo,  # semáforo cap. peso
+                "HL":        round(hl_c, 2),
                 "Rechazos":  round(rec_c, 2),
                 "Venc. Lic.": venc_lic,
                 "Lic.":      val_lic,
                 "_bloqueado": lic_bloqueado,
+                "_cap_kg":    int(cap_kg) if cap_kg else 0,
+                "_peso_ok":   _peso_ok,
             })
 
         if tabla_rows:
@@ -8969,9 +9111,15 @@ def render_tab_tablero():
                             styles[list(row.index).index("Lic.")] = \
                                 "background-color:#d4edda;color:#155724;font-weight:bold;text-align:center"
                     except Exception: pass
+                # Semáforo peso rojo
+                try:
+                    if row.get("_peso_ok") is False:
+                        styles[list(row.index).index("Peso(kg)")] = \
+                            "background-color:#fff0f0;color:#c0392b;font-weight:bold"
+                except Exception: pass
                 return styles
 
-            df_display = df_tab.drop(columns=["_bloqueado"])
+            df_display = df_tab.drop(columns=["_bloqueado", "_cap_kg", "_peso_ok"], errors="ignore")
             styled = df_display.style.apply(_style_tabla, axis=1)
 
             st.dataframe(styled, use_container_width=True, hide_index=True,
@@ -8981,13 +9129,14 @@ def render_tab_tablero():
                     "Bultos":    st.column_config.NumberColumn("Bultos",    format="%.2f",
                                     help="Bultos equivalentes = bultos enteros + unidades sueltas convertidas"),
                     "Bultos UP": st.column_config.NumberColumn("Bultos UP", format="%.2f",
-                                    help="UP normalizado = (50 / BXP) × Bultos. Espacio estándar en camión."),
-                    "Paletas":   st.column_config.NumberColumn("Paletas",   format="%.2f",
-                                    help="Paletas reales = Bultos equiv. / BXP = Bultos UP / 50"),
-                    "Cap.(kg)":  st.column_config.NumberColumn("Cap.(kg)",  format="%d"),
+                                    help="TOT PALL = paletas AE enteras + UP picking (fracción). Igual que Proyección Picking."),
+                    "Paletas":   st.column_config.NumberColumn("Pal. AE",   format="%.0f",
+                                    help="Paletas completas cargadas por autoelevador (floor de beq/BXP)"),
+                    "⚖️":         st.column_config.TextColumn("Peso",       help="🟢 = dentro de capacidad | 🔴 = excede capacidad"),
                     "HL":        st.column_config.NumberColumn("HL",        format="%.2f"),
                     "Peso(kg)":  st.column_config.NumberColumn("Peso(kg)",  format="%.0f"),
                     "Rechazos":  st.column_config.NumberColumn("Rechazos",  format="%.1f"),
+                    "Venc. Lic.": st.column_config.TextColumn("Venc. Lic.", help="Vencimiento registro de conducir"),
                     "Lic.":      st.column_config.TextColumn("Lic.",
                                     help="Estado licencia de conducir. 🚫 BLOQUEADO = no puede salir a reparto."),
                 },
@@ -9005,7 +9154,7 @@ def render_tab_tablero():
                 <span>📦 {df_tab['PDV'].sum()} PDV</span>
                 <span>📦 {df_tab['Bultos'].sum():.0f} bultos</span>
                 <span>🏋 {df_tab['Bultos UP'].sum():.2f} UP</span>
-                <span>📐 {df_tab['Paletas'].sum():.2f} pal</span>
+                <span>📐 {df_tab['Paletas'].sum():.0f} pal.AE</span>
                 <span>💧 {_hl_tot:.2f} HL</span>
                 <span>⚖️ {df_tab['Peso(kg)'].sum():,.0f} kg</span>
                 <span>❌ {df_tab['Rechazos'].sum():.1f} rec</span>
@@ -9049,8 +9198,8 @@ def render_tab_tablero():
                                 "OK" if ocup_ok else "NO", f"{prod_ruteo:.0%}","—","—"],
                 }).to_excel(_wr, sheet_name="KPIs", index=False)
                 if tabla_rows:
-                    # Detalle completo (sin columna interna _bloqueado)
-                    _df_det = pd.DataFrame(tabla_rows).drop(columns=["_bloqueado"], errors="ignore")
+                    # Detalle completo (sin columnas internas)
+                    _df_det = pd.DataFrame(tabla_rows).drop(columns=["_bloqueado","_cap_kg","_peso_ok","⚖️"], errors="ignore")
                     _df_det.to_excel(_wr, sheet_name="Detalle Camiones", index=False)
                     _df_det[["N° Cam","Chofer","PDV","Bultos","Bultos UP","Paletas","HL","Peso(kg)","Rechazos","Venc. Lic.","Lic."]].to_excel(
                         _wr, sheet_name="Resumen Camiones", index=False)
@@ -9163,8 +9312,9 @@ def render_tab_tablero():
 
                     # ── TABLA CAMIONES ────────────────────────────────────────
                     if tabla_rows:
-                        _cols_h = ["N°","Chofer","PDV","Bultos\n(eq.)","Bultos\nUP","Paletas",
-                                   "Patente","Cap.\nkg","HL","Peso\n(kg)",
+                        # v4.70: sin Cap.kg, semaforo peso, licencias siempre completas
+                        _cols_h = ["N°","Chofer","PDV","Bultos\n(eq.)","Bultos\nUP","Pal.\nAE",
+                                   "Patente","HL","Peso\n(kg)","Peso\nOK",
                                    "Rech.","Venc.\nLic.","Lic."]
                         for ci5, ch5 in enumerate(_cols_h, 1):
                             _cell(row, ci5, ch5, bold=True, color="FFFFFF", sz=8, bg=_NX, wrap=True)
@@ -9173,30 +9323,39 @@ def render_tab_tablero():
                         for ri2, rr2 in enumerate(tabla_rows):
                             _bg2 = _LGX if ri2 % 2 else "FFFFFF"
                             _lic_txt = rr2.get("Lic.", "—") or "—"
-                            # Texto limpio para Excel (sin emoji)
                             _lic_xl  = "BLOQUEADO" if str(_lic_txt).startswith("🚫") else ("OK" if str(_lic_txt).startswith("✅") else "—")
+                            _venc_xl = rr2.get("Venc. Lic.", "") or "—"
+                            _peso_ok_xl = rr2.get("_peso_ok", None)
+                            _peso_semaf = "OK" if _peso_ok_xl is True else ("EXCEDE" if _peso_ok_xl is False else "—")
                             _vv2 = [str(rr2["N° Cam"]), rr2["Chofer"] or "—",
                                     rr2["PDV"],
                                     round(rr2.get("Bultos", 0), 2),
                                     round(rr2.get("Bultos UP", 0), 2),
-                                    round(rr2.get("Paletas", 0), 2),
-                                    rr2["Patente"], rr2.get("Cap.(kg)", 0),
+                                    round(rr2.get("Paletas", 0), 0),
+                                    rr2["Patente"],
                                     round(rr2.get("HL", 0), 2),
                                     round(rr2.get("Peso(kg)", 0), 0),
+                                    _peso_semaf,
                                     rr2["Rechazos"],
-                                    rr2["Venc. Lic."] or "—",
+                                    _venc_xl,
                                     _lic_xl]
                             for ci6, vv6 in enumerate(_vv2, 1):
                                 _cell(row, ci6, vv6, sz=8, bg=_bg2,
                                       halign="left" if ci6 == 2 else "center")
-                            # Colorear columna Lic.
+                            # Semaforo peso (col 10)
+                            if _peso_ok_xl is False:
+                                _ws2.cell(row, 10).fill = _fx(_RX)
+                                _ws2.cell(row, 10).font = _fo(True, "FFFFFF", 8)
+                            elif _peso_ok_xl is True:
+                                _ws2.cell(row, 10).fill = _fx(_GRX)
+                                _ws2.cell(row, 10).font = _fo(True, "FFFFFF", 8)
+                            # Colorear columna Lic. (col 13)
                             _valid_col = 13
                             if _lic_xl == "BLOQUEADO":
                                 _ws2.cell(row, _valid_col).fill = _fx(_RX)
                                 _ws2.cell(row, _valid_col).font = _fo(True, "FFFFFF", 8)
-                                # fila completa rosa
                                 for _ci_bl in range(1, len(_vv2)+1):
-                                    if _ci_bl != _valid_col:
+                                    if _ci_bl not in (_valid_col, 10):
                                         _ws2.cell(row, _ci_bl).fill = _fx("FFE8E8")
                             elif _lic_xl == "OK":
                                 _ws2.cell(row, _valid_col).fill = _fx(_GRX)
@@ -9208,12 +9367,12 @@ def render_tab_tablero():
                                   sum(r["PDV"]                    for r in tabla_rows),
                                   round(sum(r.get("Bultos",0)     for r in tabla_rows), 0),
                                   round(sum(r.get("Bultos UP",0)  for r in tabla_rows), 2),
-                                  round(sum(r.get("Paletas",0)    for r in tabla_rows), 2),
+                                  round(sum(r.get("Paletas",0)    for r in tabla_rows), 0),
                                   "", "",
-                                  round(sum(r.get("HL",0)         for r in tabla_rows), 2),
                                   round(sum(r.get("Peso(kg)",0)   for r in tabla_rows), 0),
+                                  "",
                                   round(sum(r.get("Rechazos",0)   for r in tabla_rows), 1),
-                                  "", ""]
+                                  "",""]
                         for ci7, tv7 in enumerate(_totv2, 1):
                             _cell(row, ci7, tv7, bold=True, color=_NX, sz=9, bg=_BLX)
                         _ws2.row_dimensions[row].height = 16; row += 2
@@ -9228,7 +9387,7 @@ def render_tab_tablero():
                         _kg_t  = sum(r.get("Peso(kg)", 0) for r in tabla_rows)
                         _bup_t = sum(r.get("Bultos UP", 0) for r in tabla_rows)
 
-                        _ah = ["N° Cam","Chofer","Bultos","Bultos UP","%Carga UP","HL","%Carga HL","Peso(kg)","% Cap.kg","PDV","Drop Size"]
+                        _ah = ["N° Cam","Chofer","Bultos","Bultos UP","%Carga UP","HL","Peso(kg)","Peso OK","PDV","Drop Size"]
                         for _ai, _ah2 in enumerate(_ah, 1):
                             _cell(row, _ai, _ah2, bold=True, color="FFFFFF", sz=8, bg="2e5fa3")
                         _ws2.row_dimensions[row].height = 14; row += 1
@@ -9236,20 +9395,24 @@ def render_tab_tablero():
                         for _ri3, _rr3 in enumerate(sorted(tabla_rows, key=lambda x: x.get("Bultos UP",0), reverse=True)):
                             _bg3 = _LGX if _ri3 % 2 else "FFFFFF"
                             _pct_bup = _rr3.get("Bultos UP",0) / _bup_t * 100 if _bup_t > 0 else 0
-                            _pct_hl  = _rr3.get("HL", 0) / _hl_t * 100 if _hl_t > 0 else 0
-                            _cap_kg  = _rr3.get("Cap.(kg)", 0)
                             _kg_c2   = _rr3.get("Peso(kg)", 0)
-                            _pct_cap = _kg_c2 / _cap_kg * 100 if _cap_kg > 0 else 0
+                            _peso_ok_a = _rr3.get("_peso_ok", None)
+                            _peso_semaf_a = "OK" if _peso_ok_a is True else ("EXCEDE" if _peso_ok_a is False else "—")
                             _ds2 = _rr3.get("Bultos UP",0) / _rr3["PDV"] if _rr3["PDV"] > 0 else 0
                             _av3 = [str(_rr3["N° Cam"]), _rr3["Chofer"] or "—",
                                     round(_rr3.get("Bultos",0), 0),
                                     round(_rr3.get("Bultos UP",0), 2), f"{_pct_bup:.1f}%",
-                                    round(_rr3.get("HL", 0), 2), f"{_pct_hl:.1f}%",
-                                    round(_kg_c2, 0), f"{_pct_cap:.1f}%",
+                                    round(_rr3.get("HL", 0), 2),
+                                    round(_kg_c2, 0), _peso_semaf_a,
                                     _rr3["PDV"], round(_ds2, 2)]
                             for _ci8, _vv8 in enumerate(_av3, 1):
                                 _cell(row, _ci8, _vv8, sz=8, bg=_bg3,
                                       halign="left" if _ci8 == 2 else "center")
+                            # Colorear semaforo peso
+                            if _peso_ok_a is False:
+                                _ws2.cell(row, 8).fill = _fx(_RX); _ws2.cell(row, 8).font = _fo(True,"FFFFFF",8)
+                            elif _peso_ok_a is True:
+                                _ws2.cell(row, 8).fill = _fx(_GRX); _ws2.cell(row, 8).font = _fo(True,"FFFFFF",8)
                             _ws2.row_dimensions[row].height = 13; row += 1
                         row += 1
 
@@ -9322,20 +9485,20 @@ def render_tab_tablero():
                     ).font = _fo(False, "888888", 7)
                     _ws2.row_dimensions[row].height = 12
 
-                    # ── ANCHOS DE COLUMNA (13 cols: N°/Chofer/PDV/Bultos/BultosUP/Pal/Pat/Cap/HL/Peso/Rech/VencLic/Lic)
+                    # ── ANCHOS DE COLUMNA (13 cols: N°/Chofer/PDV/Bultos/BultosUP/PalAE/Pat/HL/Peso/PesoOK/Rech/VencLic/Lic)
                     _col_widths = {
                         "A": 5,    # N° Cam
-                        "B": 13,   # Chofer
+                        "B": 14,   # Chofer
                         "C": 5,    # PDV
-                        "D": 8,    # Bultos (eq.)
-                        "E": 8,    # Bultos UP
-                        "F": 7,    # Paletas
+                        "D": 9,    # Bultos (eq.)
+                        "E": 9,    # Bultos UP
+                        "F": 7,    # Pal. AE
                         "G": 8,    # Patente
-                        "H": 7,    # Cap. kg
-                        "I": 7,    # HL
-                        "J": 9,    # Peso
+                        "H": 7,    # HL
+                        "I": 9,    # Peso (kg)
+                        "J": 7,    # Peso OK
                         "K": 6,    # Rechazo
-                        "L": 10,   # Venc. Lic
+                        "L": 11,   # Venc. Lic
                         "M": 10,   # Lic.
                         "N": 4,    # extra
                     }
@@ -9454,94 +9617,102 @@ def render_tab_tablero():
                     ]))
                     _story.append(_tot); _story.append(Spacer(1, 2*mm))
 
-                    # Gráficos — 4 barras en 2×2: Bultos UP, PDV, HL, Peso
+                    # Graficos — barras UP + linea PDV (formato imagen de referencia)
                     if tabla_rows:
                         try:
                             _cam_labels   = [str(r["N° Cam"]) for r in tabla_rows]
-                            _cam_bup      = [r["Bultos UP"] for r in tabla_rows]
+                            _cam_bup      = [r.get("Bultos UP", 0) for r in tabla_rows]
                             _cam_pdv      = [r["PDV"] for r in tabla_rows]
-                            _cam_hl       = [r.get("HL", 0) for r in tabla_rows]
-                            _cam_kg       = [r.get("Peso(kg)", 0) for r in tabla_rows]
                             _n = len(_cam_labels)
-                            _quarter_w = float(_usable_w) / 4 - 1*mm
-                            _chart_h = 32.0 * mm
-                            _margin_l = 8*mm; _margin_b = 7*mm
+                            # Grafico amplio: barras UP (eje izq) + linea PDV (eje der)
+                            _chart_full_w = float(_usable_w)
+                            _chart_h_full = 38.0 * mm
+                            _margin_l = 10*mm; _margin_b = 8*mm
+                            _pw = _chart_full_w - _margin_l - 4*mm
+                            _ph = _chart_h_full - _margin_b - 6*mm
+                            _xs = _pw / max(_n, 1)
+                            _mv_up  = max(_cam_bup) if _cam_bup else 1
+                            _mv_pdv = max(_cam_pdv) if _cam_pdv else 1
 
-                            def _make_bar_chart(labels, vals, title, bar_color):
-                                _cw = _quarter_w
-                                _pw = _cw - _margin_l - 3*mm
-                                _ph = _chart_h - _margin_b - 4*mm
-                                _xs = _pw / max(len(labels), 1)
-                                _mv = max(vals) if vals else 1
-                                _dr = Drawing(_cw, _chart_h + 5*mm)
-                                _dr.add(String(_cw/2, _chart_h + 2*mm, title,
-                                    fontSize=7, fontName="Helvetica-Bold",
+                            _dr_main = Drawing(_chart_full_w, _chart_h_full + 8*mm)
+                            # Titulo
+                            _dr_main.add(String(_chart_full_w/2, _chart_h_full + 4*mm,
+                                f"TABLERO RUTEADOR — {fecha_dia.strftime('%d/%m/%Y')}  |  Bultos UP por Camion / PDV",
+                                fontSize=8, fontName="Helvetica-Bold", fillColor=_NAVY, textAnchor="middle"))
+                            # Ejes
+                            _dr_main.add(Line(_margin_l, _margin_b, _margin_l, _margin_b + _ph,
+                                strokeColor=_NAVY, strokeWidth=0.8))
+                            _dr_main.add(Line(_margin_l, _margin_b, _margin_l + _pw, _margin_b,
+                                strokeColor=_NAVY, strokeWidth=0.8))
+                            # Barras UP
+                            for _bi, (_lbl, _bup_v) in enumerate(zip(_cam_labels, _cam_bup)):
+                                _bx = _margin_l + _bi * _xs + _xs * 0.1
+                                _bw = _xs * 0.65
+                                _bh = (_bup_v / _mv_up) * _ph if _mv_up > 0 else 0
+                                _dr_main.add(Rect(_bx, _margin_b, _bw, max(_bh, 1),
+                                    fillColor=_BLUE2, strokeColor=colors.white, strokeWidth=0.3))
+                                _dr_main.add(String(_bx + _bw/2, _margin_b + _bh + 1.2*mm,
+                                    f"{_bup_v:.1f}", fontSize=5.5, fontName="Helvetica",
                                     fillColor=_NAVY, textAnchor="middle"))
-                                for _bi, (_lbl, _val) in enumerate(zip(labels, vals)):
-                                    _bx = _margin_l + _bi * _xs + _xs * 0.1
-                                    _bw = _xs * 0.8
-                                    _bh = (_val / _mv) * _ph if _mv > 0 else 0
-                                    _dr.add(Rect(_bx, _margin_b, _bw, max(_bh, 1),
-                                        fillColor=bar_color, strokeColor=colors.white, strokeWidth=0.4))
-                                    _dr.add(String(_bx + _bw/2, _margin_b + _bh + 1*mm,
-                                        f"{_val:.0f}", fontSize=5, fontName="Helvetica",
-                                        fillColor=_NAVY, textAnchor="middle"))
-                                    _dr.add(String(_bx + _bw/2, _margin_b - 3*mm,
-                                        _lbl, fontSize=5, fontName="Helvetica",
-                                        fillColor=_NAVY, textAnchor="middle"))
-                                _dr.add(Line(_margin_l, _margin_b, _margin_l, _margin_b + _ph,
-                                    strokeColor=_NAVY, strokeWidth=0.7))
-                                _dr.add(Line(_margin_l, _margin_b, _margin_l + _pw, _margin_b,
-                                    strokeColor=_NAVY, strokeWidth=0.7))
-                                return _dr
+                                _dr_main.add(String(_bx + _bw/2, _margin_b - 4.5*mm,
+                                    _lbl, fontSize=5.5, fontName="Helvetica",
+                                    fillColor=_NAVY, textAnchor="middle"))
+                            # Linea PDV (eje derecho escalado)
+                            _pdv_points = []
+                            for _bi, _pdv_v in enumerate(_cam_pdv):
+                                _cx = _margin_l + _bi * _xs + _xs * 0.425
+                                _cy = _margin_b + (_pdv_v / _mv_pdv) * _ph if _mv_pdv > 0 else _margin_b
+                                _pdv_points.append((_cx, _cy))
+                            for _pi in range(len(_pdv_points) - 1):
+                                _dr_main.add(Line(
+                                    _pdv_points[_pi][0], _pdv_points[_pi][1],
+                                    _pdv_points[_pi+1][0], _pdv_points[_pi+1][1],
+                                    strokeColor=colors.HexColor("#00796B"), strokeWidth=1.5))
+                            for _cx2, _cy2 in _pdv_points:
+                                _dr_main.add(Rect(_cx2-1.5*mm, _cy2-1.5*mm, 3*mm, 3*mm,
+                                    fillColor=colors.HexColor("#00796B"), strokeColor=colors.white, strokeWidth=0.3))
+                            # Leyenda
+                            _dr_main.add(Rect(_margin_l, _chart_h_full - 5*mm, 6*mm, 3*mm,
+                                fillColor=_BLUE2, strokeColor=colors.white, strokeWidth=0.3))
+                            _dr_main.add(String(_margin_l + 7*mm, _chart_h_full - 3.5*mm,
+                                "Bultos UP", fontSize=6, fontName="Helvetica", fillColor=_NAVY))
+                            _dr_main.add(Rect(_margin_l + 28*mm, _chart_h_full - 5*mm, 6*mm, 3*mm,
+                                fillColor=colors.HexColor("#00796B"), strokeColor=colors.white, strokeWidth=0.3))
+                            _dr_main.add(String(_margin_l + 35*mm, _chart_h_full - 3.5*mm,
+                                "PDV", fontSize=6, fontName="Helvetica", fillColor=_NAVY))
 
-                            _d_bup = _make_bar_chart(_cam_labels, _cam_bup, "Bultos UP / Cam.", _BLUE2)
-                            _d_pdv = _make_bar_chart(_cam_labels, _cam_pdv, "PDV / Cam.",       colors.HexColor("#00796B"))
-                            _d_hl  = _make_bar_chart(_cam_labels, _cam_hl,  "HL / Cam.",        _AMBER)
-                            _d_kg  = _make_bar_chart(_cam_labels, _cam_kg,  "Peso kg / Cam.",   colors.HexColor("#6A1B9A"))
-                            _charts_tbl = Table([[_d_bup, _d_pdv, _d_hl, _d_kg]],
-                                colWidths=[_quarter_w + 1*mm]*4)
-                            _charts_tbl.setStyle(TableStyle([
-                                ("ALIGN", (0,0), (-1,-1), "CENTER"),
-                                ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-                                ("LEFTPADDING", (0,0), (-1,-1), 0),
-                                ("RIGHTPADDING", (0,0), (-1,-1), 0),
-                            ]))
-                            _story.append(_charts_tbl); _story.append(Spacer(1, 1.5*mm))
+                            _story.append(_dr_main); _story.append(Spacer(1, 1.5*mm))
                         except Exception as _ge:
-                            _story.append(_p(f"[Gráficos no disponibles: {_ge}]", 7, color=colors.grey))
+                            _story.append(_p(f"[Grafico no disponible: {_ge}]", 7, color=colors.grey))
 
-                    # ── Bloque análisis operativo compacto ──────────────────
-                    if tabla_rows and total_up > 0:
+                    # ── Bloque analisis operativo compacto ──────────────────
+                    if tabla_rows and paletas_total > 0:
                         try:
-                            _bup_t2 = sum(r["Bultos UP"] for r in tabla_rows)
+                            _bup_t2 = sum(r.get("Bultos UP",0) for r in tabla_rows)
                             _hl_t2  = sum(r.get("HL", 0) for r in tabla_rows)
-                            _best_cam  = max(tabla_rows, key=lambda x: x["Bultos UP"])
-                            _worst_cam = min(tabla_rows, key=lambda x: x["Bultos UP"])
+                            _best_cam  = max(tabla_rows, key=lambda x: x.get("Bultos UP",0))
+                            _worst_cam = min(tabla_rows, key=lambda x: x.get("Bultos UP",0))
                             _avg_bup   = _bup_t2 / len(tabla_rows) if tabla_rows else 0
-                            _sobre50   = [r for r in tabla_rows if r["Bultos UP"] >= 50]
-                            _alertas_kg = [r for r in tabla_rows
-                                          if r.get("Cap.(kg)", 0) > 0 and
-                                          r.get("Peso(kg)", 0) / r["Cap.(kg)"] > 0.85]
+                            _alertas_peso = [r for r in tabla_rows if r.get("_peso_ok") is False]
 
                             _an_rows = [
-                                [_p("📊 Análisis Operativo", 7, True, colors.white),
+                                [_p("Analisis Operativo", 7, True, colors.white),
                                  _p("", 7), _p("", 7), _p("", 7),
                                  _p("", 7), _p("", 7)],
-                                [_p("Promedio Bultos UP/cam",7,True,_NAVY),
+                                [_p("Prom. Bultos UP/cam",7,True,_NAVY),
                                  _p(f"{_avg_bup:.1f}",8,True),
-                                 _p("Top carga",7,True,_NAVY),
-                                 _p(f"Cam {_best_cam['N° Cam']} — {_best_cam['Bultos UP']:.1f} UP",8),
-                                 _p("Cams ≥50 UP",7,True,_NAVY),
-                                 _p(f"{len(_sobre50)}/{len(tabla_rows)}",8,True)],
-                                [_p("HL Total",7,True,_NAVY),
-                                 _p(f"{_hl_t2:.2f}",8,True),
+                                 _p("Mayor carga",7,True,_NAVY),
+                                 _p(f"Cam {_best_cam['N° Cam']} — {_best_cam.get('Bultos UP',0):.1f} UP",8),
+                                 _p("HL Total",7,True,_NAVY),
+                                 _p(f"{_hl_t2:.2f}",8,True)],
+                                [_p("Drop Size",7,True,_NAVY),
+                                 _p(f"{drop_size:.2f}",8,True),
                                  _p("Menor carga",7,True,_NAVY),
-                                 _p(f"Cam {_worst_cam['N° Cam']} — {_worst_cam['Bultos UP']:.1f} UP",8),
-                                 _p("Alertas Cap.kg >85%",7,True,_NAVY),
-                                 _p(f"{len(_alertas_kg)} cam(s)",8,
-                                    True if _alertas_kg else False,
-                                    _RED if _alertas_kg else colors.black)],
+                                 _p(f"Cam {_worst_cam['N° Cam']} — {_worst_cam.get('Bultos UP',0):.1f} UP",8),
+                                 _p("Alertas peso excedido",7,True,_NAVY),
+                                 _p(f"{len(_alertas_peso)} cam(s)",8,
+                                    True if _alertas_peso else False,
+                                    _RED if _alertas_peso else colors.black)],
                             ]
                             _an_tbl = Table(_an_rows,
                                 colWidths=[_usable_w*0.18, _usable_w*0.14,
@@ -9561,34 +9732,35 @@ def render_tab_tablero():
                         except Exception as _ae:
                             pass
 
-                    # Tabla detalle por camión — 13 cols: Bultos + Bultos UP + Paletas
+                    # Tabla detalle por camion — 13 cols sin Cap.kg, con semaforo peso
                     if tabla_rows:
-                        _det_hdr = ["N°","Chofer","PDV","Bultos","Blt.\nUP","Paletas","Patente","Cap.kg","HL","Peso(kg)","Rech.","Venc.Lic.","Lic."]
+                        _det_hdr = ["N°","Chofer","PDV","Bultos","Blt.\nUP","Pal.\nAE","Patente","HL","Peso(kg)","Peso\nOK","Rech.","Venc.Lic.","Lic."]
                         _alertas_lic = []
                         _det_data = [_det_hdr]
                         for _i3, _r3 in enumerate(tabla_rows, 1):
                             vl = _r3.get("Venc. Lic.","") or "—"
                             va = _r3.get("Lic.","") or "—"
-                            # Texto limpio para PDF (sin emoji)
                             va_pdf = "BLOQUEADO" if str(va).startswith("🚫") else ("OK" if str(va).startswith("✅") else "—")
+                            _peso_ok_p = _r3.get("_peso_ok", None)
+                            _peso_semaf_p = "OK" if _peso_ok_p is True else ("EXCEDE" if _peso_ok_p is False else "—")
                             _det_data.append([
                                 str(_r3["N° Cam"]),
                                 _r3["Chofer"] or "—",
                                 str(_r3["PDV"]),
                                 f"{_r3.get('Bultos',0):.0f}",
                                 f"{_r3.get('Bultos UP',0):.2f}",
-                                f"{_r3.get('Paletas',0):.2f}",
+                                f"{_r3.get('Paletas',0):.0f}",
                                 _r3["Patente"] or "—",
-                                f"{_r3['Cap.(kg)']:,}" if _r3.get("Cap.(kg)") else "—",
                                 f"{_r3.get('HL',0):.2f}",
                                 f"{_r3.get('Peso(kg)',0):,.0f}",
+                                _peso_semaf_p,
                                 f"{_r3.get('Rechazos',0):.1f}",
                                 vl,
                                 va_pdf,
                             ])
                             if str(va).startswith("🚫"):
                                 _alertas_lic.append(
-                                    f"⚠ CAM {_r3['N° Cam']} — {_r3['Chofer'] or 'S/N'}: "
+                                    f"CAM {_r3['N° Cam']} — {_r3['Chofer'] or 'S/N'}: "
                                     f"LICENCIA VENCIDA ({vl}) — NO PUEDE SALIR A REPARTO"
                                 )
 
@@ -9596,27 +9768,27 @@ def render_tab_tablero():
                             str(sum(r["PDV"] for r in tabla_rows)),
                             f"{sum(r.get('Bultos',0) for r in tabla_rows):.0f}",
                             f"{sum(r.get('Bultos UP',0) for r in tabla_rows):.2f}",
-                            f"{sum(r.get('Paletas',0) for r in tabla_rows):.2f}",
+                            f"{sum(r.get('Paletas',0) for r in tabla_rows):.0f}",
                             "","",
-                            f"{sum(r.get('HL',0) for r in tabla_rows):.2f}",
                             f"{sum(r.get('Peso(kg)',0) for r in tabla_rows):,.0f}",
+                            "",
                             f"{sum(r.get('Rechazos',0) for r in tabla_rows):.1f}","",""])
 
                         _det_tbl = Table(_det_data, repeatRows=1,
                             colWidths=[
                                 _usable_w * 0.038,  # N°
-                                _usable_w * 0.105,  # Chofer
+                                _usable_w * 0.110,  # Chofer
                                 _usable_w * 0.038,  # PDV
-                                _usable_w * 0.060,  # Bultos
-                                _usable_w * 0.060,  # Bultos UP
-                                _usable_w * 0.052,  # Paletas
+                                _usable_w * 0.062,  # Bultos
+                                _usable_w * 0.062,  # Blt.UP
+                                _usable_w * 0.048,  # Pal.AE
                                 _usable_w * 0.065,  # Patente
-                                _usable_w * 0.058,  # Cap
-                                _usable_w * 0.058,  # HL
-                                _usable_w * 0.070,  # Peso
-                                _usable_w * 0.052,  # Rec
-                                _usable_w * 0.080,  # Venc.Lic
-                                _usable_w * 0.080,  # Lic.
+                                _usable_w * 0.055,  # HL
+                                _usable_w * 0.070,  # Peso(kg)
+                                _usable_w * 0.048,  # Peso OK
+                                _usable_w * 0.048,  # Rech
+                                _usable_w * 0.082,  # Venc.Lic
+                                _usable_w * 0.082,  # Lic.
                             ])
 
                         _ds = [
@@ -9639,8 +9811,9 @@ def render_tab_tablero():
                             ("ALIGN",(1,1),(1,-1),"LEFT"),
                             ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
                         ]
-                        # Colorear columna Lic. (índice 12) según estado
+                        # Colorear columna Lic. (indice 12) y Peso OK (indice 9) segun estado
                         for _ix, _rx in enumerate(tabla_rows, 1):
+                            _peso_ok_px = _rx.get("_peso_ok", None)
                             if _rx.get("Lic.","").startswith("🚫"):
                                 _ds += [
                                     ("BACKGROUND",(0,_ix),(-1,_ix),colors.HexColor("#FFE8E8")),
@@ -9651,6 +9824,14 @@ def render_tab_tablero():
                             elif _rx.get("Lic.","").startswith("✅"):
                                 _ds += [("BACKGROUND",(12,_ix),(12,_ix),_GREEN),
                                         ("TEXTCOLOR",(12,_ix),(12,_ix),colors.white)]
+                            # Semaforo peso
+                            if _peso_ok_px is False:
+                                _ds += [("BACKGROUND",(9,_ix),(9,_ix),_RED),
+                                        ("TEXTCOLOR",(9,_ix),(9,_ix),colors.white),
+                                        ("FONTNAME",(9,_ix),(9,_ix),"Helvetica-Bold")]
+                            elif _peso_ok_px is True:
+                                _ds += [("BACKGROUND",(9,_ix),(9,_ix),_GREEN),
+                                        ("TEXTCOLOR",(9,_ix),(9,_ix),colors.white)]
                         _det_tbl.setStyle(TableStyle(_ds))
                         _story.append(_det_tbl)
 
