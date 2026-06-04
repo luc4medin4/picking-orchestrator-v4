@@ -1,5 +1,17 @@
 """
-Picking Orchestrator v4.70.0 — Beccacece Hnos SA
+Picking Orchestrator v4.75.1 — Beccacece Hnos SA
+
+CAMBIOS v4.75.1 — FIX PASO 3 AE PALLETS:
+  1. TODOS LOS CAMIONES en columnas: incluye todos los camiones del CAR con 0
+     si no tienen paletas completas de ese SKU (antes solo aparecían camiones
+     con ≥1 paleta).
+  2. STOCK: corregido — ahora lee STOCK TOTAL (col O Frescura) en lugar de
+     STOCK LOTE (col G). Usa max() por SKU ya que STOCK TOTAL es el mismo
+     en todas las filas del SKU.
+  3. FEFO: sin cambios — ya era correcto (min fecha de venc. desde hoja Frescura).
+  4. Columnas AG/AH: siempre vacías (sin cambios).
+
+CAMBIOS v4.70.0 — 9 CORRECCIONES OPERATIVAS:
 
 CAMBIOS v4.70.0 — 9 CORRECCIONES OPERATIVAS:
 
@@ -5250,6 +5262,7 @@ def render_tab_proyeccion():
                         ).reset_index()
                         _pivot_p3.columns.name = None
 
+                        # Garantizar TODOS los camiones del CAR como columnas (con 0 si no tienen paletas)
                         for _c3a in _all_cams_p3:
                             if _c3a not in _pivot_p3.columns:
                                 _pivot_p3[_c3a] = 0
@@ -5265,6 +5278,8 @@ def render_tab_proyeccion():
                              if c != "_sku" and isinstance(c, (int, float))]
                         )
                         _pivot_p3["_TOTAL"] = _pivot_p3[_cam_cols_p3].sum(axis=1)
+                        # NO filtrar por _TOTAL > 0: se muestran todos los SKUs con paletas completas
+                        # (las columnas de camiones sin paletas de ese SKU quedan en 0)
                         _pivot_p3 = _pivot_p3[_pivot_p3["_TOTAL"] > 0].copy()
                         _pivot_p3["_DESC"] = _pivot_p3["_sku"].map(
                             lambda s: _desc3_map.get(int(s), str(s)))
@@ -5282,7 +5297,8 @@ def render_tab_proyeccion():
                             _fr_p3.seek(0)
                             _col3_fsku  = _fc3(_df_fr3, "cód", "cod")
                             _col3_fecha = _fc3(_df_fr3, "fecha de venc", "fecha venc")
-                            _col3_stklote = _fc3(_df_fr3, "stock lote")
+                            # STOCK: usar STOCK TOTAL (col O) — total bultos en depósito por SKU
+                            _col3_stklote = _fc3(_df_fr3, "stock total") or _fc3(_df_fr3, "stock lote")
                             if _col3_fsku and _col3_fecha and _col3_stklote:
                                 _df_fr3["_fsku"]  = pd.to_numeric(
                                     _df_fr3[_col3_fsku], errors="coerce")
@@ -5301,8 +5317,8 @@ def render_tab_proyeccion():
                                     _fefo3[int(_sk3f)] = (
                                         _dt3f.strftime("%d/%m/%Y") if pd.notna(_dt3f) else "—"
                                     )
-                                # STOCK: suma de STOCK LOTE (bultos)
-                                _stk_s = _df_fr3.groupby("_fsku")["_stk"].sum()
+                                # STOCK: STOCK TOTAL es el mismo valor en todas las filas del SKU → tomar max
+                                _stk_s = _df_fr3.groupby("_fsku")["_stk"].max()
                                 for _sk3s, _sv3 in _stk_s.items():
                                     _stk3[int(_sk3s)] = int(_sv3) if pd.notna(_sv3) else 0
                         except Exception:
