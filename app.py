@@ -294,7 +294,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.71.0"
+APP_VERSION = "4.72.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -11265,6 +11265,7 @@ def render_tab_tablero():
                         key="hist_anual_dl_xl", use_container_width=True)
 
 
+def main():
     st.set_page_config(
         page_title=f"Picking Orchestrator v{APP_VERSION}",
         page_icon="📦",
