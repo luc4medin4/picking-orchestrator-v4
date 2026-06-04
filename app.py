@@ -8944,6 +8944,14 @@ def _tr_time_to_min(t):
     return t.hour * 60 + t.minute + t.second / 60
 
 
+def _safe_int(v):
+    try: return int(float(str(v).replace(",", ".")))
+    except Exception: return 0
+
+def _safe_float(v):
+    try: return float(str(v).replace(",", ".").replace("%", ""))
+    except Exception: return 0.0
+
 def render_tab_tablero():
     import io
     _tr_subtabs = st.tabs(["📊 Tablero del día", "📅 Histórico Mensual", "📆 Histórico Anual"])
@@ -13418,15 +13426,6 @@ def _cierre_d1_excel(df_d1: pd.DataFrame, totales: dict, fecha_str: str) -> byte
 
 if __name__ == "__main__":
     main()
-
-
-def _safe_int(v):
-    try: return int(float(str(v).replace(",", ".")))
-    except Exception: return 0
-
-def _safe_float(v):
-    try: return float(str(v).replace(",", ".").replace("%", ""))
-    except Exception: return 0.0
 
 
 def _render_historico_tablas(df_h):
