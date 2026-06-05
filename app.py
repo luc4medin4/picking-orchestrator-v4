@@ -1,5 +1,19 @@
 """
-Picking Orchestrator v4.75.2 — Beccacece Hnos SA
+Picking Orchestrator v4.76.0 — Beccacece Hnos SA
+
+CAMBIOS v4.76.0:
+  1. TAB ARCHIVOS — reducido tamaño del texto residual "200MB per file" en uploaders.
+  2. FIX ERROR render_tab_cierre / render_tab_resumen — AttributeError en
+     hasattr(pd.io.formats.style.Styler, "map"): reemplazado por try/except
+     directo al llamar .map() con fallback a .applymap() en los 2 bloques del Cierre.
+  3. EXCEL AE PALLETS (Paso 3) — columnas fijas canónicas:
+     - TODOS los 27 camiones canónicos siempre presentes (sin filtrar por reparto).
+       Los que no salen ese día quedan en 0 pero ocupan su columna.
+     - Camiones excluidos vía t4_cams_excluir → 0 (sin cambio).
+     - Estructura final: A=Cod, B=Descripción, C=vacío, D=Bs x p,
+       E=COL F. … AE=DÍAZ, AF=TOTALES, AG=vacío, AH=vacío, AI=F.E.FO, AJ=STOCK.
+     - STOCK = max(STOCK TOTAL) de Frescura hoja Frescura (correcto — STOCK TOTAL
+       es el mismo en todas las filas del SKU).
 
 CAMBIOS v4.75.2 — FIX ORDEN COLUMNAS CAMIONES PASO 3:
   1. Orden canónico fijo: COL F./TRE/PON/BEL J./BAR/CAN/TOTH/ALM/PRA/CEB/QUI/
@@ -312,7 +326,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.73.0"
+APP_VERSION = "4.76.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -1920,7 +1934,20 @@ def render_tab_archivos():
         <style>
         /* Ocultar texto auxiliar de tamaño de archivo */
         [data-testid="stFileUploader"] small,
-        [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzoneInstructions"] small {
+        [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzoneInstructions"] small,
+        [data-testid="stFileUploaderDropzoneInstructions"] p:last-child,
+        [data-testid="stFileUploaderDropzoneInstructions"] span {
+            display: none !important;
+        }
+        /* Ocultar el texto "200MB per file" y similares */
+        [data-testid="stFileUploader"] section > div > p,
+        [data-testid="stFileUploader"] section small,
+        [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzoneInstructions"] > div > small,
+        [data-testid="stFileUploaderDropzoneInstructions"] > p:last-of-type {
+            font-size: 0 !important;
+            line-height: 0 !important;
+            height: 0 !important;
+            overflow: hidden !important;
             display: none !important;
         }
         /* Dropzone compacto y uniforme */
@@ -5279,6 +5306,8 @@ def render_tab_proyeccion():
                                 _pivot_p3[_ce3] = 0
 
                         # Orden canónico de camiones (ID → label abreviado referencia)
+                        # TODOS los 27 canónicos siempre presentes — los que no salen
+                        # quedan en 0 para mantener posición fija de columna.
                         _CAM_ORDER_ALL = [
                             (101,"COL F."),(102,"TRE"),(103,"PON"),(104,"BEL J."),
                             (105,"BAR"),(106,"CAN"),(107,"TOTH"),(108,"ALM"),
@@ -5288,9 +5317,8 @@ def render_tab_proyeccion():
                             (122,"SCA"),(123,"BEL P."),(124,"CHA"),(125,"KAR"),
                             (127,"JER"),(128,"VILL"),(129,"DÍAZ"),
                         ]
-                        # Solo camiones con reparto en este CAR
-                        _cams_con_reparto3 = set(int(c) for c in _df_car3["_cam"].unique())
-                        _CAM_ORDER = [(cid, lbl) for cid, lbl in _CAM_ORDER_ALL if cid in _cams_con_reparto3]
+                        # Usar TODOS los canónicos (sin filtrar por reparto del día)
+                        _CAM_ORDER = _CAM_ORDER_ALL
                         # Asegurar que todos estén como columnas en el pivot
                         for _cid3x, _ in _CAM_ORDER:
                             if _cid3x not in _pivot_p3.columns:
@@ -5347,20 +5375,23 @@ def render_tab_proyeccion():
                             lambda s: _stk3.get(int(s), 0))
 
                         # ── 7. Construir DataFrame final ──────────────────────
-                        # Cod | Descripcion | Bs x p | [cams] | TOTALES | F.E.FO | "" | " " | STOCK
+                        # Estructura fija: A=Cod | B=Descripcion | C=vacío | D=Bs x p
+                        #   E=COL F. … AE=DÍAZ (27 camiones canónicos)
+                        #   AF=TOTALES | AG=vacío | AH=vacío | AI=F.E.FO | AJ=STOCK
                         _rows_final3 = []
                         for _, _rp3 in _pivot_p3.iterrows():
                             _row3 = {
                                 "Cod":         int(_rp3["_sku"]),
                                 "Descripcion": _rp3["_DESC"],
+                                "":            "",            # columna C — vacía
                                 "Bs x p":      int(_rp3["_BXP"]),
                             }
                             for _cc3, _lbl3 in _CAM_ORDER:
                                 _row3[_lbl3] = int(_rp3.get(_cc3, 0))
                             _row3["TOTALES"] = int(_rp3["_TOTAL"])
+                            _row3[" "]       = ""   # AG vacía
+                            _row3["  "]      = ""   # AH vacía
                             _row3["F.E.FO"]  = _rp3["_FEFO"]
-                            _row3[""]        = ""
-                            _row3[" "]       = ""
                             _row3["STOCK"]   = _rp3["_STOCK"]
                             _rows_final3.append(_row3)
 
@@ -12646,28 +12677,30 @@ def render_tab_cierre():
     df_display["Neto a Ingresar"] = df_display["NetoIngresar"]
     df_show = df_display[["Camión", "Total Chess", "CTA CTE", "Rechazos", "Neto a Ingresar"]]
 
-    # pandas >= 2.1: applymap fue reemplazado por map
-    _use_map = hasattr(pd.io.formats.style.Styler, "map")
+    # pandas >= 2.1: applymap fue reemplazado por map — detectar con try/except
     _styled_base = df_show.style.format({
         "Total Chess":     "$ {:,.0f}",
         "CTA CTE":         "$ {:,.0f}",
         "Rechazos":        "$ {:,.0f}",
         "Neto a Ingresar": "$ {:,.0f}",
     })
-    if _use_map:
+    try:
         styled = (_styled_base
             .map(style_neto,    subset=["Neto a Ingresar"])
             .map(style_cta,     subset=["CTA CTE"])
             .map(style_rechazo, subset=["Rechazos"])
             .set_properties(**{"text-align": "right"},
                             subset=["Total Chess", "CTA CTE", "Rechazos", "Neto a Ingresar"]))
-    else:
-        styled = (_styled_base
-            .applymap(style_neto,    subset=["Neto a Ingresar"])
-            .applymap(style_cta,     subset=["CTA CTE"])
-            .applymap(style_rechazo, subset=["Rechazos"])
-            .set_properties(**{"text-align": "right"},
-                            subset=["Total Chess", "CTA CTE", "Rechazos", "Neto a Ingresar"]))
+    except AttributeError:
+        try:
+            styled = (_styled_base
+                .applymap(style_neto,    subset=["Neto a Ingresar"])
+                .applymap(style_cta,     subset=["CTA CTE"])
+                .applymap(style_rechazo, subset=["Rechazos"])
+                .set_properties(**{"text-align": "right"},
+                                subset=["Total Chess", "CTA CTE", "Rechazos", "Neto a Ingresar"]))
+        except Exception:
+            styled = _styled_base
 
     st.dataframe(styled, use_container_width=True, hide_index=True, height=460)
 
@@ -12875,7 +12908,6 @@ def render_tab_cierre():
             def style_cta_d1(val):
                 return "color: #b91c1c; font-weight: bold" if val > 0 else ""
 
-            _use_map_d1 = hasattr(pd.io.formats.style.Styler, "map")
             _base_d1 = df_d1_show.style.format({
                 "Preventa":     "$ {:,.0f}",
                 "Cobrado Real": "$ {:,.0f}",
@@ -12883,20 +12915,23 @@ def render_tab_cierre():
                 "Rechazo Real": "$ {:,.0f}",
                 "Neto Real":    "$ {:,.0f}",
             })
-            if _use_map_d1:
+            try:
                 styled_d1 = (_base_d1
                     .map(style_neto_d1, subset=["Neto Real"])
                     .map(style_rech_d1, subset=["Rechazo Real"])
                     .map(style_cta_d1,  subset=["CTA CTE"])
                     .set_properties(**{"text-align": "right"},
                                     subset=["Preventa", "Cobrado Real", "CTA CTE", "Rechazo Real", "Neto Real"]))
-            else:
-                styled_d1 = (_base_d1
-                    .applymap(style_neto_d1, subset=["Neto Real"])
-                    .applymap(style_rech_d1, subset=["Rechazo Real"])
-                    .applymap(style_cta_d1,  subset=["CTA CTE"])
-                    .set_properties(**{"text-align": "right"},
-                                    subset=["Preventa", "Cobrado Real", "CTA CTE", "Rechazo Real", "Neto Real"]))
+            except AttributeError:
+                try:
+                    styled_d1 = (_base_d1
+                        .applymap(style_neto_d1, subset=["Neto Real"])
+                        .applymap(style_rech_d1, subset=["Rechazo Real"])
+                        .applymap(style_cta_d1,  subset=["CTA CTE"])
+                        .set_properties(**{"text-align": "right"},
+                                        subset=["Preventa", "Cobrado Real", "CTA CTE", "Rechazo Real", "Neto Real"]))
+                except Exception:
+                    styled_d1 = _base_d1
 
             st.dataframe(styled_d1, use_container_width=True, hide_index=True, height=460)
 
