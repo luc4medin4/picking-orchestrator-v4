@@ -1,5 +1,20 @@
 """
-Picking Orchestrator v4.78.0 — Beccacece Hnos SA
+Picking Orchestrator v4.79.0 — Beccacece Hnos SA
+
+CAMBIOS v4.79.0:
+  1. FIX CRÍTICO FEFO y STOCK en Paso 3 AE Pallets:
+     - ROOT CAUSE: la función _col_by_name_or_pos() hacía match PARCIAL
+       primero. La keyword "cod" matcheaba "SKU Código y descripción..."
+       (col A, string concatenado) en vez de "Cód" (col D, número puro).
+       Resultado: pd.to_numeric() sobre strings tipo "7038 | BRAHMA..."
+       producía NaN en todos los SKUs → FEFO y STOCK vacíos.
+     - FIX: nueva lógica en 3 pasos: (1) match EXACTO case-insensitive,
+       (2) match parcial, (3) fallback posicional. Así "cód" resuelve
+       exactamente a la columna D "Cód" que tiene el número limpio.
+     - Keywords actualizadas: Cód → ["cód","cod"], Fecha → ["fecha de venc.",
+       "fecha de venc","fecha venc"], Stock Lote → ["stock lote"].
+     - FEFO = min(FECHA DE VENC.) por SKU con fecha válida.
+     - STOCK = sum(STOCK LOTE) por SKU (todos los lotes del SKU).
 
 CAMBIOS v4.78.0:
   1. DEBOUNCE Tablero Ruteador — Los text_input de hora y los number_input
@@ -354,7 +369,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.78.0"
+APP_VERSION = "4.79.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -5416,25 +5431,38 @@ def render_tab_proyeccion():
 
                             # Resolver columnas: primero por nombre, fallback posicional
                             def _col_by_name_or_pos(df, keywords, pos_idx):
-                                """Devuelve el nombre de columna: busca keyword en header,
-                                fallback a posición absoluta."""
-                                for kw in keywords:
-                                    for c in df.columns:
-                                        try:
-                                            if kw.lower() in str(c).lower():
-                                                return c
-                                        except Exception:
-                                            pass
-                                # fallback posicional
+                                """Devuelve el nombre de columna:
+                                1) Busca match EXACTO (case-insensitive) con algún keyword.
+                                2) Busca match PARCIAL con algún keyword.
+                                3) Fallback a posición absoluta.
+                                El match exacto evita que 'cod' resuelva a
+                                'SKU Código y descripción...' en lugar de 'Cód'."""
                                 cols = list(df.columns)
+                                cols_up = [str(c).strip().lower() for c in cols]
+                                # Paso 1: match exacto
+                                for kw in keywords:
+                                    kw_lo = kw.strip().lower()
+                                    for i, c_lo in enumerate(cols_up):
+                                        if c_lo == kw_lo:
+                                            return cols[i]
+                                # Paso 2: match parcial
+                                for kw in keywords:
+                                    kw_lo = kw.strip().lower()
+                                    for i, c_lo in enumerate(cols_up):
+                                        if kw_lo in c_lo:
+                                            return cols[i]
+                                # Paso 3: fallback posicional
                                 if pos_idx < len(cols):
                                     return cols[pos_idx]
                                 return None
 
+                            # col D (idx 3) = Cód  → keywords exactos primero
                             _col3_fsku  = _col_by_name_or_pos(
-                                _df_fr3, ["cód", "cod", "codigo", "código"], 3)
+                                _df_fr3, ["cód", "cod"], 3)
+                            # col F (idx 5) = FECHA DE VENC.
                             _col3_fecha = _col_by_name_or_pos(
-                                _df_fr3, ["fecha de venc", "fecha venc", "venc"], 5)
+                                _df_fr3, ["fecha de venc.", "fecha de venc", "fecha venc"], 5)
+                            # col G (idx 6) = STOCK LOTE  → keyword exacto para no matchear STOCK TOTAL
                             _col3_stklote = _col_by_name_or_pos(
                                 _df_fr3, ["stock lote"], 6)
 
