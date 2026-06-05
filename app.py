@@ -1,5 +1,17 @@
 """
-Picking Orchestrator v4.76.0 — Beccacece Hnos SA
+Picking Orchestrator v4.77.0 — Beccacece Hnos SA
+
+CAMBIOS v4.77.0:
+  1. PASO 3 FEFO — fix: lectura robusta por índice posicional (col F=5) de la hoja
+     Frescura. El matching por nombre fallaba con tildes ("Cód"). FEFO = min fecha
+     de vencimiento por SKU con fecha válida.
+  2. PASO 3 STOCK — fix: usa columna G (STOCK LOTE, idx 6) y SUMA todos los lotes
+     del SKU → stock total real en depósito. Antes usaba STOCK TOTAL con max() y
+     el matching por nombre fallaba.
+  3. PASO 3 EXCLUSIÓN CAMIONES — nuevo multiselect independiente dentro del Paso 3
+     (key: t4_p3_cams_excluir). Permite excluir choferes de la tabla Excel del AE
+     sin afectar la exclusión de la sección Proyección Picking (t4_cams_excluir).
+     Los camiones excluidos desaparecen del Excel (no solo quedan en 0).
 
 CAMBIOS v4.76.0:
   1. TAB ARCHIVOS — reducido tamaño del texto residual "200MB per file" en uploaders.
@@ -326,7 +338,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.76.0"
+APP_VERSION = "4.77.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -5176,6 +5188,23 @@ def render_tab_proyeccion():
             "paletas = floor(bultos_eq / BXP) · FEFO = venc. más próximo · STOCK = bultos totales en depósito."
         )
 
+        # ── Exclusión de camiones para el Excel AE — independiente de Proyección ─
+        _CAM_LABELS_P3 = [
+            "COL F.","TRE","PON","BEL J.","BAR","CAN","TOTH","ALM",
+            "PRA","CEB","QUI","VAL M.","COL S.","VIL","ARA","GAR",
+            "ROB","MINI","IBAX","PER","SCA","BEL P.","CHA","KAR",
+            "JER","VILL","DÍAZ",
+        ]
+        _p3_excl_default = st.session_state.get("t4_p3_cams_excluir", [])
+        _p3_excl = st.multiselect(
+            "🚫 Excluir camiones del Excel AE Pallets",
+            options=_CAM_LABELS_P3,
+            default=[x for x in _p3_excl_default if x in _CAM_LABELS_P3],
+            key="t4_p3_cams_excluir",
+            help="Los choferes seleccionados no aparecerán en el Excel generado. "
+                 "Independiente de la exclusión de Proyección Picking.",
+        )
+
         try:
             _car_p3 = st.session_state.get("t1_car") or st.session_state.get("t4_car")
             _fr_p3  = st.session_state.get("t1_fr")
@@ -5295,19 +5324,7 @@ def render_tab_proyeccion():
                         ).reset_index()
                         _pivot_p3.columns.name = None
 
-                        # Garantizar TODOS los camiones del CAR como columnas (con 0 si no tienen paletas)
-                        for _c3a in _all_cams_p3:
-                            if _c3a not in _pivot_p3.columns:
-                                _pivot_p3[_c3a] = 0
-
-                        _excl_p3 = set(st.session_state.get("t4_cams_excluir", []))
-                        for _ce3 in _excl_p3:
-                            if _ce3 in _pivot_p3.columns:
-                                _pivot_p3[_ce3] = 0
-
-                        # Orden canónico de camiones (ID → label abreviado referencia)
-                        # TODOS los 27 canónicos siempre presentes — los que no salen
-                        # quedan en 0 para mantener posición fija de columna.
+                        # Garantizar TODOS los camiones canónicos como columnas (con 0)
                         _CAM_ORDER_ALL = [
                             (101,"COL F."),(102,"TRE"),(103,"PON"),(104,"BEL J."),
                             (105,"BAR"),(106,"CAN"),(107,"TOTH"),(108,"ALM"),
@@ -5317,12 +5334,15 @@ def render_tab_proyeccion():
                             (122,"SCA"),(123,"BEL P."),(124,"CHA"),(125,"KAR"),
                             (127,"JER"),(128,"VILL"),(129,"DÍAZ"),
                         ]
-                        # Usar TODOS los canónicos (sin filtrar por reparto del día)
-                        _CAM_ORDER = _CAM_ORDER_ALL
-                        # Asegurar que todos estén como columnas en el pivot
-                        for _cid3x, _ in _CAM_ORDER:
+                        for _cid3x, _ in _CAM_ORDER_ALL:
                             if _cid3x not in _pivot_p3.columns:
                                 _pivot_p3[_cid3x] = 0
+
+                        # Exclusión independiente del Paso 3 (multiselect por label)
+                        _p3_excl_lbls = set(st.session_state.get("t4_p3_cams_excluir", []))
+                        # Filtrar CAM_ORDER quitando los excluidos → no aparecen en Excel
+                        _CAM_ORDER = [(cid, lbl) for cid, lbl in _CAM_ORDER_ALL
+                                      if lbl not in _p3_excl_lbls]
                         _cam_cols_p3 = [cid for cid, _ in _CAM_ORDER]
                         _pivot_p3["_TOTAL"] = _pivot_p3[_cam_cols_p3].sum(axis=1)
                         _pivot_p3 = _pivot_p3[_pivot_p3["_TOTAL"] > 0].copy()
@@ -5332,18 +5352,44 @@ def render_tab_proyeccion():
                             lambda s: _ddm_p3.get(int(s), {}).get("bxp", 0))
 
                         # ── 6. FEFO y STOCK desde Frescura hoja "Frescura" ────
-                        # FEFO = min(FECHA DE VENC.) por SKU (excluyendo NaT)
+                        # Columnas por posición (garantizado):
+                        #   col D / idx 3  = Cód  (SKU)
+                        #   col F / idx 5  = FECHA DE VENC.
+                        #   col G / idx 6  = STOCK LOTE
+                        # FEFO = min(FECHA DE VENC.) válida por SKU
                         # STOCK = sum(STOCK LOTE) por SKU = total bultos en depósito
                         _fefo3 = {}
                         _stk3  = {}
                         try:
                             _fr_p3.seek(0)
-                            _df_fr3 = pd.read_excel(_fr_p3, sheet_name="Frescura", header=0)
+                            _df_fr3 = pd.read_excel(
+                                _fr_p3, sheet_name="Frescura", header=0)
                             _fr_p3.seek(0)
-                            _col3_fsku  = _fc3(_df_fr3, "cód", "cod")
-                            _col3_fecha = _fc3(_df_fr3, "fecha de venc", "fecha venc")
-                            # STOCK: usar STOCK TOTAL (col O) — total bultos en depósito por SKU
-                            _col3_stklote = _fc3(_df_fr3, "stock total") or _fc3(_df_fr3, "stock lote")
+
+                            # Resolver columnas: primero por nombre, fallback posicional
+                            def _col_by_name_or_pos(df, keywords, pos_idx):
+                                """Devuelve el nombre de columna: busca keyword en header,
+                                fallback a posición absoluta."""
+                                for kw in keywords:
+                                    for c in df.columns:
+                                        try:
+                                            if kw.lower() in str(c).lower():
+                                                return c
+                                        except Exception:
+                                            pass
+                                # fallback posicional
+                                cols = list(df.columns)
+                                if pos_idx < len(cols):
+                                    return cols[pos_idx]
+                                return None
+
+                            _col3_fsku  = _col_by_name_or_pos(
+                                _df_fr3, ["cód", "cod", "codigo", "código"], 3)
+                            _col3_fecha = _col_by_name_or_pos(
+                                _df_fr3, ["fecha de venc", "fecha venc", "venc"], 5)
+                            _col3_stklote = _col_by_name_or_pos(
+                                _df_fr3, ["stock lote"], 6)
+
                             if _col3_fsku and _col3_fecha and _col3_stklote:
                                 _df_fr3["_fsku"]  = pd.to_numeric(
                                     _df_fr3[_col3_fsku], errors="coerce")
@@ -5353,19 +5399,21 @@ def render_tab_proyeccion():
                                     _df_fr3[_col3_stklote], errors="coerce").fillna(0)
                                 _df_fr3 = _df_fr3[_df_fr3["_fsku"].notna()].copy()
                                 _df_fr3["_fsku"] = _df_fr3["_fsku"].astype(int)
-                                # FEFO: min fecha válida
+                                # FEFO: min fecha válida por SKU
                                 _fefo_s = (
                                     _df_fr3[_df_fr3["_fecha"].notna()]
                                     .groupby("_fsku")["_fecha"].min()
                                 )
                                 for _sk3f, _dt3f in _fefo_s.items():
                                     _fefo3[int(_sk3f)] = (
-                                        _dt3f.strftime("%d/%m/%Y") if pd.notna(_dt3f) else "—"
+                                        _dt3f.strftime("%d/%m/%Y")
+                                        if pd.notna(_dt3f) else "—"
                                     )
-                                # STOCK: STOCK TOTAL es el mismo valor en todas las filas del SKU → tomar max
-                                _stk_s = _df_fr3.groupby("_fsku")["_stk"].max()
+                                # STOCK: suma de todos los lotes del SKU
+                                _stk_s = _df_fr3.groupby("_fsku")["_stk"].sum()
                                 for _sk3s, _sv3 in _stk_s.items():
-                                    _stk3[int(_sk3s)] = int(_sv3) if pd.notna(_sv3) else 0
+                                    _stk3[int(_sk3s)] = (
+                                        int(_sv3) if pd.notna(_sv3) else 0)
                         except Exception:
                             pass
 
