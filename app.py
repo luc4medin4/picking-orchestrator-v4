@@ -1,5 +1,22 @@
 """
-Picking Orchestrator v4.80.0 — Beccacece Hnos SA
+Picking Orchestrator v4.82.0 — Beccacece Hnos SA
+
+CAMBIOS v4.82.0:
+  1. CSS GLOBAL — alertas compactas (st.success / st.info / st.warning / st.error):
+     - font-size reducido a 12px en toda la app.
+     - text-overflow: ellipsis + white-space: nowrap → el texto nunca
+       desborda el recuadro (ej: nombre largo de archivo Frescura, PDF listo, etc.).
+     - Ícono SVG de la alerta limitado a 14px para mantener proporción.
+     - Aplica globalmente vía main() sin modificar cada st.success individual.
+
+CAMBIOS v4.81.0:
+  1. PDF TABLERO — PageBreak explícito antes de la tabla de camiones:
+     la tabla siempre arranca en hoja 2. Hoja 1 = KPIs + targets +
+     totales + gráfico + análisis operativo. Hoja 2 = detalle por camión.
+  2. EXCEL TABLERO — orden corregido para espejo del PDF:
+     totales → gráficos → análisis operativo (antes estaba invertido).
+  3. NOMBRE DE ARCHIVO — formato institucional:
+     DD-MM-YYYY_Tablero-Ruteador_BKCC.xlsx / .pdf
 
 CAMBIOS v4.80.0:
   1. CIERRE D+1 — FIX FECHA EN PDF Y EXCEL:
@@ -382,7 +399,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.80.0"
+APP_VERSION = "4.82.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -10347,45 +10364,10 @@ def render_tab_tablero():
                     _ws2.row_dimensions[row+1].height = 18
                     row += 3
 
-                    # ── ANÁLISIS OPERATIVO ──────────────────────────────────
-                    if tabla_rows:
-                        _ws2.merge_cells(f"A{row}:N{row}")
-                        _cell(row, 1, "ANÁLISIS OPERATIVO", bold=True, color="FFFFFF", sz=9, bg=_NX)
-                        _ws2.row_dimensions[row].height = 16; row += 1
-
-                        _bup_t = sum(r.get("Bultos UP", 0) for r in tabla_rows)
-
-                        _ah = ["N° Cam","Chofer","Bultos","Bultos UP","%Carga UP","HL","Peso(kg)","Peso OK","PDV","Drop Size"]
-                        for _ai, _ah2 in enumerate(_ah, 1):
-                            _cell(row, _ai, _ah2, bold=True, color="FFFFFF", sz=8, bg="2e5fa3")
-                        _ws2.row_dimensions[row].height = 14; row += 1
-
-                        for _ri3, _rr3 in enumerate(sorted(tabla_rows, key=lambda x: x.get("Bultos UP",0), reverse=True)):
-                            _bg3 = _LGX if _ri3 % 2 else "FFFFFF"
-                            _pct_bup = _rr3.get("Bultos UP",0) / _bup_t * 100 if _bup_t > 0 else 0
-                            _peso_ok_a = _rr3.get("_peso_ok", None)
-                            _peso_semaf_a = "OK" if _peso_ok_a is True else ("EXCEDE" if _peso_ok_a is False else "—")
-                            _ds2 = _rr3.get("Bultos UP",0) / _rr3["PDV"] if _rr3["PDV"] > 0 else 0
-                            _av3 = [str(_rr3["N° Cam"]), _rr3["Chofer"] or "—",
-                                    round(_rr3.get("Bultos",0), 0),
-                                    round(_rr3.get("Bultos UP",0), 2), f"{_pct_bup:.1f}%",
-                                    round(_rr3.get("HL", 0), 2),
-                                    round(_rr3.get("Peso(kg)", 0), 0), _peso_semaf_a,
-                                    _rr3["PDV"], round(_ds2, 2)]
-                            for _ci8, _vv8 in enumerate(_av3, 1):
-                                _cell(row, _ci8, _vv8, sz=8, bg=_bg3,
-                                      halign="left" if _ci8 == 2 else "center")
-                            if _peso_ok_a is False:
-                                _ws2.cell(row, 8).fill = _fx(_RX); _ws2.cell(row, 8).font = _fo(True,"FFFFFF",8)
-                            elif _peso_ok_a is True:
-                                _ws2.cell(row, 8).fill = _fx(_GRX); _ws2.cell(row, 8).font = _fo(True,"FFFFFF",8)
-                            _ws2.row_dimensions[row].height = 13; row += 1
-                        row += 1
-
-                    # ── GRÁFICOS EMBEBIDOS (datos auxiliares cols O:S) ────────
+                    # ── GRÁFICOS PRIMERO (igual que PDF) ──────────────────────
                     if tabla_rows:
                         try:
-                            _gd_col  = 15  # col O
+                            _gd_col  = 15  # col O — datos auxiliares
                             _gdr = row
                             for _ghi, _ghn in enumerate(["Camión","Bultos UP","HL","Peso(kg)","PDV"], 1):
                                 _ws2.cell(row, _gd_col + _ghi - 1, _ghn).font = _fo(True, _NX, 8)
@@ -10422,6 +10404,41 @@ def render_tab_tablero():
                         except Exception as _ge_xl:
                             _ws2.cell(row, 1, f"[Gráficos no disponibles: {_ge_xl}]")
                             row += 1
+
+                    # ── ANÁLISIS OPERATIVO (después del gráfico, igual que PDF) ─
+                    if tabla_rows:
+                        _ws2.merge_cells(f"A{row}:N{row}")
+                        _cell(row, 1, "ANÁLISIS OPERATIVO", bold=True, color="FFFFFF", sz=9, bg=_NX)
+                        _ws2.row_dimensions[row].height = 16; row += 1
+
+                        _bup_t = sum(r.get("Bultos UP", 0) for r in tabla_rows)
+
+                        _ah = ["N° Cam","Chofer","Bultos","Bultos UP","%Carga UP","HL","Peso(kg)","Peso OK","PDV","Drop Size"]
+                        for _ai, _ah2 in enumerate(_ah, 1):
+                            _cell(row, _ai, _ah2, bold=True, color="FFFFFF", sz=8, bg="2e5fa3")
+                        _ws2.row_dimensions[row].height = 14; row += 1
+
+                        for _ri3, _rr3 in enumerate(sorted(tabla_rows, key=lambda x: x.get("Bultos UP",0), reverse=True)):
+                            _bg3 = _LGX if _ri3 % 2 else "FFFFFF"
+                            _pct_bup = _rr3.get("Bultos UP",0) / _bup_t * 100 if _bup_t > 0 else 0
+                            _peso_ok_a = _rr3.get("_peso_ok", None)
+                            _peso_semaf_a = "OK" if _peso_ok_a is True else ("EXCEDE" if _peso_ok_a is False else "—")
+                            _ds2 = _rr3.get("Bultos UP",0) / _rr3["PDV"] if _rr3["PDV"] > 0 else 0
+                            _av3 = [str(_rr3["N° Cam"]), _rr3["Chofer"] or "—",
+                                    round(_rr3.get("Bultos",0), 0),
+                                    round(_rr3.get("Bultos UP",0), 2), f"{_pct_bup:.1f}%",
+                                    round(_rr3.get("HL", 0), 2),
+                                    round(_rr3.get("Peso(kg)", 0), 0), _peso_semaf_a,
+                                    _rr3["PDV"], round(_ds2, 2)]
+                            for _ci8, _vv8 in enumerate(_av3, 1):
+                                _cell(row, _ci8, _vv8, sz=8, bg=_bg3,
+                                      halign="left" if _ci8 == 2 else "center")
+                            if _peso_ok_a is False:
+                                _ws2.cell(row, 8).fill = _fx(_RX); _ws2.cell(row, 8).font = _fo(True,"FFFFFF",8)
+                            elif _peso_ok_a is True:
+                                _ws2.cell(row, 8).fill = _fx(_GRX); _ws2.cell(row, 8).font = _fo(True,"FFFFFF",8)
+                            _ws2.row_dimensions[row].height = 13; row += 1
+                        row += 1
 
                     # ── FOOTER HOJA 1 ─────────────────────────────────────────
                     _ws2.merge_cells(f"A{row}:N{row}")
@@ -10569,7 +10586,7 @@ def render_tab_tablero():
 
                     _buf_xl2 = io.BytesIO(); _wb2.save(_buf_xl2); _buf_xl2.seek(0)
                     ss["tr_xl2_bytes"] = _buf_xl2.getvalue()
-                    ss["tr_xl2_fname"] = f"{fecha_dia.strftime('%d%m%Y')}_tablero_ruteador_bkcc.xlsx"
+                    ss["tr_xl2_fname"] = f"{fecha_dia.strftime('%d-%m-%Y')}_Tablero-Ruteador_BKCC.xlsx"
                     st.success("✅ Excel Tablero generado — A4 landscape, tabla + 3 gráficos + análisis")
                 except Exception as _xe2:
                     import traceback
@@ -10832,6 +10849,11 @@ def render_tab_tablero():
                         except Exception as _ae:
                             pass
 
+                    # ── SALTO DE PÁGINA: tabla detalle siempre en hoja 2 ────
+                    if tabla_rows:
+                        from reportlab.platypus import PageBreak as _PB
+                        _story.append(_PB())
+
                     # Tabla detalle por camion — 13 cols sin Cap.kg, con semaforo peso
                     if tabla_rows:
                         _det_hdr = ["N°","Chofer","PDV","Bultos","Blt.\nUP","Pal.\nAE","Patente","HL","Peso(kg)","Peso\nOK","Rech.","Venc.Lic.","Lic."]
@@ -10963,7 +10985,7 @@ def render_tab_tablero():
 
                     _doc.build(_story)
                     _buf_pdf.seek(0)
-                    _fname_pdf = f"{fecha_dia.strftime('%d%m%Y')}_tablero_ruteador_bkcc.pdf"
+                    _fname_pdf = f"{fecha_dia.strftime('%d-%m-%Y')}_Tablero-Ruteador_BKCC.pdf"
                     ss["tr_pdf_bytes"] = _buf_pdf.getvalue()
                     ss["tr_pdf_fname"] = _fname_pdf
                     st.success(f"✅ PDF listo")
@@ -11789,6 +11811,36 @@ def main():
         page_title=f"Picking Orchestrator v{APP_VERSION}",
         page_icon="📦",
         layout="wide",
+    )
+
+    # ── CSS global: alertas success compactas en toda la app ─────────────────
+    # Reduce font-size y evita overflow en st.success (y st.info/warning/error)
+    # para que el texto no salga del recuadro en ninguna sección.
+    st.markdown(
+        """
+        <style>
+        /* Alertas globales — fuente pequeña, texto truncado con ellipsis */
+        div[data-testid="stAlert"] {
+            padding: 6px 10px !important;
+        }
+        div[data-testid="stAlert"] p,
+        div[data-testid="stAlert"] div,
+        div[data-testid="stAlert"] span {
+            font-size: 12px !important;
+            line-height: 1.4 !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+            white-space: nowrap !important;
+        }
+        /* Íconos dentro de alertas — no agrandar */
+        div[data-testid="stAlert"] svg {
+            width: 14px !important;
+            height: 14px !important;
+            flex-shrink: 0 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
 
     # v4.16 — Modo oscuro restaurado (sin override de CSS).
