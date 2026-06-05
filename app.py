@@ -5240,8 +5240,8 @@ def render_tab_proyeccion():
             options=_CAM_LABELS_P3,
             default=[x for x in _p3_excl_default if x in _CAM_LABELS_P3],
             key="t4_p3_cams_excluir",
-            help="Los choferes seleccionados no aparecerán en el Excel generado. "
-                 "Independiente de la exclusión de Proyección Picking.",
+            help="Los camiones seleccionados quedan con valores en CERO en la tabla y el Excel. "
+                 "Las columnas NO desaparecen. Independiente de la exclusión de Proyección Picking.",
         )
 
         try:
@@ -5378,10 +5378,19 @@ def render_tab_proyeccion():
                                 _pivot_p3[_cid3x] = 0
 
                         # Exclusión independiente del Paso 3 (multiselect por label)
+                        # v4.78 FIX: las columnas NO se eliminan — siempre están todas.
+                        # Los camiones excluidos se ponen en CERO en el pivot.
                         _p3_excl_lbls = set(st.session_state.get("t4_p3_cams_excluir", []))
-                        # Filtrar CAM_ORDER quitando los excluidos → no aparecen en Excel
-                        _CAM_ORDER = [(cid, lbl) for cid, lbl in _CAM_ORDER_ALL
-                                      if lbl not in _p3_excl_lbls]
+                        # Mapeo label → ID para encontrar los IDs a zerear
+                        _lbl_to_id3 = {lbl: cid for cid, lbl in _CAM_ORDER_ALL}
+                        _p3_excl_ids = {_lbl_to_id3[lbl] for lbl in _p3_excl_lbls
+                                        if lbl in _lbl_to_id3}
+                        # Zerear columnas de camiones excluidos (si existen en pivot)
+                        for _excl_cid in _p3_excl_ids:
+                            if _excl_cid in _pivot_p3.columns:
+                                _pivot_p3[_excl_cid] = 0
+                        # CAM_ORDER siempre incluye TODOS los canónicos (columnas fijas)
+                        _CAM_ORDER = _CAM_ORDER_ALL
                         _cam_cols_p3 = [cid for cid, _ in _CAM_ORDER]
                         _pivot_p3["_TOTAL"] = _pivot_p3[_cam_cols_p3].sum(axis=1)
                         _pivot_p3 = _pivot_p3[_pivot_p3["_TOTAL"] > 0].copy()
