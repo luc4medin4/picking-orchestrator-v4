@@ -1,5 +1,19 @@
 """
-Picking Orchestrator v4.82.0 — Beccacece Hnos SA
+Picking Orchestrator v4.83.0 — Beccacece Hnos SA
+
+CAMBIOS v4.83.0:
+  1. TAB BOLETAS — rediseño completo de la UI:
+     - Reemplaza el flujo Streamlit (uploader + tabla + botón generar) por un
+       componente HTML embebido con pdf-lib (client-side, sin servidor).
+     - Drag & drop múltiple de PDFs + selector de archivos.
+     - Lista reordenable con drag-and-drop visual y botones ↑ ↓.
+     - Badge por tipo de documento: FAC. A / FAC. B / REMITO (detectado por nombre).
+     - Contador de páginas por archivo, peso, total de páginas.
+     - Botón "Descargar PDF" → genera BOLETAS_BKCC_YYYYMMDD.pdf.
+     - Botón "Imprimir" → abre diálogo de impresión directo en el browser.
+     - Todo el merge corre en el browser (pdf-lib CDN) — no carga datos al servidor.
+     - Las funciones auxiliares _build_anr_lookup, _extract_pdf_text_all_pages,
+       _detect_camion_for_pdf se mantienen (pueden reactivarse o usarse en futuras features).
 
 CAMBIOS v4.82.0:
   1. CSS GLOBAL — alertas compactas (st.success / st.info / st.warning / st.error):
@@ -9012,255 +9026,292 @@ def _detect_camion_for_pdf(pdf_bytes: bytes, anr_lookup: dict) -> tuple[int | No
 
 def render_tab_boletas():
     """
-    Tab de impresión de boletas v4.19.
-    Agrupa PDFs por camión usando detección multicapa + ANR como fallback.
-    No altera los documentos: solo los reordena antes de combinar.
+    Tab Boletas v4.83.0
+    UI completamente renovada: componente HTML embebido con pdf-lib (client-side).
+    - Drag & drop múltiple, reordenamiento visual, badge por tipo, merge + imprimir.
+    - Las funciones auxiliares _build_anr_lookup / _detect_camion_for_pdf se conservan
+      para futura reactivación del agrupamiento por camión si se requiere.
     """
-    st.subheader("🖨️ Impresión de Boletas")
+    import streamlit.components.v1 as components
+
+    st.subheader("🖨️ Boletas — Unión e Impresión")
     st.caption(
-        "Subí todos los PDFs de boletas del próximo día. "
-        "La app los agrupa automáticamente por camión (usando ANR como referencia) "
-        "y genera un único PDF listo para mandar a imprimir."
+        "Subí los PDFs, ordenalos si es necesario y generá un único archivo para imprimir. "
+        "Todo el procesamiento ocurre en el browser — los archivos no se suben al servidor."
     )
 
-    # ── Verificar si hay ANR cargado ─────────────────────────────────────────
-    anr_df = st.session_state.get("anr_df")
-    if anr_df is None:
-        st.warning(
-            "⚠️ **ANR no cargado.** Para el cross-reference cliente→camión, "
-            "cargá el ANR.xlsx en la pestaña 📁 **Archivos** primero. "
-            "Sin ANR, solo se detecta el campo `Reparto` del PDF."
-        )
-        anr_lookup = {"cliente_to_camion": {}, "transporte_to_nombre": {}}
-    else:
-        anr_lookup = _build_anr_lookup()
-        n_clientes = len(anr_lookup["cliente_to_camion"])
-        n_transportes = len(anr_lookup["transporte_to_nombre"])
-        st.success(
-            f"✅ ANR cargado — {n_clientes} clientes mapeados · {n_transportes} camiones registrados"
-        )
+    _BOLETAS_HTML = """<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<style>
+  :root {
+    --navy:#1F3864; --navy-l:#2a4a80; --gold:#C9A84C; --gold-l:#e0bc6a;
+    --bg:#f4f6fb; --surface:#fff; --border:#dde3f0;
+    --text:#1a2540; --muted:#7a86a0; --danger:#c0392b; --success:#27ae60;
+    --r:10px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:'Segoe UI',Arial,sans-serif;background:var(--bg);color:var(--text);padding:16px 12px 60px;}
 
-    uploaded_files = st.file_uploader(
-        "PDFs de boletas (facturas A/B/C, remitos, NC, presupuestos, composición de carga) *",
-        type=["pdf"],
-        accept_multiple_files=True,
-        key="boletas_pdfs",
-    )
+  /* DROP ZONE */
+  #dz{border:2px dashed var(--navy-l);border-radius:var(--r);background:#fff;
+      padding:36px 20px;text-align:center;cursor:pointer;transition:all .2s;}
+  #dz:hover,#dz.ov{border-color:var(--gold);background:#fdf9f0;}
+  #dz .ico{font-size:36px;display:block;margin-bottom:8px;}
+  #dz .tt{font-size:15px;font-weight:700;color:var(--navy);margin-bottom:5px;}
+  #dz .ht{font-size:12px;color:var(--muted);}
+  #dz .ht span{color:var(--gold);font-weight:600;cursor:pointer;text-decoration:underline;}
+  #fi{display:none;}
 
-    if not uploaded_files:
-        st.info("📄 Subí uno o más PDFs para continuar.")
-        return
+  /* TOOLBAR */
+  .tb{display:flex;align-items:center;gap:8px;margin:16px 0 10px;flex-wrap:wrap;}
+  .badge{font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;}
+  .bc{background:var(--navy);color:#fff;}
+  .bp{background:var(--bg);border:1px solid var(--border);color:var(--muted);}
+  .sp{flex:1;}
 
-    st.divider()
+  /* BTNS */
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 15px;border-radius:7px;
+       font-size:12px;font-weight:600;cursor:pointer;border:none;transition:all .15s;white-space:nowrap;}
+  .btn:disabled{opacity:.35;cursor:not-allowed;}
+  .btn-nv{background:var(--navy);color:#fff;}
+  .btn-nv:hover:not(:disabled){background:var(--navy-l);}
+  .btn-gd{background:var(--gold);color:var(--navy);}
+  .btn-gd:hover:not(:disabled){background:var(--gold-l);}
+  .btn-gh{background:transparent;color:var(--muted);border:1px solid var(--border);}
+  .btn-gh:hover:not(:disabled){background:var(--bg);color:var(--text);}
 
-    # ── Procesar cada PDF ────────────────────────────────────────────────────
-    with st.spinner("Analizando PDFs y detectando camiones..."):
-        file_data = []
-        no_detectados = []
+  /* FILE LIST */
+  #fl{list-style:none;display:flex;flex-direction:column;gap:7px;}
+  .fi{background:#fff;border:1px solid var(--border);border-radius:var(--r);
+      display:flex;align-items:center;gap:10px;padding:9px 12px;transition:.15s;user-select:none;}
+  .fi.dr{opacity:.45;border-color:var(--gold);}
+  .fi.dt{border-color:var(--gold);box-shadow:0 0 0 2px var(--gold-l);}
+  .dh{color:var(--muted);cursor:grab;font-size:15px;padding:2px 3px;flex-shrink:0;line-height:1;}
+  .dh:active{cursor:grabbing;}
+  .fo{width:22px;height:22px;background:var(--navy);color:#fff;border-radius:50%;
+      font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .fn{font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .fm{font-size:10px;color:var(--muted);margin-top:2px;}
+  .fm .pi{background:#eef1f8;border-radius:3px;padding:1px 5px;margin-right:5px;font-weight:500;}
+  .fi-info{flex:1;min-width:0;}
+  .fa{display:flex;gap:3px;flex-shrink:0;}
+  .ib{background:none;border:1px solid var(--border);border-radius:5px;width:27px;height:27px;
+      cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:12px;
+      color:var(--muted);transition:.1s;}
+  .ib:hover{background:var(--bg);color:var(--text);}
+  .ib.del:hover{background:#fff5f5;color:var(--danger);border-color:#f5c6c2;}
+  .ib:disabled{opacity:.28;cursor:default;}
 
-        for uf in uploaded_files:
-            raw = uf.read()
-            camion, metodo = _detect_camion_for_pdf(raw, anr_lookup)
-            entry = {
-                "name": uf.name,
-                "camion": camion,
-                "metodo": metodo,
-                "bytes": raw,
-            }
-            file_data.append(entry)
-            if camion is None:
-                no_detectados.append(uf.name)
+  /* STATUS */
+  #sb{margin-top:14px;padding:10px 14px;border-radius:7px;font-size:12px;font-weight:500;
+      display:none;align-items:center;gap:8px;}
+  #sb.info{background:#eef3ff;color:var(--navy);border:1px solid #c5d3f5;display:flex;}
+  #sb.ok{background:#eafaf1;color:var(--success);border:1px solid #a9dfbf;display:flex;}
+  #sb.err{background:#fff5f5;color:var(--danger);border:1px solid #f5c6c2;display:flex;}
+  .sp2{width:14px;height:14px;border:2px solid currentColor;border-top-color:transparent;
+       border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0;}
+  @keyframes spin{to{transform:rotate(360deg);}}
 
-    # ── Advertencias ─────────────────────────────────────────────────────────
-    if no_detectados:
-        with st.expander(f"⚠️ {len(no_detectados)} archivo(s) sin camión detectado", expanded=True):
-            for nd in no_detectados:
-                st.markdown(f"- **{nd}**")
-            st.caption(
-                "Estos archivos se incluirán al final del PDF combinado. "
-                "Revisá que el ANR esté cargado y actualizado para mejorar la detección."
-            )
+  /* ACTION BAR */
+  #ab{position:sticky;bottom:0;background:#fff;border-top:2px solid var(--border);
+      padding:12px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+      box-shadow:0 -3px 10px rgba(0,0,0,.07);margin-top:18px;border-radius:0 0 var(--r) var(--r);}
+  #ab .ai{font-size:11px;color:var(--muted);flex:1;}
+  #pf{display:none;}
+</style>
+</head>
+<body>
 
-    # ── Separar detectados / no detectados y ordenar ─────────────────────────
-    con_camion = sorted(
-        [f for f in file_data if f["camion"] is not None],
-        key=lambda x: x["camion"],
-    )
-    sin_camion = [f for f in file_data if f["camion"] is None]
+<!-- DROP ZONE -->
+<div id="dz">
+  <span class="ico">&#128196;</span>
+  <div class="tt">Arrastrá los PDFs acá</div>
+  <p class="ht">o <span onclick="document.getElementById('fi').click()">seleccioná los archivos</span> desde tu equipo</p>
+  <input type="file" id="fi" multiple accept="application/pdf">
+</div>
 
-    # ── Tabla resumen ────────────────────────────────────────────────────────
-    from pypdf import PdfReader as _PRcount
+<!-- TOOLBAR -->
+<div class="tb" id="tb" style="display:none">
+  <span class="badge bc" id="cb">0 archivos</span>
+  <span class="badge bp" id="pb">— páginas</span>
+  <div class="sp"></div>
+  <button class="btn btn-gh" onclick="clearAll()">&#128465; Limpiar</button>
+</div>
 
-    def _count_pages(pdf_bytes):
-        try:
-            return len(_PRcount(io.BytesIO(pdf_bytes)).pages)
-        except Exception:
-            return "?"
+<!-- FILE LIST -->
+<ul id="fl"></ul>
 
-    transporte_to_nombre = anr_lookup.get("transporte_to_nombre", {})
+<!-- STATUS -->
+<div id="sb"></div>
 
-    resumen_data = []
-    camiones_unicos = {}
+<!-- ACTION BAR -->
+<div id="ab" style="display:none">
+  <span class="ai" id="ai"></span>
+  <button class="btn btn-gh" onclick="document.getElementById('fi').click()">&#43; Agregar</button>
+  <button class="btn btn-nv" id="bd" onclick="go('dl')" disabled>&#11123; Descargar</button>
+  <button class="btn btn-gd" id="bp2" onclick="go('pr')" disabled>&#128424; Imprimir</button>
+</div>
 
-    for f in con_camion:
-        cam = f["camion"]
-        nombre_transporte = transporte_to_nombre.get(cam, "—")
-        resumen_data.append({
-            "N° Camión": cam,
-            "Transporte": nombre_transporte,
-            "Método": f["metodo"],
-            "Archivo": f["name"],
-            "Páginas": _count_pages(f["bytes"]),
-        })
-        camiones_unicos[cam] = nombre_transporte
+<iframe id="pf" style="display:none"></iframe>
 
-    for f in sin_camion:
-        resumen_data.append({
-            "N° Camión": "—",
-            "Transporte": "SIN CAMIÓN",
-            "Método": f["metodo"],
-            "Archivo": f["name"],
-            "Páginas": _count_pages(f["bytes"]),
-        })
+<script>
+let files=[]; let dragSrc=null; let ctr=0;
+const dz=document.getElementById('dz');
+const fi=document.getElementById('fi');
 
-    df_resumen = pd.DataFrame(resumen_data)
+dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('ov');});
+dz.addEventListener('dragleave',()=>dz.classList.remove('ov'));
+dz.addEventListener('drop',e=>{
+  e.preventDefault();dz.classList.remove('ov');
+  const dr=Array.from(e.dataTransfer.files).filter(f=>f.type==='application/pdf');
+  if(!dr.length)return stat('Solo se aceptan archivos PDF.','err');
+  addFiles(dr);
+});
+fi.addEventListener('change',()=>{if(fi.files.length)addFiles(Array.from(fi.files));fi.value='';});
 
-    col_info, col_metrics = st.columns([3, 1])
-    with col_info:
-        st.markdown("#### 📋 Agrupación por camión")
-        st.dataframe(df_resumen, use_container_width=True, hide_index=True)
-    with col_metrics:
-        st.metric("Total PDFs", len(file_data))
-        st.metric("Camiones detectados", len(camiones_unicos))
-        st.metric("Sin camión", len(sin_camion))
-        total_pags = sum(
-            _count_pages(f["bytes"]) for f in file_data
-            if isinstance(_count_pages(f["bytes"]), int)
-        )
-        st.metric("Total páginas", total_pags)
+async function addFiles(nf){
+  stat('Leyendo archivos...','info',true);
+  for(const f of nf){
+    const id=++ctr;
+    const pg=await getPages(f);
+    files.push({id,file:f,name:f.name,pages:pg});
+  }
+  render();statClear();upd();
+}
 
-    st.divider()
+async function getPages(f){
+  try{
+    const b=await f.arrayBuffer();
+    const p=await PDFLib.PDFDocument.load(b,{ignoreEncryption:true});
+    return p.getPageCount();
+  }catch{return '?';}
+}
 
-    # ── Selector de modo de salida ────────────────────────────────────────────
-    modo = st.radio(
-        "Modo de salida:",
-        ["📄 Un PDF unificado (todos los camiones)", "🚛 Un PDF por camión (ZIP)"],
-        horizontal=True,
-        key="boletas_modo",
-    )
+function render(){
+  const list=document.getElementById('fl');
+  const tb=document.getElementById('tb');
+  const ab=document.getElementById('ab');
+  if(!files.length){list.innerHTML='';tb.style.display='none';ab.style.display='none';
+    document.getElementById('bd').disabled=true;document.getElementById('bp2').disabled=true;return;}
+  tb.style.display='flex';ab.style.display='flex';
+  const tp=files.reduce((s,f)=>s+(typeof f.pages==='number'?f.pages:0),0);
+  document.getElementById('cb').textContent=`${files.length} archivo${files.length!==1?'s':''}`;
+  document.getElementById('pb').textContent=`${tp||'?'} páginas en total`;
+  list.innerHTML='';
+  files.forEach((f,i)=>{
+    const li=document.createElement('li');
+    li.className='fi';li.dataset.id=f.id;li.draggable=true;
+    const dn=f.name.replace(/\\.pdf$/i,'').replace(/_/g,' ');
+    let tl='PDF',tc='#555';
+    if(/FACTURA_A/i.test(f.name)){tl='FAC. A';tc='#1F3864';}
+    else if(/FACTURA_B/i.test(f.name)){tl='FAC. B';tc='#5b3e8a';}
+    else if(/REMITO/i.test(f.name)){tl='REMITO';tc='#b5651d';}
+    li.innerHTML=`
+      <div class="dh">&#8942;&#8942;</div>
+      <div class="fo">${i+1}</div>
+      <div class="fi-info">
+        <div class="fn">${esc(dn)}</div>
+        <div class="fm">
+          <span class="pi">${f.pages} ${f.pages===1?'pág.':'págs.'}</span>
+          <span style="background:${tc};color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;">${tl}</span>
+          <span style="margin-left:5px;">${fmtSz(f.file.size)}</span>
+        </div>
+      </div>
+      <div class="fa">
+        <button class="ib" onclick="mv(${f.id},-1)" ${i===0?'disabled':''}>&#8593;</button>
+        <button class="ib" onclick="mv(${f.id},1)" ${i===files.length-1?'disabled':''}>&#8595;</button>
+        <button class="ib del" onclick="rm(${f.id})">&#10005;</button>
+      </div>`;
+    li.addEventListener('dragstart',e=>{dragSrc=f.id;li.classList.add('dr');e.dataTransfer.effectAllowed='move';});
+    li.addEventListener('dragend',()=>{li.classList.remove('dr');document.querySelectorAll('.fi').forEach(x=>x.classList.remove('dt'));});
+    li.addEventListener('dragover',e=>{e.preventDefault();if(dragSrc!==f.id){document.querySelectorAll('.fi').forEach(x=>x.classList.remove('dt'));li.classList.add('dt');}});
+    li.addEventListener('drop',e=>{
+      e.preventDefault();
+      if(dragSrc!==f.id){
+        const fi2=files.findIndex(x=>x.id===dragSrc),ti=files.findIndex(x=>x.id===f.id);
+        const [it]=files.splice(fi2,1);files.splice(ti,0,it);render();upd();
+      }
+      li.classList.remove('dt');
+    });
+    list.appendChild(li);
+  });
+  document.getElementById('bd').disabled=false;
+  document.getElementById('bp2').disabled=false;
+}
 
-    # ── Botón de generación ──────────────────────────────────────────────────
-    if st.button("🖨️ Generar PDF(s)", type="primary", use_container_width=True):
-        with st.spinner("Combinando PDFs..."):
-            try:
-                from pypdf import PdfWriter, PdfReader as _PR
+function mv(id,dir){
+  const i=files.findIndex(f=>f.id===id);
+  const ni=i+dir;
+  if(ni<0||ni>=files.length)return;
+  [files[i],files[ni]]=[files[ni],files[i]];render();
+}
+function rm(id){files=files.filter(f=>f.id!==id);render();if(!files.length)statClear();upd();}
+function clearAll(){if(files.length&&!confirm(`¿Limpiar los ${files.length} archivos?`))return;files=[];render();statClear();}
+function upd(){
+  const tp=files.reduce((s,f)=>s+(typeof f.pages==='number'?f.pages:0),0);
+  document.getElementById('ai').textContent=files.length?`${files.length} archivo${files.length!==1?'s':''} · ${tp} páginas · listos para unir`:'';
+}
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function fmtSz(b){if(b<1024)return b+' B';if(b<1048576)return (b/1024).toFixed(0)+' KB';return (b/1048576).toFixed(1)+' MB';}
 
-                orden_final = con_camion + sin_camion
+function stat(msg,type='info',sp=false){
+  const s=document.getElementById('sb');
+  s.className=type;
+  s.innerHTML=(sp?'<div class="sp2"></div>':'')+`<span>${msg}</span>`;
+}
+function statClear(){const s=document.getElementById('sb');s.className='';s.style.display='none';s.innerHTML='';}
 
-                if "unificado" in modo:
-                    # ── Modo 1: PDF único ────────────────────────────────────
-                    writer = PdfWriter()
-                    for f in orden_final:
-                        reader = _PR(io.BytesIO(f["bytes"]))
-                        for page in reader.pages:
-                            writer.add_page(page)
+async function go(action){
+  if(!files.length)return;
+  document.getElementById('bd').disabled=true;
+  document.getElementById('bp2').disabled=true;
+  stat(`Uniendo ${files.length} archivo${files.length!==1?'s':''}...`,'info',true);
+  try{
+    const merged=await PDFLib.PDFDocument.create();
+    for(const f of files){
+      const b=await f.file.arrayBuffer();
+      let src;
+      try{src=await PDFLib.PDFDocument.load(b,{ignoreEncryption:true});}
+      catch(e){stat(`Error leyendo "${f.name}". Verificá que no esté dañado.`,'err');
+        document.getElementById('bd').disabled=false;document.getElementById('bp2').disabled=false;return;}
+      const pgs=await merged.copyPages(src,src.getPageIndices());
+      pgs.forEach(p=>merged.addPage(p));
+    }
+    const bytes=await merged.save();
+    const blob=new Blob([bytes],{type:'application/pdf'});
+    const url=URL.createObjectURL(blob);
+    const tp=files.reduce((s,f)=>s+(typeof f.pages==='number'?f.pages:0),0);
+    if(action==='dl'){
+      const d=new Date();
+      const ds=`${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+      const a=document.createElement('a');a.href=url;a.download=`BOLETAS_BKCC_${ds}.pdf`;a.click();
+      stat(`PDF descargado — ${files.length} archivos · ${tp} páginas`,'ok');
+    } else {
+      const iframe=document.getElementById('pf');
+      iframe.src=url;
+      iframe.onload=()=>{iframe.contentWindow.focus();iframe.contentWindow.print();
+        stat('Diálogo de impresión abierto. Si no aparece, usá Descargar e imprimí desde Acrobat.','ok');};
+    }
+    document.getElementById('bd').disabled=false;
+    document.getElementById('bp2').disabled=false;
+  }catch(e){
+    stat('Error al unir los PDFs: '+e.message,'err');
+    document.getElementById('bd').disabled=false;
+    document.getElementById('bp2').disabled=false;
+  }
+}
 
-                    output_buf = io.BytesIO()
-                    writer.write(output_buf)
-                    output_buf.seek(0)
-                    pdf_combinado = output_buf.read()
+document.addEventListener('dragover',e=>e.preventDefault());
+document.addEventListener('drop',e=>e.preventDefault());
+</script>
+</body>
+</html>"""
 
-                    fecha_str = datetime.now().strftime("%Y%m%d_%H%M")
-                    filename = f"Boletas_Impresion_{fecha_str}.pdf"
-
-                    st.success(
-                        f"✅ PDF generado — {len(orden_final)} archivos · {total_pags} páginas · "
-                        f"{len(camiones_unicos)} camión(es)"
-                    )
-                    st.download_button(
-                        label="⬇️ Descargar PDF unificado",
-                        data=pdf_combinado,
-                        file_name=filename,
-                        mime="application/pdf",
-                        type="primary",
-                        use_container_width=True,
-                        key="boletas_dl_unificado",
-                    )
-
-                else:
-                    # ── Modo 2: ZIP con un PDF por camión ────────────────────
-                    import zipfile
-
-                    # Agrupar por camión
-                    grupos: dict = {}
-                    for f in con_camion:
-                        cam = f["camion"]
-                        grupos.setdefault(cam, []).append(f)
-                    if sin_camion:
-                        grupos["SIN_CAMION"] = sin_camion
-
-                    zip_buf = io.BytesIO()
-                    total_archivos = 0
-                    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                        for cam_key in sorted(
-                            grupos.keys(),
-                            key=lambda x: (0, x) if isinstance(x, int) else (1, str(x))
-                        ):
-                            archivos_cam = grupos[cam_key]
-                            writer_cam = PdfWriter()
-                            for f in archivos_cam:
-                                reader = _PR(io.BytesIO(f["bytes"]))
-                                for page in reader.pages:
-                                    writer_cam.add_page(page)
-
-                            buf_cam = io.BytesIO()
-                            writer_cam.write(buf_cam)
-                            buf_cam.seek(0)
-
-                            nombre_trans = transporte_to_nombre.get(cam_key, str(cam_key)) if isinstance(cam_key, int) else "SIN_CAMION"
-                            nombre_trans_safe = nombre_trans.replace(" ", "_").replace("/", "-")
-                            pdf_name = f"CAM_{cam_key}_{nombre_trans_safe}.pdf"
-                            zf.writestr(pdf_name, buf_cam.read())
-                            total_archivos += 1
-
-                    zip_buf.seek(0)
-                    fecha_str = datetime.now().strftime("%Y%m%d_%H%M")
-                    zip_name = f"Boletas_PorCamion_{fecha_str}.zip"
-
-                    st.success(
-                        f"✅ ZIP generado — {total_archivos} PDF(s) · "
-                        f"{len(camiones_unicos)} camión(es)"
-                    )
-                    st.download_button(
-                        label="⬇️ Descargar ZIP (un PDF por camión)",
-                        data=zip_buf.read(),
-                        file_name=zip_name,
-                        mime="application/zip",
-                        type="primary",
-                        use_container_width=True,
-                        key="boletas_dl_zip",
-                    )
-
-            except Exception as e:
-                st.error(f"❌ Error al generar PDF(s): {e}")
-                with st.expander("Stack trace"):
-                    import traceback
-                    st.code(traceback.format_exc())
-
-    with st.expander("ℹ️ ¿Cómo funciona? (detección multicapa)"):
-        st.markdown(
-            "La detección del camión se aplica en capas, en orden:\n\n"
-            "1. **Reparto** → campo `Reparto: XXXXXXXX` en el PDF. Si el número coincide con un camión del ANR, lo asigna directamente.\n"
-            "2. **Composición de Carga** → campo `Transporte: NNN - NOMBRE` en la cabecera del documento.\n"
-            "3. **Fletero** → campo `Fletero: NOMBRE` en facturas A/B/C. Busca el nombre en el listado de transportes del ANR.\n"
-            "4. **Cliente → ANR** → extrae el nombre del cliente del PDF y lo cruza con la hoja BASE del ANR para obtener su camión asignado.\n\n"
-            "**Modos de salida:**\n"
-            "- *PDF unificado*: todos los camiones en un solo archivo, ordenados de menor a mayor.\n"
-            "- *ZIP por camión*: un PDF separado por cada camión (ideal para imprimir por separado).\n\n"
-            "Los documentos **no se modifican**: solo se reordenan y combinan.\n\n"
-            "**Formatos soportados**: Factura A/B/C, Remito, Nota de Crédito, "
-            "Presupuesto, Composición de Carga, FAC.PRES — cualquier PDF del sistema Beccacece."
-        )
+    components.html(_BOLETAS_HTML, height=720, scrolling=True)
 
 
 
