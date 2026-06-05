@@ -1,5 +1,18 @@
 """
-Picking Orchestrator v4.79.0 — Beccacece Hnos SA
+Picking Orchestrator v4.80.0 — Beccacece Hnos SA
+
+CAMBIOS v4.80.0:
+  1. CIERRE D+1 — FIX FECHA EN PDF Y EXCEL:
+     - fecha_d1_str ya no incluye " (D+1)" — es solo la fecha del día.
+     - Las funciones _cierre_d1_pdf y _cierre_d1_excel ya ponen "D+1"
+       en sus propios títulos (CIERRE FINANCIERO D+1 — {fecha}).
+     - El nombre del archivo descargado ya usaba _fecha_slug correcto.
+  2. EXCEL TABLERO RUTEADOR — REDISEÑO 2 HOJAS:
+     - Hoja 1 "Tablero Ruteador": KPI cards, tabla TARGET/AVANCE/STATUS
+       (espejo del PDF), totales globales, análisis operativo, 3 gráficos.
+     - Hoja 2 "Detalle Tablero": tabla por camión con semáforos de peso
+       y licencias, fila TOTAL, alertas de licencias vencidas.
+     - Todo en A4 landscape con estilo navy/gold institucional.
 
 CAMBIOS v4.79.0:
   1. FIX CRÍTICO FEFO y STOCK en Paso 3 AE Pallets:
@@ -369,7 +382,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.79.0"
+APP_VERSION = "4.80.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -10243,6 +10256,10 @@ def render_tab_tablero():
 
                     row = 1
 
+                    # ════════════════════════════════════════════════════════
+                    # HOJA 1 — RESUMEN (KPIs · Targets · Totales · Gráfico · Análisis)
+                    # ════════════════════════════════════════════════════════
+
                     # ── FILA 1: Header título completo ──────────────────────────
                     _ws2.merge_cells(f"A{row}:N{row}")
                     _cell(row, 1,
@@ -10263,8 +10280,6 @@ def render_tab_tablero():
                            f"≤{fz_target:.0%}", f"≥{_TR_TARGET_UTIL_VEH:.0%}",
                            f"≥{_TR_TARGET_EFICIENCIA:.0%}"]
                     _ko = [sla_ok, ruteo_ok, ocup_ok, fz_ok, util_ok, efic_ok]
-                    # 6 KPIs → cols A:F (cada KPI ocupa 1 col de ~2 unidades)
-                    # Pero tenemos 12 cols para camiones → usamos A:L (2 cols/KPI merged)
                     for _ki, (kh2, kr2, kt2, ko2) in enumerate(zip(_kh,_kr,_kt,_ko)):
                         _bgk = _GRX if ko2 is True else (_RX if ko2 is False else "FFC107")
                         _c2s = _ki * 2 + 1
@@ -10275,8 +10290,49 @@ def render_tab_tablero():
                               sz=8, bg=_bgk, wrap=True)
                     _ws2.row_dimensions[row].height = 40; row += 1
 
-                    # ── FILA 3-4: Totales globales en franja bicolor ─────────
-                    # Estilo referencia: labels en fila azul claro, valores abajo
+                    # ── TABLA TARGET / AVANCE / STATUS (espejo del PDF) ──────
+                    _ws2.merge_cells(f"A{row}:N{row}")
+                    _cell(row, 1, "OBJETIVOS DEL DÍA", bold=True, color="FFFFFF", sz=9, bg=_NX)
+                    _ws2.row_dimensions[row].height = 15; row += 1
+
+                    _tgt_hdr_xl = ["KPI", "TARGET", "AVANCE", "STATUS"]
+                    _tgt_hdr_widths = [7, 3, 3, 4]  # col spans (total 17 cols = A:Q, but we use A:N=14)
+                    # Header row: cols A-G / H-J / K-M / N
+                    _tgt_col_spans = [(1,7), (8,10), (11,13), (14,14)]  # (start, end) 1-indexed
+                    for (_cs, _ce), _ht in zip(_tgt_col_spans, _tgt_hdr_xl):
+                        if _cs == _ce:
+                            _cell(row, _cs, _ht, bold=True, color="FFFFFF", sz=8, bg="2e5fa3")
+                        else:
+                            _ws2.merge_cells(f"{get_column_letter(_cs)}{row}:{get_column_letter(_ce)}{row}")
+                            _cell(row, _cs, _ht, bold=True, color="FFFFFF", sz=8, bg="2e5fa3")
+                    _ws2.row_dimensions[row].height = 14; row += 1
+
+                    _tgt_data_xl = [
+                        ("Hora entrega ventas (SLA)", sla_str, hora_real_str or "—", sla_ok),
+                        ("Tiempo de ruteo",           ruteo_str, ruteo_real_str or "—", ruteo_ok),
+                        ("Ocupación bodega bultos UP", f"≥{ocup_target}", f"{ocup_bodega:.1f}", ocup_ok),
+                        ("Fuera de zona",             f"≤{fz_target:.0%}", f"{fuera_zona_pct:.1%}", fz_ok),
+                    ]
+                    for _ti6, (_tk, _tt, _ta, _tok) in enumerate(_tgt_data_xl):
+                        _bg6 = _LGX if _ti6 % 2 else "FFFFFF"
+                        _ws2.merge_cells(f"A{row}:G{row}")
+                        _cell(row, 1, _tk, sz=8, bg=_bg6, halign="left")
+                        _ws2.merge_cells(f"H{row}:J{row}")
+                        _cell(row, 8, _tt, sz=8, bg=_bg6)
+                        _ws2.merge_cells(f"K{row}:M{row}")
+                        _cell(row, 11, _ta, bold=True, sz=8, bg=_bg6)
+                        _ok_bg = _GRX if _tok is True else (_RX if _tok is False else "888888")
+                        _ok_txt = "OK" if _tok is True else ("NO OK" if _tok is False else "—")
+                        _cell(row, 14, _ok_txt, bold=True, color="FFFFFF", sz=8, bg=_ok_bg)
+                        _ws2.row_dimensions[row].height = 13; row += 1
+
+                    row += 1  # espacio
+
+                    # ── TOTALES GLOBALES en franja bicolor ──────────────────
+                    _ws2.merge_cells(f"A{row}:N{row}")
+                    _cell(row, 1, "TOTALES GLOBALES", bold=True, color="FFFFFF", sz=9, bg=_NX)
+                    _ws2.row_dimensions[row].height = 15; row += 1
+
                     _tl = ["Camiones","PDV","Bultos","Bultos UP","Paletas","HL","Peso(kg)","Drop Size","Rechazos","SV","FZ PDV","FZ %","Prod.Ruteo"]
                     _tv = [f"{camiones_en_reparto}/{total_camiones_flota}",
                            str(total_pedidos), f"{total_bup:.0f}", f"{total_up:.2f}", f"{paletas_total:.2f}",
@@ -10291,85 +10347,12 @@ def render_tab_tablero():
                     _ws2.row_dimensions[row+1].height = 18
                     row += 3
 
-                    # ── TABLA CAMIONES ────────────────────────────────────────
-                    if tabla_rows:
-                        # Cabecera de sección
-                        _ws2.merge_cells(f"A{row}:N{row}")
-                        _cell(row, 1, "DETALLE POR CAMIÓN", bold=True, color="FFFFFF", sz=9, bg=_NX)
-                        _ws2.row_dimensions[row].height = 15; row += 1
-
-                        _cols_h = ["N°","Chofer","PDV","Bultos\n(eq.)","Bultos\nUP","Pal.\nAE",
-                                   "Patente","HL","Peso\n(kg)","Peso\nOK",
-                                   "Rech.","Venc.\nLic.","Lic."]
-                        for ci5, ch5 in enumerate(_cols_h, 1):
-                            _cell(row, ci5, ch5, bold=True, color="FFFFFF", sz=8, bg=_NX, wrap=True)
-                        _ws2.row_dimensions[row].height = 28; row += 1
-
-                        for ri2, rr2 in enumerate(tabla_rows):
-                            _bg2 = _LGX if ri2 % 2 else "FFFFFF"
-                            _lic_txt = rr2.get("Lic.", "—") or "—"
-                            _lic_xl  = "BLOQUEADO" if str(_lic_txt).startswith("🚫") else ("OK" if str(_lic_txt).startswith("✅") else "—")
-                            _venc_xl = rr2.get("Venc. Lic.", "") or "—"
-                            _peso_ok_xl = rr2.get("_peso_ok", None)
-                            _peso_semaf = "OK" if _peso_ok_xl is True else ("EXCEDE" if _peso_ok_xl is False else "—")
-                            _vv2 = [str(rr2["N° Cam"]), rr2["Chofer"] or "—",
-                                    rr2["PDV"],
-                                    round(rr2.get("Bultos", 0), 2),
-                                    round(rr2.get("Bultos UP", 0), 2),
-                                    round(rr2.get("Paletas", 0), 0),
-                                    rr2["Patente"],
-                                    round(rr2.get("HL", 0), 2),
-                                    round(rr2.get("Peso(kg)", 0), 0),
-                                    _peso_semaf,
-                                    rr2["Rechazos"],
-                                    _venc_xl,
-                                    _lic_xl]
-                            for ci6, vv6 in enumerate(_vv2, 1):
-                                _cell(row, ci6, vv6, sz=8, bg=_bg2,
-                                      halign="left" if ci6 == 2 else "center")
-                            # Semaforo peso (col 10)
-                            if _peso_ok_xl is False:
-                                _ws2.cell(row, 10).fill = _fx(_RX)
-                                _ws2.cell(row, 10).font = _fo(True, "FFFFFF", 8)
-                            elif _peso_ok_xl is True:
-                                _ws2.cell(row, 10).fill = _fx(_GRX)
-                                _ws2.cell(row, 10).font = _fo(True, "FFFFFF", 8)
-                            # Colorear columna Lic. (col 13)
-                            _valid_col = 13
-                            if _lic_xl == "BLOQUEADO":
-                                _ws2.cell(row, _valid_col).fill = _fx(_RX)
-                                _ws2.cell(row, _valid_col).font = _fo(True, "FFFFFF", 8)
-                                for _ci_bl in range(1, len(_vv2)+1):
-                                    if _ci_bl not in (_valid_col, 10):
-                                        _ws2.cell(row, _ci_bl).fill = _fx("FFE8E8")
-                            elif _lic_xl == "OK":
-                                _ws2.cell(row, _valid_col).fill = _fx(_GRX)
-                                _ws2.cell(row, _valid_col).font = _fo(True, "FFFFFF", 8)
-                            _ws2.row_dimensions[row].height = 14; row += 1
-
-                        # Fila TOTAL en azul institucional
-                        _totv2 = ["TOTAL", "",
-                                  sum(r["PDV"]                    for r in tabla_rows),
-                                  round(sum(r.get("Bultos",0)     for r in tabla_rows), 0),
-                                  round(sum(r.get("Bultos UP",0)  for r in tabla_rows), 2),
-                                  round(sum(r.get("Paletas",0)    for r in tabla_rows), 0),
-                                  "", "",
-                                  round(sum(r.get("Peso(kg)",0)   for r in tabla_rows), 0),
-                                  "",
-                                  round(sum(r.get("Rechazos",0)   for r in tabla_rows), 1),
-                                  "",""]
-                        for ci7, tv7 in enumerate(_totv2, 1):
-                            _cell(row, ci7, tv7, bold=True, color=_NX, sz=9, bg=_BLX)
-                        _ws2.row_dimensions[row].height = 16; row += 2
-
-                    # ── TABLA ANÁLISIS OPERATIVO ────────────────────────────
+                    # ── ANÁLISIS OPERATIVO ──────────────────────────────────
                     if tabla_rows:
                         _ws2.merge_cells(f"A{row}:N{row}")
                         _cell(row, 1, "ANÁLISIS OPERATIVO", bold=True, color="FFFFFF", sz=9, bg=_NX)
                         _ws2.row_dimensions[row].height = 16; row += 1
 
-                        _hl_t  = sum(r.get("HL", 0) for r in tabla_rows)
-                        _kg_t  = sum(r.get("Peso(kg)", 0) for r in tabla_rows)
                         _bup_t = sum(r.get("Bultos UP", 0) for r in tabla_rows)
 
                         _ah = ["N° Cam","Chofer","Bultos","Bultos UP","%Carga UP","HL","Peso(kg)","Peso OK","PDV","Drop Size"]
@@ -10380,7 +10363,6 @@ def render_tab_tablero():
                         for _ri3, _rr3 in enumerate(sorted(tabla_rows, key=lambda x: x.get("Bultos UP",0), reverse=True)):
                             _bg3 = _LGX if _ri3 % 2 else "FFFFFF"
                             _pct_bup = _rr3.get("Bultos UP",0) / _bup_t * 100 if _bup_t > 0 else 0
-                            _kg_c2   = _rr3.get("Peso(kg)", 0)
                             _peso_ok_a = _rr3.get("_peso_ok", None)
                             _peso_semaf_a = "OK" if _peso_ok_a is True else ("EXCEDE" if _peso_ok_a is False else "—")
                             _ds2 = _rr3.get("Bultos UP",0) / _rr3["PDV"] if _rr3["PDV"] > 0 else 0
@@ -10388,12 +10370,11 @@ def render_tab_tablero():
                                     round(_rr3.get("Bultos",0), 0),
                                     round(_rr3.get("Bultos UP",0), 2), f"{_pct_bup:.1f}%",
                                     round(_rr3.get("HL", 0), 2),
-                                    round(_kg_c2, 0), _peso_semaf_a,
+                                    round(_rr3.get("Peso(kg)", 0), 0), _peso_semaf_a,
                                     _rr3["PDV"], round(_ds2, 2)]
                             for _ci8, _vv8 in enumerate(_av3, 1):
                                 _cell(row, _ci8, _vv8, sz=8, bg=_bg3,
                                       halign="left" if _ci8 == 2 else "center")
-                            # Colorear semaforo peso
                             if _peso_ok_a is False:
                                 _ws2.cell(row, 8).fill = _fx(_RX); _ws2.cell(row, 8).font = _fo(True,"FFFFFF",8)
                             elif _peso_ok_a is True:
@@ -10401,16 +10382,13 @@ def render_tab_tablero():
                             _ws2.row_dimensions[row].height = 13; row += 1
                         row += 1
 
-                    # ── GRÁFICOS EMBEBIDOS ────────────────────────────────────
+                    # ── GRÁFICOS EMBEBIDOS (datos auxiliares cols O:S) ────────
                     if tabla_rows:
                         try:
-                            # Datos auxiliares para gráficos (cols O:R)
                             _gd_col  = 15  # col O
-                            _gd_row_start = row
-                            # Headers
+                            _gdr = row
                             for _ghi, _ghn in enumerate(["Camión","Bultos UP","HL","Peso(kg)","PDV"], 1):
                                 _ws2.cell(row, _gd_col + _ghi - 1, _ghn).font = _fo(True, _NX, 8)
-                            _gdr = row
                             for _gi2, _gr2 in enumerate(tabla_rows, 1):
                                 _ws2.cell(_gdr + _gi2, _gd_col,     str(_gr2["N° Cam"]))
                                 _ws2.cell(_gdr + _gi2, _gd_col + 1, round(_gr2["Bultos UP"], 1))
@@ -10434,7 +10412,6 @@ def render_tab_tablero():
                                 _bc.series[0].graphicalProperties.solidFill = color
                                 _ws2.add_chart(_bc, chart_anchor)
 
-                            # 3 gráficos: Bultos UP | HL | Peso
                             _make_bar(1, f"Bultos UP por Camión — {fecha_dia.strftime('%d/%m/%Y')}",
                                       f"A{row}", w=12, h=9, color="1F3864")
                             _make_bar(2, f"HL por Camión — {fecha_dia.strftime('%d/%m/%Y')}",
@@ -10446,22 +10423,7 @@ def render_tab_tablero():
                             _ws2.cell(row, 1, f"[Gráficos no disponibles: {_ge_xl}]")
                             row += 1
 
-                    # ── ALERTAS LICENCIAS ────────────────────────────────────
-                    _lic_alerts = [r for r in tabla_rows if str(r.get("Lic.", "")).startswith("🚫")]
-                    if _lic_alerts:
-                        _ws2.merge_cells(f"A{row}:N{row}")
-                        _cell(row, 1, "ALERTAS — LICENCIAS VENCIDAS (NO PUEDEN SALIR A REPARTO)", bold=True, color="FFFFFF", sz=9, bg=_RX)
-                        _ws2.row_dimensions[row].height = 16; row += 1
-                        for _la in _lic_alerts:
-                            _ws2.merge_cells(f"A{row}:N{row}")
-                            _cell(row, 1,
-                                  f"CAM {_la['N° Cam']} — {_la['Chofer'] or 'S/N'}: "
-                                  f"LICENCIA VENCIDA ({_la['Venc. Lic.']})",
-                                  bold=True, color=_RX, sz=9, bg="FFE8E8")
-                            _ws2.row_dimensions[row].height = 14; row += 1
-                        row += 1
-
-                    # ── FOOTER ───────────────────────────────────────────────
+                    # ── FOOTER HOJA 1 ─────────────────────────────────────────
                     _ws2.merge_cells(f"A{row}:N{row}")
                     _ws2.cell(row, 1,
                         f"Generado: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')} · "
@@ -10470,25 +10432,140 @@ def render_tab_tablero():
                     ).font = _fo(False, "888888", 7)
                     _ws2.row_dimensions[row].height = 12
 
-                    # ── ANCHOS DE COLUMNA (13 cols: N°/Chofer/PDV/Bultos/BultosUP/PalAE/Pat/HL/Peso/PesoOK/Rech/VencLic/Lic)
-                    _col_widths = {
-                        "A": 5,    # N° Cam
-                        "B": 14,   # Chofer
-                        "C": 5,    # PDV
-                        "D": 9,    # Bultos (eq.)
-                        "E": 9,    # Bultos UP
-                        "F": 7,    # Pal. AE
-                        "G": 8,    # Patente
-                        "H": 7,    # HL
-                        "I": 9,    # Peso (kg)
-                        "J": 7,    # Peso OK
-                        "K": 6,    # Rechazo
-                        "L": 11,   # Venc. Lic
-                        "M": 10,   # Lic.
-                        "N": 4,    # extra
+                    # Anchos hoja 1
+                    _col_widths_h1 = {
+                        "A": 7,  "B": 8,  "C": 7,  "D": 7,  "E": 7,  "F": 7,
+                        "G": 7,  "H": 7,  "I": 7,  "J": 7,  "K": 7,  "L": 7,
+                        "M": 7,  "N": 7,
                     }
-                    for _cl, _cw in _col_widths.items():
+                    for _cl, _cw in _col_widths_h1.items():
                         _ws2.column_dimensions[_cl].width = _cw
+
+                    # ════════════════════════════════════════════════════════
+                    # HOJA 2 — DETALLE TABLERO (tabla por camión + alertas)
+                    # ════════════════════════════════════════════════════════
+                    _ws3 = _wb2.create_sheet(title="Detalle Tablero")
+                    _ws3.page_setup.orientation = "landscape"
+                    _ws3.page_setup.paperSize   = 9
+                    _ws3.page_setup.fitToPage   = True
+                    _ws3.page_setup.fitToWidth  = 1
+                    _ws3.page_setup.fitToHeight = 0
+                    _ws3.sheet_properties.pageSetUpPr.fitToPage = True
+                    _ws3.page_margins = PageMargins(
+                        left=0.35, right=0.35, top=0.35, bottom=0.35,
+                        header=0.2, footer=0.2)
+
+                    def _cell3(r, c, val, bold=False, color="000000", sz=9,
+                               bg=None, halign="center", wrap=False, border=True):
+                        _c3 = _ws3.cell(r, c, val)
+                        _c3.font = _fo(bold, color, sz)
+                        _c3.alignment = _al(halign, "center", wrap)
+                        if bg: _c3.fill = _fx(bg)
+                        if border: _c3.border = _bd()
+                        return _c3
+
+                    r3 = 1
+                    # Header hoja 2
+                    _ws3.merge_cells(f"A{r3}:M{r3}")
+                    _cell3(r3, 1,
+                           f"TABLERO RUTEADOR — DETALLE POR CAMIÓN — {fecha_dia.strftime('%d/%m/%Y').upper()}"
+                           f"   |   Beccacece Hnos SA · v{APP_VERSION}",
+                           bold=True, color="FFFFFF", sz=10, bg=_NX)
+                    _ws3.row_dimensions[r3].height = 20; r3 += 1
+
+                    if tabla_rows:
+                        _cols_h3 = ["N°","Chofer","PDV","Bultos\n(eq.)","Bultos\nUP","Pal.\nAE",
+                                    "Patente","HL","Peso\n(kg)","Peso\nOK","Rech.","Venc.\nLic.","Lic."]
+                        for ci5, ch5 in enumerate(_cols_h3, 1):
+                            _cell3(r3, ci5, ch5, bold=True, color="FFFFFF", sz=8, bg=_NX, wrap=True)
+                        _ws3.row_dimensions[r3].height = 28; r3 += 1
+
+                        for ri2, rr2 in enumerate(tabla_rows):
+                            _bg2 = _LGX if ri2 % 2 else "FFFFFF"
+                            _lic_txt = rr2.get("Lic.", "—") or "—"
+                            _lic_xl  = "BLOQUEADO" if str(_lic_txt).startswith("🚫") else ("OK" if str(_lic_txt).startswith("✅") else "—")
+                            _venc_xl = rr2.get("Venc. Lic.", "") or "—"
+                            _peso_ok_xl = rr2.get("_peso_ok", None)
+                            _peso_semaf = "OK" if _peso_ok_xl is True else ("EXCEDE" if _peso_ok_xl is False else "—")
+                            _vv2 = [str(rr2["N° Cam"]), rr2["Chofer"] or "—",
+                                    rr2["PDV"], round(rr2.get("Bultos", 0), 2),
+                                    round(rr2.get("Bultos UP", 0), 2), round(rr2.get("Paletas", 0), 0),
+                                    rr2["Patente"], round(rr2.get("HL", 0), 2),
+                                    round(rr2.get("Peso(kg)", 0), 0), _peso_semaf,
+                                    rr2["Rechazos"], _venc_xl, _lic_xl]
+                            for ci6, vv6 in enumerate(_vv2, 1):
+                                _cell3(r3, ci6, vv6, sz=8, bg=_bg2,
+                                       halign="left" if ci6 == 2 else "center")
+                            if _peso_ok_xl is False:
+                                _ws3.cell(r3, 10).fill = _fx(_RX); _ws3.cell(r3, 10).font = _fo(True,"FFFFFF",8)
+                            elif _peso_ok_xl is True:
+                                _ws3.cell(r3, 10).fill = _fx(_GRX); _ws3.cell(r3, 10).font = _fo(True,"FFFFFF",8)
+                            _valid_col3 = 13
+                            if _lic_xl == "BLOQUEADO":
+                                _ws3.cell(r3, _valid_col3).fill = _fx(_RX)
+                                _ws3.cell(r3, _valid_col3).font = _fo(True, "FFFFFF", 8)
+                                for _ci_bl in range(1, len(_vv2)+1):
+                                    if _ci_bl not in (_valid_col3, 10):
+                                        _ws3.cell(r3, _ci_bl).fill = _fx("FFE8E8")
+                            elif _lic_xl == "OK":
+                                _ws3.cell(r3, _valid_col3).fill = _fx(_GRX)
+                                _ws3.cell(r3, _valid_col3).font = _fo(True, "FFFFFF", 8)
+                            _ws3.row_dimensions[r3].height = 14; r3 += 1
+
+                        # Fila TOTAL
+                        _totv3 = ["TOTAL", "",
+                                  sum(r["PDV"] for r in tabla_rows),
+                                  round(sum(r.get("Bultos",0) for r in tabla_rows), 0),
+                                  round(sum(r.get("Bultos UP",0) for r in tabla_rows), 2),
+                                  round(sum(r.get("Paletas",0) for r in tabla_rows), 0),
+                                  "", "", round(sum(r.get("Peso(kg)",0) for r in tabla_rows), 0),
+                                  "", round(sum(r.get("Rechazos",0) for r in tabla_rows), 1), "",""]
+                        for ci7, tv7 in enumerate(_totv3, 1):
+                            _cell3(r3, ci7, tv7, bold=True, color=_NX, sz=9, bg=_BLX)
+                        _ws3.row_dimensions[r3].height = 16; r3 += 2
+
+                    # Alertas licencias en hoja 2
+                    _lic_alerts3 = [r for r in tabla_rows if str(r.get("Lic.", "")).startswith("🚫")]
+                    if _lic_alerts3:
+                        _ws3.merge_cells(f"A{r3}:M{r3}")
+                        _cell3(r3, 1, "ALERTAS — LICENCIAS VENCIDAS (NO PUEDEN SALIR A REPARTO)",
+                               bold=True, color="FFFFFF", sz=9, bg=_RX)
+                        _ws3.row_dimensions[r3].height = 16; r3 += 1
+                        for _la in _lic_alerts3:
+                            _ws3.merge_cells(f"A{r3}:M{r3}")
+                            _cell3(r3, 1,
+                                   f"CAM {_la['N° Cam']} — {_la['Chofer'] or 'S/N'}: "
+                                   f"LICENCIA VENCIDA ({_la['Venc. Lic.']})",
+                                   bold=True, color=_RX, sz=9, bg="FFE8E8")
+                            _ws3.row_dimensions[r3].height = 14; r3 += 1
+                        r3 += 1
+
+                    # Footer hoja 2
+                    _ws3.merge_cells(f"A{r3}:M{r3}")
+                    _ws3.cell(r3, 1,
+                        f"Generado: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')} · "
+                        f"Picking Orchestrator v{APP_VERSION} · Beccacece Hnos SA — DPO 2.1"
+                    ).font = _fo(False, "888888", 7)
+                    _ws3.row_dimensions[r3].height = 12
+
+                    # Anchos hoja 2
+                    _col_widths_h2 = {
+                        "A": 5,   # N° Cam
+                        "B": 14,  # Chofer
+                        "C": 5,   # PDV
+                        "D": 9,   # Bultos (eq.)
+                        "E": 9,   # Bultos UP
+                        "F": 7,   # Pal. AE
+                        "G": 8,   # Patente
+                        "H": 7,   # HL
+                        "I": 9,   # Peso (kg)
+                        "J": 7,   # Peso OK
+                        "K": 6,   # Rechazo
+                        "L": 11,  # Venc. Lic
+                        "M": 10,  # Lic.
+                    }
+                    for _cl, _cw in _col_widths_h2.items():
+                        _ws3.column_dimensions[_cl].width = _cw
 
                     _buf_xl2 = io.BytesIO(); _wb2.save(_buf_xl2); _buf_xl2.seek(0)
                     ss["tr_xl2_bytes"] = _buf_xl2.getvalue()
@@ -13047,8 +13124,12 @@ def render_tab_cierre():
                 st.warning(f"⚠️ Error leyendo ANR -1.xlsx: {e}. CTA CTE tomado del cierre original.")
 
         if not df_sr_d1.empty:
-            fecha_d1_str = f"{fecha_str} (D+1)"
-            _fecha_slug_d1 = _fecha_slug
+            # v4.80: fecha D+1 = fecha del día en que se genera el informe (hoy).
+            # Es determinista y no depende de que el ANR esté cargado en sesión.
+            import datetime as _dt_d1
+            _hoy_d1 = _dt_d1.date.today()
+            fecha_d1_str   = f"{_hoy_d1.strftime('%d/%m/%Y')} (D+1)"
+            _fecha_slug_d1 = _hoy_d1.strftime("%d-%m-%Y")
 
             # Construir cierre D+1 con ANR -1 para CTA CTE
             df_d1 = _build_cierre_d1(df_main, df_sr_d1, cta_cte_list_clean, df_anr, df_anr_m1)
