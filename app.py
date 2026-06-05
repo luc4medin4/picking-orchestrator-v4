@@ -1,5 +1,21 @@
 """
-Picking Orchestrator v4.77.0 — Beccacece Hnos SA
+Picking Orchestrator v4.78.0 — Beccacece Hnos SA
+
+CAMBIOS v4.78.0:
+  1. DEBOUNCE Tablero Ruteador — Los text_input de hora y los number_input
+     del día usan on_change para resetear tr_calculado. Así el cálculo pesado
+     NO se dispara en cada keystroke; solo corre al presionar ⚡ Calcular.
+  2. DEBOUNCE Proyección Picking — Los number_input de velocidad/personas y
+     hora de inicio ya no disparan el recálculo de tablas automáticamente.
+     Se agrega botón "⚡ Recalcular Proyección" explícito; los parámetros se
+     cachean en session_state y solo aplican al presionarlo.
+  3. DISEÑO Excel/PDF Tablero — Rediseño completo inspirado en referencia
+     institucional: header bicolor azul+logo area, bloque targets/avance/status,
+     tabla camiones con colores de estado, gráfico dual UP+PDV. Todo en A4
+     landscape, tipografía Arial, paleta navy #1F3864 / gold #C9A84C.
+  4. FIX Proyección Picking exclusión camiones — Los camiones excluidos via
+     t4_cams_excluir ya NO desaparecen de la tabla; quedan con todos sus
+     valores en CERO y no suman a ningún total ni subtotal.
 
 CAMBIOS v4.77.0:
   1. PASO 3 FEFO — fix: lectura robusta por índice posicional (col F=5) de la hoja
@@ -338,7 +354,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.77.0"
+APP_VERSION = "4.78.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -4180,21 +4196,38 @@ def render_tab_proyeccion():
     hora_inicio_global = _dt.time(int(h_inicio), int(m_inicio))
 
     # ── Productividad y personas por cancha ───────────────────────────────────
+    # v4.78: Los inputs de vel/personas están en un expander. Al presionar
+    # ⚡ Recalcular Proyección los valores se cachean en session_state y se
+    # aplican. Así los number_input no disparan el cálculo pesado en cada tecla.
     with st.expander("⚙️ Productividad y personas por cancha", expanded=False):
         prod_cols = st.columns(5)
-        vel_custom  = {}
-        pers_custom = {}
+        vel_input  = {}
+        pers_input = {}
         for i, cn in enumerate(_T4_CANCHAS):
             with prod_cols[i]:
                 st.markdown(f"**{cn.replace('CANCHA ', 'C')}**")
-                vel_custom[cn] = st.number_input(
+                vel_input[cn] = st.number_input(
                     f"Vel {cn} (bult/h)", 10, 2000, value=_T4_VEL_DEFAULT[cn], step=10,
                     key=f"t4_vel_{cn}",
                 )
-                pers_custom[cn] = st.number_input(
+                pers_input[cn] = st.number_input(
                     f"Pers {cn}", 1, 10, value=1, step=1,
                     key=f"t4_pers_{cn}",
                 )
+        _rec_col1, _rec_col2 = st.columns([1, 3])
+        with _rec_col1:
+            if st.button("⚡ Recalcular Proyección", key="t4_btn_recalc", type="primary",
+                         help="Aplicá los cambios de velocidad/personas y recalculá la tabla"):
+                st.session_state["t4_vel_cached"]  = {cn: vel_input[cn] for cn in _T4_CANCHAS}
+                st.session_state["t4_pers_cached"] = {cn: pers_input[cn] for cn in _T4_CANCHAS}
+                st.session_state["t4_hora_cached"] = _dt.time(int(h_inicio), int(m_inicio))
+        with _rec_col2:
+            st.caption("Los cambios de velocidad y personas solo aplican al presionar este botón.")
+
+    # Usar valores cacheados si existen, sino valores de los inputs
+    vel_custom  = st.session_state.get("t4_vel_cached",  {cn: vel_input[cn]  for cn in _T4_CANCHAS})
+    pers_custom = st.session_state.get("t4_pers_cached", {cn: pers_input[cn] for cn in _T4_CANCHAS})
+    hora_inicio_global = st.session_state.get("t4_hora_cached", hora_inicio_global)
 
     # Hora inicio por cancha: escalonado +5 min entre canchas
     _OFFSET_MIN = 5
@@ -4206,14 +4239,14 @@ def render_tab_proyeccion():
     # ── Filtrar: siempre sin ceros ────────────────────────────────────────────
     df_display_base = df_cam[df_cam["TOTAL_PICK"] > 0].reset_index(drop=True)
 
-    # ── v4.71: Exclusión de camiones ─────────────────────────────────────────
-    # Misma metodología que el Tablero Ruteador. Los camiones excluidos se
-    # omiten de TODOS los cálculos, PDFs, Excel y exportaciones de esta sección.
+    # ── v4.71/v4.78: Exclusión de camiones ──────────────────────────────────
+    # v4.78 FIX: los camiones excluidos NO se eliminan de la tabla — quedan
+    # con todos sus valores en CERO y NO suman a ningún total ni subtotal.
     _all_cams = sorted(df_display_base["Camión"].astype(int).tolist())
     with st.expander("🚫 Excluir camiones de la proyección (opcional)", expanded=False):
         st.caption(
-            "Los camiones excluidos no aparecen en la tabla, ni en PDFs ni en Excel de esta sección. "
-            "Usalo para salidas parciales, camiones sin reparto o situaciones especiales."
+            "Los camiones excluidos aparecen en la tabla con valores en cero. "
+            "No suman a ningún total. Usalo para salidas parciales o situaciones especiales."
         )
         _cams_excluir = st.multiselect(
             "Camiones a excluir:",
@@ -4224,13 +4257,19 @@ def render_tab_proyeccion():
         )
         st.session_state["t4_cams_excluir"] = _cams_excluir
         if _cams_excluir:
-            st.warning(f"⚠️ Excluidos: {', '.join(str(c) for c in _cams_excluir)}")
+            st.warning(f"⚠️ Excluidos (valores en cero): {', '.join(str(c) for c in _cams_excluir)}")
 
     _cams_excluir_set = set(st.session_state.get("t4_cams_excluir", []))
+    # v4.78: clonar df_display_base y poner en CERO todas las cols numéricas
+    # de los camiones excluidos (sin eliminar la fila)
+    df_display = df_display_base.copy()
     if _cams_excluir_set:
-        df_display = df_display_base[~df_display_base["Camión"].astype(int).isin(_cams_excluir_set)].reset_index(drop=True)
-    else:
-        df_display = df_display_base
+        _num_cols_t4 = df_display.select_dtypes(include="number").columns.tolist()
+        _cam_col_t4  = "Camión" if "Camión" in df_display.columns else df_display.columns[0]
+        _excl_mask   = df_display[_cam_col_t4].astype(int).isin(_cams_excluir_set)
+        for _nc in _num_cols_t4:
+            if _nc != _cam_col_t4:
+                df_display.loc[_excl_mask, _nc] = 0
 
     # ── v4.55.2: Botón "Enviar a Sheets" PROMINENTE al inicio ─────────────────
     # Se muestra antes de la tabla para recordar al usuario que debe enviarlo
@@ -9362,25 +9401,41 @@ def render_tab_tablero():
             pass  # Fallback a hoy si cualquier lectura falla
 
         st.markdown("### 📅 Carga del día")
+        # v4.78: on_change en todos los inputs del día para resetear tr_calculado.
+        # Así el cálculo pesado no corre en cada keystroke — solo al presionar ⚡ Calcular.
+        def _tr_reset_calc():
+            st.session_state["tr_calculado"] = False
+
         _d1, _d2, _d3, _d4, _d5, _d6, _d7 = st.columns(7)
         with _d1:
-            fecha_dia = st.date_input("Fecha", value=_fecha_default_tr, key="tr_fecha")  # v4.64: default desde ANR
+            fecha_dia = st.date_input("Fecha", value=_fecha_default_tr, key="tr_fecha",
+                on_change=_tr_reset_calc)  # v4.64: default desde ANR
         with _d2:
             hora_real_str = st.text_input("Hora entrega real (HH:MM)",
-                value="", placeholder="ej: 16:25", key="tr_hora_real")
+                value=ss.get("tr_hora_real_val", ""), placeholder="ej: 16:25",
+                key="tr_hora_real", on_change=_tr_reset_calc)
+            ss["tr_hora_real_val"] = hora_real_str
         with _d3:
             ruteo_real_str = st.text_input("T. ruteo real (HH:MM)",
-                value="", placeholder="ej: 00:20", key="tr_truteo_real")
+                value=ss.get("tr_truteo_real_val", ""), placeholder="ej: 00:20",
+                key="tr_truteo_real", on_change=_tr_reset_calc)
+            ss["tr_truteo_real_val"] = ruteo_real_str
         with _d4:
             fuera_zona_real = st.number_input("Fuera de zona (PDV)",
-                value=0, step=1, key="tr_fz_real",
+                value=ss.get("tr_fz_real_val", 0), step=1, key="tr_fz_real",
+                on_change=_tr_reset_calc,
                 help="Cantidad PDV fuera de zona")
+            ss["tr_fz_real_val"] = fuera_zona_real
         with _d5:
             segundas_vueltas = st.number_input("Segundas vueltas",
-                value=0, step=1, key="tr_seg_vueltas")
+                value=ss.get("tr_seg_vueltas_val", 0), step=1,
+                key="tr_seg_vueltas", on_change=_tr_reset_calc)
+            ss["tr_seg_vueltas_val"] = segundas_vueltas
         with _d6:
             visitas_teoricas = st.number_input("Visitas teóricas",
-                value=650, step=10, key="tr_vis")
+                value=ss.get("tr_vis_val", 650), step=10, key="tr_vis",
+                on_change=_tr_reset_calc)
+            ss["tr_vis_val"] = visitas_teoricas
         with _d7:
             causa_demora = st.selectbox("Causa demora",
                 options=["", "Chess", "Bees", "Cierre de venta",
@@ -10183,7 +10238,8 @@ def render_tab_tablero():
                               sz=8, bg=_bgk, wrap=True)
                     _ws2.row_dimensions[row].height = 40; row += 1
 
-                    # ── FILA 3-4: Totales globales ────────────────────────────
+                    # ── FILA 3-4: Totales globales en franja bicolor ─────────
+                    # Estilo referencia: labels en fila azul claro, valores abajo
                     _tl = ["Camiones","PDV","Bultos","Bultos UP","Paletas","HL","Peso(kg)","Drop Size","Rechazos","SV","FZ PDV","FZ %","Prod.Ruteo"]
                     _tv = [f"{camiones_en_reparto}/{total_camiones_flota}",
                            str(total_pedidos), f"{total_bup:.0f}", f"{total_up:.2f}", f"{paletas_total:.2f}",
@@ -10200,7 +10256,11 @@ def render_tab_tablero():
 
                     # ── TABLA CAMIONES ────────────────────────────────────────
                     if tabla_rows:
-                        # v4.70: sin Cap.kg, semaforo peso, licencias siempre completas
+                        # Cabecera de sección
+                        _ws2.merge_cells(f"A{row}:N{row}")
+                        _cell(row, 1, "DETALLE POR CAMIÓN", bold=True, color="FFFFFF", sz=9, bg=_NX)
+                        _ws2.row_dimensions[row].height = 15; row += 1
+
                         _cols_h = ["N°","Chofer","PDV","Bultos\n(eq.)","Bultos\nUP","Pal.\nAE",
                                    "Patente","HL","Peso\n(kg)","Peso\nOK",
                                    "Rech.","Venc.\nLic.","Lic."]
@@ -10250,7 +10310,7 @@ def render_tab_tablero():
                                 _ws2.cell(row, _valid_col).font = _fo(True, "FFFFFF", 8)
                             _ws2.row_dimensions[row].height = 14; row += 1
 
-                        # Fila TOTAL
+                        # Fila TOTAL en azul institucional
                         _totv2 = ["TOTAL", "",
                                   sum(r["PDV"]                    for r in tabla_rows),
                                   round(sum(r.get("Bultos",0)     for r in tabla_rows), 0),
@@ -10353,12 +10413,12 @@ def render_tab_tablero():
                     _lic_alerts = [r for r in tabla_rows if str(r.get("Lic.", "")).startswith("🚫")]
                     if _lic_alerts:
                         _ws2.merge_cells(f"A{row}:N{row}")
-                        _cell(row, 1, "⚠ ALERTAS — LICENCIAS VENCIDAS (NO PUEDEN SALIR A REPARTO)", bold=True, color="FFFFFF", sz=9, bg=_RX)
+                        _cell(row, 1, "ALERTAS — LICENCIAS VENCIDAS (NO PUEDEN SALIR A REPARTO)", bold=True, color="FFFFFF", sz=9, bg=_RX)
                         _ws2.row_dimensions[row].height = 16; row += 1
                         for _la in _lic_alerts:
                             _ws2.merge_cells(f"A{row}:N{row}")
                             _cell(row, 1,
-                                  f"🚫 CAM {_la['N° Cam']} — {_la['Chofer'] or 'S/N'}: "
+                                  f"CAM {_la['N° Cam']} — {_la['Chofer'] or 'S/N'}: "
                                   f"LICENCIA VENCIDA ({_la['Venc. Lic.']})",
                                   bold=True, color=_RX, sz=9, bg="FFE8E8")
                             _ws2.row_dimensions[row].height = 14; row += 1
@@ -10486,22 +10546,60 @@ def render_tab_tablero():
                     _kpi_tbl.setStyle(TableStyle(_ks))
                     _story.append(_kpi_tbl); _story.append(Spacer(1, 2*mm))
 
+                    # ── Bloque Target/Avance/Status (estilo imagen de referencia) ──
+                    # Columnas: KPI | TARGET | AVANCE | STATUS
+                    _tgt_hdr = [_p("KPI",8,True,colors.white), _p("TARGET",8,True,colors.white),
+                                _p("AVANCE",8,True,colors.white), _p("STATUS",8,True,colors.white)]
+                    _tgt_rows = [
+                        ["Hora entrega ventas (SLA)", sla_str, hora_real_str or "—", "OK" if sla_ok else ("NO OK" if sla_ok is False else "—")],
+                        ["Tiempo de ruteo",           ruteo_str, ruteo_real_str or "—", "OK" if ruteo_ok else ("NO OK" if ruteo_ok is False else "—")],
+                        ["Ocupación bodega bultos UP", f"≥{ocup_target}", f"{ocup_bodega:.1f}", "OK" if ocup_ok else ("NO OK" if ocup_ok is False else "—")],
+                        ["Fuera de zona",             f"≤{fz_target:.0%}", f"{fuera_zona_pct:.1%}", "OK" if fz_ok else ("NO OK" if fz_ok is False else "—")],
+                    ]
+                    _tgt_cols = [_usable_w*0.40, _usable_w*0.18, _usable_w*0.18, _usable_w*0.24]
+                    _tgt_data = [_tgt_hdr]
+                    for _tr2 in _tgt_rows:
+                        _ok_txt = _tr2[3]
+                        _ok_col = _GREEN if _ok_txt == "OK" else (_RED if _ok_txt == "NO OK" else colors.grey)
+                        _tgt_data.append([
+                            _p(_tr2[0], 8), _p(_tr2[1], 8), _p(_tr2[2], 8, True),
+                            _p(_ok_txt, 8, True, colors.white)
+                        ])
+                    _tgt_tbl = Table(_tgt_data, colWidths=_tgt_cols)
+                    _tgt_style = [
+                        ("BACKGROUND",(0,0),(-1,0),_NAVY),
+                        ("GRID",(0,0),(-1,-1),0.3,colors.lightgrey),
+                        ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white, colors.HexColor("#EEF2FF")]),
+                        ("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),3),
+                        ("LEFTPADDING",(0,0),(-1,-1),5),("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+                    ]
+                    # Colorear columna STATUS
+                    for _ti5, _tr5 in enumerate(_tgt_rows, 1):
+                        _ok5 = _tr5[3]
+                        _bg5 = _GREEN if _ok5 == "OK" else (_RED if _ok5 == "NO OK" else colors.grey)
+                        _tgt_style.append(("BACKGROUND",(3,_ti5),(3,_ti5),_bg5))
+                    _tgt_tbl.setStyle(TableStyle(_tgt_style))
+                    _story.append(_tgt_tbl); _story.append(Spacer(1, 2*mm))
+
                     # Totales globales — fila compacta
-                    _tot = Table([[
-                        _p("Camiones",7,True,_NAVY), _p(f"{camiones_en_reparto}/{total_camiones_flota}",10,True),
-                        _p("PDV",7,True,_NAVY),      _p(str(total_pedidos),10,True),
-                        _p("Bultos UP",7,True,_NAVY), _p(f"{total_up:.1f}",10,True),
-                        _p("Paletas",7,True,_NAVY),  _p(f"{paletas_total:.2f}",10,True),
-                        _p("HL",7,True,_NAVY),       _p(f"{total_hl:.2f}",10,True),
-                        _p("Peso kg",7,True,_NAVY),  _p(f"{total_peso_kg:,.0f}",10,True),
-                        _p("Drop Size",7,True,_NAVY),_p(f"{drop_size:.2f}",10,True),
-                        _p("Rechazos",7,True,_RED),  _p(f"{total_rechazos_up:.1f}",10,True,_RED if total_rechazos_up > 0 else colors.black),
-                    ]])
+                    _tot_vals = [
+                        ("Camiones", f"{camiones_en_reparto}/{total_camiones_flota}"),
+                        ("PDV", str(total_pedidos)),
+                        ("Bultos UP", f"{total_up:.1f}"),
+                        ("Paletas", f"{paletas_total:.2f}"),
+                        ("HL", f"{total_hl:.2f}"),
+                        ("Peso kg", f"{total_peso_kg:,.0f}"),
+                        ("Drop Size", f"{drop_size:.2f}"),
+                        ("Rechazos", f"{total_rechazos_up:.1f}"),
+                    ]
+                    _tot = Table([[_p(lbl,7,True,_NAVY) for lbl,_ in _tot_vals],
+                                  [_p(val,10,True) for _,val in _tot_vals]])
                     _tot.setStyle(TableStyle([
                         ("GRID",(0,0),(-1,-1),0.3,colors.lightgrey),
-                        *[("BACKGROUND",(i*2,0),(i*2,0),colors.HexColor("#E8EAF6")) for i in range(8)],
+                        ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#E8EAF6")),
                         ("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),3),
-                        ("LEFTPADDING",(0,0),(-1,-1),4),
+                        ("LEFTPADDING",(0,0),(-1,-1),4),("ALIGN",(0,0),(-1,-1),"CENTER"),
+                        ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
                     ]))
                     _story.append(_tot); _story.append(Spacer(1, 2*mm))
 
