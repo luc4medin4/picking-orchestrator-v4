@@ -1,5 +1,12 @@
 """
-Picking Orchestrator v4.83.0 — Beccacece Hnos SA
+Picking Orchestrator v4.84.0 — Beccacece Hnos SA
+
+CAMBIOS v4.84.0:
+  1. Frase del día incluida en PDF Pickeros y PDF Controladores.
+  2. Fecha de picking = siempre hoy (no la del CAR) en todos los PDFs/XLSX de la sección Picking.
+  3. Sección Clasificación movida después de Camiones T2 en la barra de tabs.
+  4. Exclusión de camiones en Proyección Picking: los camiones excluidos desaparecen completamente (antes quedaban en cero).
+  5. Multiselect Paso 3 AE Pallets: muestra "101 — COL F." para identificar camiones fácilmente.
 
 CAMBIOS v4.83.0:
   1. TAB BOLETAS — rediseño completo de la UI:
@@ -413,7 +420,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.82.0"
+APP_VERSION = "4.84.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -3433,6 +3440,7 @@ def _draw_controlador_page(
     tot_pick        = ctrl_params.get("tot_pick", 0)
     top_skus_lines  = ctrl_params.get("top_skus_lines", "")
     alertas         = ctrl_params.get("alertas", [])
+    ensenanza       = ctrl_params.get("ensenanza", "")
 
     fecha_s = fecha.strftime("%d/%m/%Y") if hasattr(fecha, "strftime") else str(fecha)
     fin_g_s = fin_global_dt.strftime("%H:%M") if fin_global_dt else "—"
@@ -3653,6 +3661,26 @@ def _draw_controlador_page(
             _tag_w = c.stringWidth(tag + "  ", FONT_B, 7)
             c.drawString(M + col_offset + 3 + _tag_w, row_y - rec_row_h + 3, desc[:75])
 
+    # ── FRASE DEL DÍA ──────────────────────────────────────────────────────────
+    if ensenanza:
+        # Strip emojis para ReportLab (solo ASCII + latin)
+        import unicodedata as _ud
+        _frase_clean = "".join(
+            ch for ch in ensenanza
+            if _ud.category(ch) not in ("So", "Cs") and ord(ch) < 0x2600
+        ).strip()
+        _frase_clean = _frase_clean.lstrip("- ").strip()
+        if _frase_clean:
+            c.setFillColor(ALT)
+            c.rect(M, M + 16, usable, 13, fill=1, stroke=0)
+            c.setFillColor(DARK_BLUE)
+            c.setFont(FONT_N, 7)
+            _max_w = usable - 8
+            _txt = f"Enseñanza del dia: {_frase_clean}"
+            while c.stringWidth(_txt, FONT_N, 7) > _max_w and len(_txt) > 20:
+                _txt = _txt[:-4] + "..."
+            c.drawString(M + 4, M + 21, _txt)
+
     # ── FOOTER ────────────────────────────────────────────────────────────────
     c.setFillColor(DARK_BLUE)
     c.rect(M, M, usable, 12, fill=1, stroke=0)
@@ -3671,6 +3699,7 @@ def _t4_generar_pdf_x4(
     asign_detail=None,
     # v4.41: parámetros opcionales para incluir hoja Controlador
     ctrl_params=None,
+    ensenanza="",
 ):
     """
     Genera PDF A4 LANDSCAPE con una página por cancha (CI/CII/CIII/CIV/MKPL).
@@ -4012,6 +4041,25 @@ def _t4_generar_pdf_x4(
                 x += cw[ci+1]
             y -= mh + 1
 
+        # ── v4.84: frase del día al pie de cada hoja pickeros ──────────────
+        if ensenanza:
+            import unicodedata as _ud_pick
+            _fp_clean = "".join(
+                ch for ch in ensenanza
+                if _ud_pick.category(ch) not in ("So", "Cs") and ord(ch) < 0x2600
+            ).strip().lstrip("- ").strip()
+            if _fp_clean:
+                _fp_h = 10
+                c_pdf.setFillColor(colors.HexColor("#E8EEF8"))
+                c_pdf.rect(M, max(y - _fp_h, 2), inner_w, _fp_h, fill=1, stroke=0)
+                c_pdf.setFillColor(colors.HexColor("#1a3a6b"))
+                c_pdf.setFont(FONT_N, 6.5)
+                _fp_txt = f"Ensenanza del dia: {_fp_clean}"
+                _fp_max = inner_w - 6
+                while c_pdf.stringWidth(_fp_txt, FONT_N, 6.5) > _fp_max and len(_fp_txt) > 20:
+                    _fp_txt = _fp_txt[:-4] + "..."
+                c_pdf.drawString(M + 3, max(y - _fp_h + 3, 4), _fp_txt)
+
         c_pdf.showPage()
 
     for cancha in _T4_CANCHAS_PDF:
@@ -4304,8 +4352,8 @@ def render_tab_proyeccion():
     _all_cams = sorted(df_display_base["Camión"].astype(int).tolist())
     with st.expander("🚫 Excluir camiones de la proyección (opcional)", expanded=False):
         st.caption(
-            "Los camiones excluidos aparecen en la tabla con valores en cero. "
-            "No suman a ningún total. Usalo para salidas parciales o situaciones especiales."
+            "Los camiones excluidos se eliminan completamente de la tabla. "
+            "No aparecen ni suman a ningún total. Usalo para salidas parciales o situaciones especiales."
         )
         _cams_excluir = st.multiselect(
             "Camiones a excluir:",
@@ -4316,19 +4364,15 @@ def render_tab_proyeccion():
         )
         st.session_state["t4_cams_excluir"] = _cams_excluir
         if _cams_excluir:
-            st.warning(f"⚠️ Excluidos (valores en cero): {', '.join(str(c) for c in _cams_excluir)}")
+            st.warning(f"⚠️ Excluidos (eliminados de la tabla): {', '.join(str(c) for c in _cams_excluir)}")
 
     _cams_excluir_set = set(st.session_state.get("t4_cams_excluir", []))
-    # v4.78: clonar df_display_base y poner en CERO todas las cols numéricas
-    # de los camiones excluidos (sin eliminar la fila)
+    # v4.84: eliminar completamente las filas de camiones excluidos de la tabla de proyección
     df_display = df_display_base.copy()
     if _cams_excluir_set:
-        _num_cols_t4 = df_display.select_dtypes(include="number").columns.tolist()
-        _cam_col_t4  = "Camión" if "Camión" in df_display.columns else df_display.columns[0]
-        _excl_mask   = df_display[_cam_col_t4].astype(int).isin(_cams_excluir_set)
-        for _nc in _num_cols_t4:
-            if _nc != _cam_col_t4:
-                df_display.loc[_excl_mask, _nc] = 0
+        _cam_col_t4 = "Camión" if "Camión" in df_display.columns else df_display.columns[0]
+        _keep_mask  = ~df_display[_cam_col_t4].astype(int).isin(_cams_excluir_set)
+        df_display  = df_display[_keep_mask].reset_index(drop=True)
 
     # ── v4.55.2: Botón "Enviar a Sheets" PROMINENTE al inicio ─────────────────
     # Se muestra antes de la tabla para recordar al usuario que debe enviarlo
@@ -4858,6 +4902,12 @@ def render_tab_proyeccion():
     _ensenanza = get_ensenanza_dia()
     st.info(f"💡 **Enseñanza del día** — {_ensenanza}")
 
+    # ── v4.84: fecha de picking = siempre hoy (el picking se hace hoy aunque
+    #           la carga se entregue mañana). Se usa en todos los PDFs/XLSX
+    #           de esta sección en lugar de la fecha del CAR.
+    import datetime as _dt_pick
+    _fecha_picking_hoy = _dt_pick.date.today()
+
     # ─────────────────────────────────────────────────────────────────────────
     # SECCIÓN A: PDF PICKEROS
     # ─────────────────────────────────────────────────────────────────────────
@@ -4876,13 +4926,14 @@ def render_tab_proyeccion():
                         productividad=vel_custom,
                         personas=pers_custom,
                         inicio=hora_inicio_global,
-                        fecha=pdata["fecha"],
+                        fecha=_fecha_picking_hoy,
                         mix_picking=pdata["mix_picking"],
                         fin_calc=fin_calc_dict,
                         asign_detail=totales_calc.get("asign_detail", {}),
                         ctrl_params=None,   # v4.70: hoja controlador se genera por separado
+                        ensenanza=_ensenanza,
                     )
-                    fname = f"proyeccion_picking_{pdata['fecha']}.pdf"
+                    fname = f"proyeccion_picking_{_fecha_picking_hoy.strftime('%d-%m-%Y')}.pdf"
                     st.download_button(
                         "⬇ Descargar PDF Pickeros (C1/C2/C3/C4/MKPL+Merch — LANDSCAPE)",
                         data=pdf_bytes, file_name=fname,
@@ -4927,7 +4978,7 @@ def render_tab_proyeccion():
             df_xlsx_exp = pd.concat([df_xlsx_exp, pd.DataFrame([_tot_row])], ignore_index=True)
 
             xlsx_bytes = df_to_xlsx(df_xlsx_exp, sheet_name="Proyección")
-            fname_xlsx = f"proyeccion_picking_{pdata['fecha']}.xlsx"
+            fname_xlsx = f"proyeccion_picking_{_fecha_picking_hoy.strftime('%d-%m-%Y')}.xlsx"
             st.download_button(
                 "📊 Descargar Excel (XLSX)",
                 data=xlsx_bytes, file_name=fname_xlsx,
@@ -4956,7 +5007,7 @@ def render_tab_proyeccion():
                 _blt_s = f"{_fp['bultos']:.0f} bult"
                 _horas_lines.append(f"  • **{_short_cn}**: {_ini_s} → {_fin_s} ({_blt_s})")
 
-        _fecha_str_res = pdata["fecha"].strftime("%d/%m/%Y") if hasattr(pdata["fecha"], "strftime") else str(pdata["fecha"])
+        _fecha_str_res = _fecha_picking_hoy.strftime("%d/%m/%Y")
 
         # ── v4.71: Top 3 por CANCHA ──────────────────────────────────────────
         _top3_por_cancha_lines = []
@@ -5079,7 +5130,7 @@ def render_tab_proyeccion():
             with st.spinner("Generando PDF Controlador…"):
                 try:
                     _pdf_ctrl = _t4_generar_pdf_controlador(
-                        fecha=pdata["fecha"],
+                        fecha=_fecha_picking_hoy,
                         fin_por_cancha=fin_por_cancha,
                         fin_global_dt=fin_global_dt,
                         totales_bult=totales_bult,
@@ -5091,8 +5142,9 @@ def render_tab_proyeccion():
                         tot_pick=pdata["tot_pick"],
                         top_skus_lines=_top_skus_lines,
                         alertas=_alertas,
+                        ensenanza=_ensenanza,
                     )
-                    _fecha_ctrl = pdata["fecha"].strftime("%d-%m-%Y") if hasattr(pdata["fecha"], "strftime") else str(pdata["fecha"])
+                    _fecha_ctrl = _fecha_picking_hoy.strftime("%d-%m-%Y")
                     _fname_ctrl = f"{_fecha_ctrl}_resumen_controlador_picking.pdf"
                     st.download_button(
                         "⬇ Descargar PDF Controlador",
@@ -5287,17 +5339,33 @@ def render_tab_proyeccion():
         )
 
         # ── Exclusión de camiones para el Excel AE — independiente de Proyección ─
-        _CAM_LABELS_P3 = [
-            "COL F.","TRE","PON","BEL J.","BAR","CAN","TOTH","ALM",
-            "PRA","CEB","QUI","VAL M.","COL S.","VIL","ARA","GAR",
-            "ROB","MINI","IBAX","PER","SCA","BEL P.","CHA","KAR",
-            "JER","VILL","DÍAZ",
+        # v4.84: mostrar "101 — COL F." para identificar fácilmente cada camión
+        _CAM_ID_LABEL_P3 = [
+            (101,"COL F."),(102,"TRE"),(103,"PON"),(104,"BEL J."),(105,"BAR"),
+            (106,"CAN"),(107,"TOTH"),(108,"ALM"),(109,"PRA"),(110,"CEB"),
+            (111,"QUI"),(112,"VAL M."),(113,"COL S."),(114,"VIL"),(115,"ARA"),
+            (117,"GAR"),(118,"ROB"),(119,"MINI"),(120,"IBAX"),(121,"PER"),
+            (122,"SCA"),(123,"BEL P."),(124,"CHA"),(125,"KAR"),
+            (127,"JER"),(128,"VILL"),(129,"DÍAZ"),
         ]
-        _p3_excl_default = st.session_state.get("t4_p3_cams_excluir", [])
+        # Opciones con formato "101 — COL F." para el widget
+        _CAM_LABELS_P3_FULL = [f"{cid} — {lbl}" for cid, lbl in _CAM_ID_LABEL_P3]
+        # Mantener compatibilidad con valores guardados en sesión (pueden ser label viejo o nuevo)
+        _p3_excl_default_raw = st.session_state.get("t4_p3_cams_excluir", [])
+        # Normalizar: si el valor guardado no tiene " — ", agregar prefijo buscando por label
+        _lbl_to_full = {lbl: f"{cid} — {lbl}" for cid, lbl in _CAM_ID_LABEL_P3}
+        _p3_excl_default_norm = []
+        for _v in _p3_excl_default_raw:
+            if " — " in str(_v):
+                if _v in _CAM_LABELS_P3_FULL:
+                    _p3_excl_default_norm.append(_v)
+            elif _v in _lbl_to_full:
+                _p3_excl_default_norm.append(_lbl_to_full[_v])
+        _CAM_LABELS_P3 = _CAM_LABELS_P3_FULL   # para compatibilidad con código posterior
         _p3_excl = st.multiselect(
             "🚫 Excluir camiones del Excel AE Pallets",
-            options=_CAM_LABELS_P3,
-            default=[x for x in _p3_excl_default if x in _CAM_LABELS_P3],
+            options=_CAM_LABELS_P3_FULL,
+            default=_p3_excl_default_norm,
             key="t4_p3_cams_excluir",
             help="Los camiones seleccionados quedan con valores en CERO en la tabla y el Excel. "
                  "Las columnas NO desaparecen. Independiente de la exclusión de Proyección Picking.",
@@ -5439,11 +5507,16 @@ def render_tab_proyeccion():
                         # Exclusión independiente del Paso 3 (multiselect por label)
                         # v4.78 FIX: las columnas NO se eliminan — siempre están todas.
                         # Los camiones excluidos se ponen en CERO en el pivot.
-                        _p3_excl_lbls = set(st.session_state.get("t4_p3_cams_excluir", []))
-                        # Mapeo label → ID para encontrar los IDs a zerear
-                        _lbl_to_id3 = {lbl: cid for cid, lbl in _CAM_ORDER_ALL}
-                        _p3_excl_ids = {_lbl_to_id3[lbl] for lbl in _p3_excl_lbls
-                                        if lbl in _lbl_to_id3}
+                        # v4.84: el widget ahora guarda "101 — COL F." — extraer ID directo
+                        _p3_excl_raw = set(st.session_state.get("t4_p3_cams_excluir", []))
+                        _lbl_to_id3  = {lbl: cid for cid, lbl in _CAM_ORDER_ALL}
+                        _full_to_id3 = {f"{cid} — {lbl}": cid for cid, lbl in _CAM_ORDER_ALL}
+                        _p3_excl_ids = set()
+                        for _ev in _p3_excl_raw:
+                            if _ev in _full_to_id3:
+                                _p3_excl_ids.add(_full_to_id3[_ev])
+                            elif _ev in _lbl_to_id3:
+                                _p3_excl_ids.add(_lbl_to_id3[_ev])
                         # Zerear columnas de camiones excluidos (si existen en pivot)
                         for _excl_cid in _p3_excl_ids:
                             if _excl_cid in _pivot_p3.columns:
@@ -6252,7 +6325,7 @@ def _t4_generar_pdf_controlador(
     fecha, fin_por_cancha, fin_global_dt,
     totales_bult, totales_hl, totales_kg, totales_pall_c,
     mix_picking, n_camiones, tot_pick,
-    top_skus_lines="", alertas=None,
+    top_skus_lines="", alertas=None, ensenanza="",
 ) -> bytes:
     """
     v4.41 — Genera PDF landscape A4 con el Resumen para el Controlador de Depósito.
@@ -6278,6 +6351,7 @@ def _t4_generar_pdf_controlador(
         "tot_pick":        tot_pick,
         "top_skus_lines":  top_skus_lines,
         "alertas":         alertas,
+        "ensenanza":       ensenanza,
     }
 
     _draw_controlador_page(
@@ -11934,8 +12008,8 @@ def main():
         "📦 Planilla Carga",
         "📋 Resumen Camiones",
         "📊 Proyección Picking ×5",
-        "🏷️ Clasificación",
         "🚛 Camiones T2",
+        "🏷️ Clasificación",
         "🏆 Top SKUs",
         "🚚 Tablero Ruteador",
         "🖨️ Boletas",
@@ -11946,8 +12020,8 @@ def main():
     with tabs[1]:  render_tab_planilla()
     with tabs[2]:  render_tab_resumen()
     with tabs[3]:  render_tab_proyeccion()
-    with tabs[4]:  render_tab_clasificacion()
-    with tabs[5]:  render_tab_t2()
+    with tabs[4]:  render_tab_t2()
+    with tabs[5]:  render_tab_clasificacion()
     with tabs[6]:  render_tab_top_skus()
     with tabs[7]:  render_tab_tablero()
     with tabs[8]:  render_tab_boletas()
