@@ -1,5 +1,12 @@
 """
-Picking Orchestrator v4.84.0 — Beccacece Hnos SA
+Picking Orchestrator v4.85.0 — Beccacece Hnos SA
+
+CAMBIOS v4.85.0:
+  1. PASO 3 — Botón "📤 Enviar a Sheets (Agregados AE)":
+     - Borra A2:AJ de la hoja "agregados ae" del Sheets Inputs (preserva AK:AL con fórmulas).
+     - Escribe exactamente los mismos datos que el Excel AE Pallets (mismas columnas, mismo orden).
+     - Llama al Google Apps Script publicado como Web App vía requests.post.
+     - Muestra confirmación con cantidad de filas enviadas o mensaje de error detallado.
 
 CAMBIOS v4.84.0:
   1. Frase del día incluida en PDF Pickeros y PDF Controladores.
@@ -5681,6 +5688,90 @@ def render_tab_proyeccion():
                             )
                         except Exception as _ep3x:
                             st.warning(f"⚠️ No se pudo generar Excel: {_ep3x}")
+
+                        # ── 9. Botón Enviar a Sheets — Agregados AE ──────────────────────
+                        # URL del Google Apps Script publicado como Web App.
+                        # Reemplazar con la URL real luego del deploy en GAS.
+                        _GAS_URL_AE = st.secrets.get(
+                            "GAS_AGREGADOS_AE_URL",
+                            "https://script.google.com/macros/s/REEMPLAZAR_CON_URL_REAL/exec"
+                        )
+
+                        st.markdown("---")
+                        if st.button(
+                            "📤 Enviar a Sheets (Agregados AE)",
+                            key="t4_paso3_send_sheets",
+                            use_container_width=True,
+                            help="Borra A2:AJ de la hoja 'agregados ae' y escribe los datos actuales. "
+                                 "Las columnas AK y AL (fórmulas) no se modifican.",
+                            type="primary",
+                        ):
+                            try:
+                                import requests as _rq3s, json as _js3s
+
+                                # Serializar _df_final3 → lista de listas (fila por fila)
+                                # Convertir valores no serializables (int64, NaT, etc.)
+                                def _ser3(v):
+                                    if v is None or (isinstance(v, float) and v != v):
+                                        return ""
+                                    try:
+                                        import numpy as _np3s
+                                        if isinstance(v, (_np3s.integer,)):
+                                            return int(v)
+                                        if isinstance(v, (_np3s.floating,)):
+                                            return float(v)
+                                    except ImportError:
+                                        pass
+                                    if hasattr(v, "item"):
+                                        return v.item()
+                                    return v
+
+                                _headers3s = list(_df_final3.columns)
+                                _rows3s = [
+                                    [_ser3(v) for v in row]
+                                    for row in _df_final3.itertuples(index=False, name=None)
+                                ]
+
+                                _payload3s = {
+                                    "action":  "limpiarYCargar",
+                                    "headers": _headers3s,
+                                    "rows":    _rows3s,
+                                }
+
+                                with st.spinner("Enviando a Google Sheets…"):
+                                    _resp3s = _rq3s.post(
+                                        _GAS_URL_AE,
+                                        data=_js3s.dumps(_payload3s),
+                                        headers={"Content-Type": "application/json"},
+                                        timeout=60,
+                                    )
+
+                                if _resp3s.status_code == 200:
+                                    try:
+                                        _r3s_json = _resp3s.json()
+                                    except Exception:
+                                        _r3s_json = {"ok": True, "msg": _resp3s.text[:200]}
+
+                                    if _r3s_json.get("ok"):
+                                        st.success(
+                                            f"✅ Enviado correctamente — "
+                                            f"{len(_rows3s)} filas escritas en 'agregados ae'."
+                                        )
+                                    else:
+                                        st.error(
+                                            f"❌ El script respondió con error: "
+                                            f"{_r3s_json.get('msg', _resp3s.text[:300])}"
+                                        )
+                                else:
+                                    st.error(
+                                        f"❌ HTTP {_resp3s.status_code}: {_resp3s.text[:300]}"
+                                    )
+
+                            except Exception as _esp3:
+                                st.error(f"❌ Error al enviar a Sheets: {_esp3}")
+                                with st.expander("Detalle del error"):
+                                    import traceback as _tb3s
+                                    st.code(_tb3s.format_exc())
 
         except Exception as _ep3:
             st.error(f"❌ Error en Paso 3: {_ep3}")
