@@ -6029,8 +6029,8 @@ def render_tab_proyeccion():
                                         return v.item()
                                     return v
 
-                                # Enviar TODOS los SKUs (no solo los negativos)
-                                _df_send_repos = _df_repos.copy()
+                                # Enviar solo SKUs con reposición negativa
+                                _df_send_repos = _df_repos_neg.copy()
                                 _hdrs4s = list(_df_send_repos.columns)
                                 _rows4s = [
                                     [_ser4(v) for v in row]
