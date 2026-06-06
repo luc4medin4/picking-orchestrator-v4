@@ -5694,7 +5694,7 @@ def render_tab_proyeccion():
                         # Reemplazar con la URL real luego del deploy en GAS.
                         _GAS_URL_AE = st.secrets.get(
                             "GAS_AGREGADOS_AE_URL",
-                            "https://script.google.com/macros/s/REEMPLAZAR_CON_URL_REAL/exec"
+                            "https://script.google.com/macros/s/AKfycbyyfBFJ4TIv98TavxhBtTa6spC8QPor4jh6tbFLhkUHYmFPIQSYLNSxLrmdzKFvEzI0EA/exec"
                         )
 
                         st.markdown("---")
