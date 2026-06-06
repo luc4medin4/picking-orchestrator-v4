@@ -5887,6 +5887,12 @@ def render_tab_proyeccion():
                         pass
 
                     # ── 4. Construir tabla reposición ──────────────────────
+                    # Fecha del día
+                    _fecha_p4_str = (
+                        pdata["fecha"].strftime("%d/%m/%Y")
+                        if hasattr(pdata.get("fecha"), "strftime")
+                        else str(pdata.get("fecha", ""))
+                    )
                     _repos_rows = []
                     for _sku4, _ddm_v4 in _ddm_p4.items():
                         _bxp4 = _ddm_v4.get("bxp", 0)
@@ -5896,19 +5902,23 @@ def render_tab_proyeccion():
                         _pick_tot4 = _pick_anr.get(_sku4, 0) + _pick_agr_sub.get(_sku4, 0)
                         if _pick_tot4 <= 0:
                             continue
-                        _pos4       = _POSICIONES_ESPECIALES.get(_sku4, 1)
-                        _en_cancha4 = _pos4 * _bxp4
-                        _repos4     = _en_cancha4 - _pick_tot4
+                        _pos4         = _POSICIONES_ESPECIALES.get(_sku4, 1)
+                        _en_cancha4   = _pos4 * _bxp4
+                        # PICK en pallets = bultos / BXP
+                        _pick_pall4   = round(_pick_tot4 / _bxp4, 2)
+                        # Reposición en pallets = (En cancha - PICK_bult) / BXP → negativo si falta
+                        _repos_pall4  = round((_en_cancha4 - _pick_tot4) / _bxp4, 2)
                         _repos_rows.append({
-                            "Almacén":        _sku4,
-                            "Descripción":    _desc_anr.get(_sku4, ""),
-                            "Cancha":         _can4,
-                            "BXP":            int(_bxp4),
-                            "Posiciones":     _pos4,
-                            "En cancha (bult)": int(_en_cancha4),
-                            "PICK (bult)":    round(_pick_tot4, 2),
-                            "Reposición":     round(_repos4, 2),
-                            "¿Reponer?":      "⚠️ SÍ" if _repos4 < 0 else "✅ OK",
+                            "Fecha":            _fecha_p4_str,
+                            "Almacén":          _sku4,
+                            "Descripción":      _desc_anr.get(_sku4, ""),
+                            "Cancha":           _can4,
+                            "BXP":              int(_bxp4),
+                            "Posiciones":       _pos4,
+                            "En cancha":        int(_en_cancha4),
+                            "AGR":              0,
+                            "PICK":             _pick_pall4,
+                            "Reposición Pall":  _repos_pall4,
                         })
 
                     if not _repos_rows:
@@ -5916,8 +5926,8 @@ def render_tab_proyeccion():
                     else:
                         _df_repos = pd.DataFrame(_repos_rows)
                         _df_repos_neg = _df_repos[
-                            _df_repos["Reposición"] < 0].sort_values("Reposición")
-                        _df_repos_ok  = _df_repos[_df_repos["Reposición"] >= 0]
+                            _df_repos["Reposición Pall"] < 0].sort_values("Reposición Pall")
+                        _df_repos_ok  = _df_repos[_df_repos["Reposición Pall"] >= 0]
 
                         _r4c1, _r4c2, _r4c3 = st.columns(3)
                         _r4c1.metric("🔄 SKUs a reponer", len(_df_repos_neg))
@@ -5936,7 +5946,7 @@ def render_tab_proyeccion():
 
                         with st.expander("Ver todos los SKUs (incluyendo OK)",
                                          expanded=False):
-                            st.dataframe(_df_repos.sort_values("Reposición"),
+                            st.dataframe(_df_repos.sort_values("Reposición Pall"),
                                          use_container_width=True, hide_index=True)
 
                         # ── 5. Exportar Excel ──────────────────────────────
