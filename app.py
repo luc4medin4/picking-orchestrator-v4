@@ -5646,6 +5646,8 @@ def render_tab_proyeccion():
                             _rows_final3.append(_row3)
 
                         _df_final3 = pd.DataFrame(_rows_final3)
+                        # Guardar para Paso 4 (AE Puras por SKU)
+                        st.session_state["_df_final3_paso3"] = _df_final3
 
                         if _skus_sin_bxp3:
                             st.warning(f"⚠️ SKUs sin BXP en DDM (excluidos): {_skus_sin_bxp3}")
@@ -5887,12 +5889,64 @@ def render_tab_proyeccion():
                         pass
 
                     # ── 4. Construir tabla reposición ──────────────────────
-                    # Fecha del día
-                    _fecha_p4_str = (
-                        pdata["fecha"].strftime("%d/%m/%Y")
-                        if hasattr(pdata.get("fecha"), "strftime")
-                        else str(pdata.get("fecha", ""))
-                    )
+                    # Fecha del día (siempre hoy, independiente del ANR)
+                    import datetime as _dt4
+                    _fecha_p4_str = _dt4.date.today().strftime("%d/%m/%Y")
+
+                    # ── AE Puras por SKU desde Paso 3 (_df_final3) ─────────
+                    # _df_final3 tiene col "Cod" y col "TOTALES" (sum AE pallets)
+                    _ae_puras_p4 = {}  # {sku: total_paletas_ae}
+                    try:
+                        _df_f3_ref = st.session_state.get("_df_final3_paso3")
+                        if _df_f3_ref is not None and not _df_f3_ref.empty:
+                            for _, _r3ref in _df_f3_ref.iterrows():
+                                try:
+                                    _s3ref = int(_r3ref["Cod"])
+                                    _t3ref = int(_r3ref.get("TOTALES", 0))
+                                    _ae_puras_p4[_s3ref] = _t3ref
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+
+                    # ── Stock por SKU desde Frescura hoja "Frescura" ────────
+                    # col G (idx 6) = STOCK LOTE → sumar por SKU → dividir BXP
+                    _stk4 = {}  # {sku: bultos_totales}
+                    try:
+                        _fr_p4.seek(0)
+                        _df_fr4 = pd.read_excel(_fr_p4, sheet_name="Frescura", header=0)
+                        _fr_p4.seek(0)
+
+                        def _col_p4(df, kws, pos):
+                            cols = list(df.columns)
+                            cols_lo = [str(c).strip().lower() for c in cols]
+                            for kw in kws:
+                                kw_lo = kw.strip().lower()
+                                for i, c_lo in enumerate(cols_lo):
+                                    if c_lo == kw_lo:
+                                        return cols[i]
+                            for kw in kws:
+                                kw_lo = kw.strip().lower()
+                                for i, c_lo in enumerate(cols_lo):
+                                    if kw_lo in c_lo:
+                                        return cols[i]
+                            return cols[pos] if pos < len(cols) else None
+
+                        _c4_fsku = _col_p4(_df_fr4, ["cód", "cod"], 3)
+                        _c4_stk  = _col_p4(_df_fr4, ["stock lote"], 6)
+                        if _c4_fsku and _c4_stk:
+                            _df_fr4["_fsku4"] = pd.to_numeric(
+                                _df_fr4[_c4_fsku], errors="coerce")
+                            _df_fr4["_stk4"]  = pd.to_numeric(
+                                _df_fr4[_c4_stk], errors="coerce").fillna(0)
+                            _df_fr4 = _df_fr4[_df_fr4["_fsku4"].notna()].copy()
+                            _df_fr4["_fsku4"] = _df_fr4["_fsku4"].astype(int)
+                            _stk4_s = _df_fr4.groupby("_fsku4")["_stk4"].sum()
+                            for _sk4s, _sv4 in _stk4_s.items():
+                                _stk4[int(_sk4s)] = int(_sv4) if pd.notna(_sv4) else 0
+                    except Exception:
+                        pass
+
                     _repos_rows = []
                     for _sku4, _ddm_v4 in _ddm_p4.items():
                         _bxp4 = _ddm_v4.get("bxp", 0)
@@ -5902,52 +5956,64 @@ def render_tab_proyeccion():
                         _pick_tot4 = _pick_anr.get(_sku4, 0) + _pick_agr_sub.get(_sku4, 0)
                         if _pick_tot4 <= 0:
                             continue
-                        _pos4         = _POSICIONES_ESPECIALES.get(_sku4, 1)
-                        _en_cancha4   = _pos4 * _bxp4
-                        # PICK en pallets = bultos / BXP
-                        _pick_pall4   = round(_pick_tot4 / _bxp4, 2)
-                        # Reposición en pallets = (En cancha - PICK_bult) / BXP → negativo si falta
-                        _repos_pall4  = round((_en_cancha4 - _pick_tot4) / _bxp4, 2)
+                        _pos4       = _POSICIONES_ESPECIALES.get(_sku4, 1)
+                        _en_cancha4 = _pos4 * _bxp4
+
+                        # Stock en pallets (bultos totales / BXP)
+                        _stk4_bult  = _stk4.get(_sku4, 0)
+                        _stk4_pall  = round(_stk4_bult / _bxp4, 2) if _bxp4 > 0 else 0.0
+
+                        # En cancha: fracción sobrante del stock (parte no entera)
+                        # Refleja el stock teórico disponible para picking en cancha
+                        _stk4_int   = int(_stk4_pall)
+                        _en_cancha4_frac = round(_stk4_pall - _stk4_int, 2)  # fracción < 1 paleta
+
+                        # PICK en pallets = bultos ANR / BXP
+                        _pick_pall4 = round(_pick_tot4 / _bxp4, 2)
+
+                        # AE Puras = paletas completas asignadas al AE en Paso 3
+                        _ae_puras4 = _ae_puras_p4.get(_sku4, 0)
+
+                        # Reposición según lógica Excel:
+                        #   Pos=1:  -(Carga - AE_Puras) + En_Cancha_frac
+                        #   Pos>1:  -(Carga - AE_Puras)
+                        if _pos4 == 1:
+                            _repos_pall4 = round(
+                                -(_pick_pall4 - _ae_puras4) + _en_cancha4_frac, 2)
+                        else:
+                            _repos_pall4 = round(-(_pick_pall4 - _ae_puras4), 2)
+
+                        # Solo incluir filas con reposición negativa (falta stock)
+                        if _repos_pall4 >= 0:
+                            continue
+
                         _repos_rows.append({
-                            "Fecha":            _fecha_p4_str,
-                            "Almacén":          _sku4,
-                            "Descripción":      _desc_anr.get(_sku4, ""),
-                            "Cancha":           _can4,
-                            "BXP":              int(_bxp4),
-                            "Posiciones":       _pos4,
-                            "En cancha":        int(_en_cancha4),
-                            "AGR":              0,
-                            "PICK":             _pick_pall4,
-                            "Reposición Pall":  _repos_pall4,
+                            "Fecha":           _fecha_p4_str,
+                            "Almacén":         _sku4,
+                            "Descripción":     _desc_anr.get(_sku4, ""),
+                            "Cancha":          _can4,
+                            "BXP":             int(_bxp4),
+                            "Posiciones":      _pos4,
+                            "En cancha":       int(_en_cancha4),
+                            "Stock":           round(_stk4_pall, 2),
+                            "Carga":           _pick_pall4,
+                            "AE Puras":        _ae_puras4,
+                            "Reposición Pall": _repos_pall4,
                         })
 
                     if not _repos_rows:
-                        st.info("No hay SKUs con picking en el ANR que coincidan con el DDM.")
+                        st.success("✅ Todas las canchas tienen stock suficiente para el picking de hoy.")
                     else:
-                        _df_repos = pd.DataFrame(_repos_rows)
-                        _df_repos_neg = _df_repos[
-                            _df_repos["Reposición Pall"] < 0].sort_values("Reposición Pall")
-                        _df_repos_ok  = _df_repos[_df_repos["Reposición Pall"] >= 0]
+                        _df_repos_neg = pd.DataFrame(_repos_rows).sort_values("Reposición Pall")
 
-                        _r4c1, _r4c2, _r4c3 = st.columns(3)
+                        _r4c1, _r4c2 = st.columns(2)
                         _r4c1.metric("🔄 SKUs a reponer", len(_df_repos_neg))
-                        _r4c2.metric("✅ SKUs OK",         len(_df_repos_ok))
-                        _r4c3.metric("📦 Total SKUs",      len(_df_repos))
+                        _r4c2.metric("📅 Fecha", _fecha_p4_str)
 
-                        if not _df_repos_neg.empty:
-                            st.error(
-                                f"⚠️ **{len(_df_repos_neg)} SKU(s) necesitan reposición "
-                                f"en cancha antes del picking:**")
-                            st.dataframe(_df_repos_neg,
-                                         use_container_width=True, hide_index=True)
-                        else:
-                            st.success(
-                                "✅ Todas las canchas tienen stock suficiente para el picking de hoy.")
-
-                        with st.expander("Ver todos los SKUs (incluyendo OK)",
-                                         expanded=False):
-                            st.dataframe(_df_repos.sort_values("Reposición Pall"),
-                                         use_container_width=True, hide_index=True)
+                        st.error(
+                            f"⚠️ **{len(_df_repos_neg)} SKU(s) necesitan reposición "
+                            f"en cancha antes del picking:**")
+                        st.dataframe(_df_repos_neg, use_container_width=True, hide_index=True)
 
                         # ── 5. Exportar Excel ──────────────────────────────
                         try:
@@ -5957,8 +6023,7 @@ def render_tab_proyeccion():
                             _wbr4 = _opx_r4.Workbook()
                             _wsr4 = _wbr4.active
                             _wsr4.title = "Reposición Cancha"
-                            _df_exp_r4 = (_df_repos_neg if not _df_repos_neg.empty
-                                          else _df_repos)
+                            _df_exp_r4 = _df_repos_neg
                             _hdrs_r4 = list(_df_exp_r4.columns)
                             for ci_r4, h_r4 in enumerate(_hdrs_r4, 1):
                                 _cr4 = _wsr4.cell(1, ci_r4, str(h_r4))
@@ -5979,8 +6044,7 @@ def render_tab_proyeccion():
                             _bufr4 = _io_r4.BytesIO()
                             _wbr4.save(_bufr4)
                             _bufr4.seek(0)
-                            _fecha_r4 = (pdata["fecha"].strftime("%d-%m-%Y")
-                                         if hasattr(pdata["fecha"], "strftime") else "hoy")
+                            _fecha_r4 = _dt4.date.today().strftime("%d-%m-%Y")
                             st.download_button(
                                 "⬇️ Descargar Excel Reposición Cancha",
                                 data=_bufr4.getvalue(),
