@@ -2263,7 +2263,9 @@ def render_tab_archivos():
                         _sheet_anr = _s
                         break
                 anr_file.seek(0)
-                _df_anr_raw = pd.read_excel(anr_file, sheet_name=_sheet_anr, header=0)
+                # ANR hoja BASE: fila 1 vacía, headers reales en fila 2 → header=1
+                _df_anr_raw = pd.read_excel(anr_file, sheet_name=_sheet_anr, header=1)
+                _df_anr_raw.columns = [str(c).strip() for c in _df_anr_raw.columns]
                 st.session_state["anr_df"] = _df_anr_raw
                 anr_file.seek(0)
             except Exception:
@@ -5785,171 +5787,289 @@ def render_tab_proyeccion():
         st.markdown("#### 🔄 Paso 4 — Reposición de canchas de picking")
         st.caption(
             "Calcula qué SKUs necesitan reposición en cancha. "
-            "Fuente: Frescura (posiciones × BXP = bultos en cancha) vs picking total (ANR + sub-pallet AGR). "
-            "Reposición negativa = hay que traer bultos del depósito. "
+            "Fuente: ANR (BULTOS por SKU) vs capacidad en cancha (Posiciones × BXP). "
+            "Reposición negativa = hay que traer bultos del depósito antes del picking. "
             "**⚠️ Clave de seguridad: revisá antes de que arranque el picking.**"
         )
 
-        # Posiciones especiales por SKU (sobreescriben pos=1 del DDM)
+        # Posiciones especiales por SKU (sobreescriben pos=1 por defecto)
         _POSICIONES_ESPECIALES = {7038: 7, 7634: 2, 31434: 2, 19019: 2}
 
         try:
             _car_p4  = st.session_state.get("t1_car") or st.session_state.get("t4_car")
-            _anr_p4  = st.session_state.get("tc_anr")
             _fr_p4   = st.session_state.get("t1_fr")
             _ddm_p4  = st.session_state.get("df_ddm_dict", {})
             _anr_df4 = st.session_state.get("anr_df")
 
             if not (_car_p4 and _fr_p4):
-                st.info("Necesitás CAR.xlsx y Frescura 3.0 cargados. ANR opcional pero recomendado.")
+                st.info("Necesitás CAR.xlsx y Frescura 3.0 cargados.")
+            elif _anr_df4 is None or _anr_df4.empty:
+                st.info("Cargá el ANR en la tab Archivos para calcular reposiciones.")
             else:
-                # ── 1. PICK desde ANR (hoja BASE, picking normal) ───────────
-                _pick_anr = {}  # {sku: bultos}
-                if _anr_df4 is not None and not _anr_df4.empty:
-                    _ac = [str(c).strip() for c in _anr_df4.columns]
-                    def _fc4(*nms):
-                        for n in nms:
-                            for i, c in enumerate(_ac):
-                                if n.lower() in c.lower(): return _anr_df4.columns[i]
-                        return None
-                    _col_sku4  = _fc4("almac","artíc","cod")
-                    _col_bult4 = _fc4("bultos","cantidad","cant")
-                    _col_sc4   = _fc4("sin cargo","sincarg")
-                    if _col_sku4 and _col_bult4:
-                        _df4 = _anr_df4.copy()
-                        if _col_sc4:
-                            _df4 = _df4[~_df4[_col_sc4].astype(str).str.upper().str.strip().isin(["SI","SÍ","S","1","TRUE"])]
-                        for _, _ra4 in _df4.iterrows():
-                            try:
-                                _s4 = int(float(str(_ra4[_col_sku4])))
-                                _b4 = float(_ra4[_col_bult4])
-                                _pick_anr[_s4] = _pick_anr.get(_s4, 0) + _b4
-                            except Exception:
-                                pass
+                # ── 1. Normalizar columnas ANR ──────────────────────────────
+                _anr4 = _anr_df4.copy()
+                _anr4.columns = [str(c).strip() for c in _anr4.columns]
+                _anr4_cols = list(_anr4.columns)
 
-                # ── 2. Sub-pallet desde AGR (CAR) ──────────────────────────
-                _pick_agr_sub = {}  # {sku: bultos sub-pallet}
-                try:
-                    _car_p4.seek(0)
-                    _xl_p4 = pd.ExcelFile(_car_p4)
-                    _agr4 = next((s for s in _xl_p4.sheet_names if s.upper() == "AGR"), None)
-                    if _agr4:
-                        _car_p4.seek(0)
-                        _df_agr4 = pd.read_excel(_car_p4, sheet_name=_agr4, header=0)
-                        _car_p4.seek(0)
-                        _cols4 = [str(c).strip() for c in _df_agr4.columns]
-                        def _fca4(*nms):
-                            for n in nms:
-                                for i, c in enumerate(_cols4):
-                                    if n.lower() in c.lower(): return _df_agr4.columns[i]
-                            return None
-                        _csku4  = _fca4("cod","almac","artíc")
-                        _cblt4  = _fca4("cantidad","bultos")
-                        _ccam4  = _fca4("chofer","camion")
-                        if _csku4 and _cblt4:
-                            for _, _rr4 in _df_agr4.dropna(subset=[_csku4,_cblt4]).iterrows():
-                                try:
-                                    _s4  = int(float(str(_rr4[_csku4])))
-                                    _b4  = float(_rr4[_cblt4])
-                                    _bxp4 = _ddm_p4.get(_s4, {}).get("bxp", 0)
-                                    if _bxp4 > 0:
-                                        _sub4 = _b4 % _bxp4  # solo fracción sub-pallet
-                                        if _sub4 > 0:
-                                            _pick_agr_sub[_s4] = _pick_agr_sub.get(_s4, 0) + _sub4
-                                except Exception:
-                                    pass
-                except Exception:
-                    pass
+                def _fc4(*nms):
+                    for n in nms:
+                        for c in _anr4_cols:
+                            if n.lower() in c.lower():
+                                return c
+                    return None
 
-                # ── 3. Leer posiciones y cancha desde Frescura DDM ──────────
-                # Usamos df_ddm_dict que ya está en session_state
-                # La cancha la tomamos de col O (ya en df_ddm_dict["can"])
-                # Posiciones = 1 por defecto (1 pallet en cancha) salvo especiales
-                # En cancha = posiciones × BXP
+                # Columnas ANR: H=ARTÍCULO, I=DESCRIPCIÓN ARTÍCULO, K=BULTOS, G=SIN CARGO
+                _col_sku4  = _fc4("artículo", "articulo", "artíc")
+                _col_desc4 = _fc4("descripción artículo", "descripcion artículo",
+                                   "descripcion articulo", "descripción artíc")
+                _col_bult4 = _fc4("bultos")
+                _col_sc4   = _fc4("sin cargo", "sincarg")
 
-                # ── 4. Construir tabla reposición ───────────────────────────
-                _repos_rows = []
-                import datetime as _dt_p4
-                for _sku4, _ddm_v4 in _ddm_p4.items():
-                    _bxp4  = _ddm_v4.get("bxp", 0)
-                    _can4  = _ddm_v4.get("can", "")
-                    if _bxp4 <= 0 or not _can4:
-                        continue
-                    # Posiciones en cancha
-                    _pos4 = _POSICIONES_ESPECIALES.get(_sku4, 1)
-                    _en_cancha4 = _pos4 * _bxp4
-                    # PICK total = ANR + sub-pallet AGR
-                    _pick_tot4 = _pick_anr.get(_sku4, 0) + _pick_agr_sub.get(_sku4, 0)
-                    if _pick_tot4 <= 0:
-                        continue  # si no hay picking, no hay reposición
-                    _repos4 = _en_cancha4 - _pick_tot4
-                    # Solo mostrar los que necesitan reposición (negativo)
-                    _repos_rows.append({
-                        "Almacén": _sku4,
-                        "Descripción": "",  # se podría enriquecer con ANR
-                        "Cancha": _can4,
-                        "BXP": int(_bxp4),
-                        "Posiciones": _pos4,
-                        "En cancha (bult)": int(_en_cancha4),
-                        "PICK (bult)": round(_pick_tot4, 2),
-                        "Reposición": round(_repos4, 2),
-                        "¿Reponer?": "⚠️ SÍ" if _repos4 < 0 else "✅ OK",
-                    })
-
-                if not _repos_rows:
-                    st.info("No hay datos suficientes para calcular reposiciones. Verificá que ANR esté cargado.")
+                if not (_col_sku4 and _col_bult4):
+                    st.warning(
+                        f"No se encontraron columnas SKU/BULTOS en el ANR. "
+                        f"Columnas detectadas: {_anr4_cols[:10]}"
+                    )
                 else:
-                    _df_repos = pd.DataFrame(_repos_rows)
-                    _df_repos_neg = _df_repos[_df_repos["Reposición"] < 0].sort_values("Reposición")
-                    _df_repos_ok  = _df_repos[_df_repos["Reposición"] >= 0]
+                    # ── 2. Filtrar SIN CARGO y sumar BULTOS por SKU ────────
+                    if _col_sc4:
+                        _anr4 = _anr4[
+                            ~_anr4[_col_sc4].astype(str).str.upper().str.strip()
+                            .isin(["SI", "SÍ", "S", "1", "TRUE"])
+                        ]
 
-                    _r4c1, _r4c2, _r4c3 = st.columns(3)
-                    _r4c1.metric("🔄 SKUs a reponer", len(_df_repos_neg))
-                    _r4c2.metric("✅ SKUs OK", len(_df_repos_ok))
-                    _r4c3.metric("📦 Total SKUs picking", len(_df_repos))
+                    _pick_anr = {}   # {sku: bultos}
+                    _desc_anr = {}   # {sku: descripcion}
+                    for _, _ra4 in _anr4.iterrows():
+                        try:
+                            _s4 = int(float(str(_ra4[_col_sku4])))
+                            _b4 = float(_ra4[_col_bult4]) if pd.notna(_ra4[_col_bult4]) else 0.0
+                            _pick_anr[_s4] = _pick_anr.get(_s4, 0) + _b4
+                            if _col_desc4 and _s4 not in _desc_anr:
+                                _desc_anr[_s4] = str(_ra4[_col_desc4]).strip()[:40]
+                        except Exception:
+                            pass
 
-                    if not _df_repos_neg.empty:
-                        st.error(f"⚠️ **{len(_df_repos_neg)} SKU(s) necesitan reposición en cancha antes del picking:**")
-                        st.dataframe(_df_repos_neg, use_container_width=True, hide_index=True)
-                    else:
-                        st.success("✅ Todas las canchas tienen stock suficiente para el picking de hoy.")
-
-                    with st.expander("Ver todos los SKUs (incluyendo OK)", expanded=False):
-                        st.dataframe(_df_repos.sort_values("Reposición"), use_container_width=True, hide_index=True)
-
-                    # Exportar Excel reposición
+                    # ── 3. Sub-pallet desde CAR hoja AGR ──────────────────
+                    _pick_agr_sub = {}
                     try:
-                        import io as _io_r4, openpyxl as _opx_r4
-                        from openpyxl.styles import PatternFill as _PFr4, Font as _FOr4, Alignment as _ALr4
-                        _wbr4 = _opx_r4.Workbook()
-                        _wsr4 = _wbr4.active; _wsr4.title = "Reposición Cancha"
-                        _hdrs_r4 = list(_df_repos_neg.columns) if not _df_repos_neg.empty else list(_df_repos.columns)
-                        _df_exp_r4 = _df_repos_neg if not _df_repos_neg.empty else _df_repos
-                        for ci_r4, h_r4 in enumerate(_hdrs_r4, 1):
-                            _cr4 = _wsr4.cell(1, ci_r4, str(h_r4))
-                            _cr4.fill = _PFr4("solid", fgColor="1F3864")
-                            _cr4.font = _FOr4(bold=True, color="FFFFFF", size=10)
-                            _cr4.alignment = _ALr4(horizontal="center")
-                        for ri_r4, row_r4 in _df_exp_r4.iterrows():
-                            for ci_r4, v_r4 in enumerate(row_r4, 1):
-                                _cr4d = _wsr4.cell(ri_r4 + 2, ci_r4, v_r4)
-                                _cr4d.alignment = _ALr4(horizontal="center")
-                                if str(v_r4) == "⚠️ SÍ":
-                                    _cr4d.fill = _PFr4("solid", fgColor="FFE0E0")
-                        for _colr4 in _wsr4.columns:
-                            _wsr4.column_dimensions[_colr4[0].column_letter].width = 14
-                        _bufr4 = _io_r4.BytesIO(); _wbr4.save(_bufr4); _bufr4.seek(0)
-                        _fecha_r4 = pdata["fecha"].strftime("%d-%m-%Y") if hasattr(pdata["fecha"],"strftime") else "hoy"
-                        st.download_button(
-                            "⬇️ Descargar Excel Reposición Cancha",
-                            data=_bufr4.getvalue(),
-                            file_name=f"{_fecha_r4}_reposicion_cancha_bkcc.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width=True,
-                            key="t4_paso4_dl",
+                        _car_p4.seek(0)
+                        _xl_p4 = pd.ExcelFile(_car_p4)
+                        _agr4_sh = next(
+                            (s for s in _xl_p4.sheet_names if s.upper() == "AGR"), None)
+                        if _agr4_sh:
+                            _car_p4.seek(0)
+                            _df_agr4 = pd.read_excel(_car_p4, sheet_name=_agr4_sh, header=0)
+                            _car_p4.seek(0)
+                            _cols4a = [str(c).strip() for c in _df_agr4.columns]
+                            def _fca4(*nms):
+                                for n in nms:
+                                    for c in _cols4a:
+                                        if n.lower() in c.lower(): return c
+                                return None
+                            _csku4a = _fca4("cod", "almac", "artíc")
+                            _cblt4a = _fca4("cantidad", "bultos")
+                            if _csku4a and _cblt4a:
+                                for _, _rr4 in _df_agr4.dropna(
+                                        subset=[_csku4a, _cblt4a]).iterrows():
+                                    try:
+                                        _s4a  = int(float(str(_rr4[_csku4a])))
+                                        _b4a  = float(_rr4[_cblt4a])
+                                        _bx4a = _ddm_p4.get(_s4a, {}).get("bxp", 0)
+                                        if _bx4a > 0:
+                                            _sub4 = _b4a % _bx4a
+                                            if _sub4 > 0:
+                                                _pick_agr_sub[_s4a] = (
+                                                    _pick_agr_sub.get(_s4a, 0) + _sub4)
+                                    except Exception:
+                                        pass
+                    except Exception:
+                        pass
+
+                    # ── 4. Construir tabla reposición ──────────────────────
+                    _repos_rows = []
+                    for _sku4, _ddm_v4 in _ddm_p4.items():
+                        _bxp4 = _ddm_v4.get("bxp", 0)
+                        _can4 = _ddm_v4.get("can", "")
+                        if _bxp4 <= 0 or not _can4:
+                            continue
+                        _pick_tot4 = _pick_anr.get(_sku4, 0) + _pick_agr_sub.get(_sku4, 0)
+                        if _pick_tot4 <= 0:
+                            continue
+                        _pos4       = _POSICIONES_ESPECIALES.get(_sku4, 1)
+                        _en_cancha4 = _pos4 * _bxp4
+                        _repos4     = _en_cancha4 - _pick_tot4
+                        _repos_rows.append({
+                            "Almacén":        _sku4,
+                            "Descripción":    _desc_anr.get(_sku4, ""),
+                            "Cancha":         _can4,
+                            "BXP":            int(_bxp4),
+                            "Posiciones":     _pos4,
+                            "En cancha (bult)": int(_en_cancha4),
+                            "PICK (bult)":    round(_pick_tot4, 2),
+                            "Reposición":     round(_repos4, 2),
+                            "¿Reponer?":      "⚠️ SÍ" if _repos4 < 0 else "✅ OK",
+                        })
+
+                    if not _repos_rows:
+                        st.info("No hay SKUs con picking en el ANR que coincidan con el DDM.")
+                    else:
+                        _df_repos = pd.DataFrame(_repos_rows)
+                        _df_repos_neg = _df_repos[
+                            _df_repos["Reposición"] < 0].sort_values("Reposición")
+                        _df_repos_ok  = _df_repos[_df_repos["Reposición"] >= 0]
+
+                        _r4c1, _r4c2, _r4c3 = st.columns(3)
+                        _r4c1.metric("🔄 SKUs a reponer", len(_df_repos_neg))
+                        _r4c2.metric("✅ SKUs OK",         len(_df_repos_ok))
+                        _r4c3.metric("📦 Total SKUs",      len(_df_repos))
+
+                        if not _df_repos_neg.empty:
+                            st.error(
+                                f"⚠️ **{len(_df_repos_neg)} SKU(s) necesitan reposición "
+                                f"en cancha antes del picking:**")
+                            st.dataframe(_df_repos_neg,
+                                         use_container_width=True, hide_index=True)
+                        else:
+                            st.success(
+                                "✅ Todas las canchas tienen stock suficiente para el picking de hoy.")
+
+                        with st.expander("Ver todos los SKUs (incluyendo OK)",
+                                         expanded=False):
+                            st.dataframe(_df_repos.sort_values("Reposición"),
+                                         use_container_width=True, hide_index=True)
+
+                        # ── 5. Exportar Excel ──────────────────────────────
+                        try:
+                            import io as _io_r4, openpyxl as _opx_r4
+                            from openpyxl.styles import (
+                                PatternFill as _PFr4, Font as _FOr4, Alignment as _ALr4)
+                            _wbr4 = _opx_r4.Workbook()
+                            _wsr4 = _wbr4.active
+                            _wsr4.title = "Reposición Cancha"
+                            _df_exp_r4 = (_df_repos_neg if not _df_repos_neg.empty
+                                          else _df_repos)
+                            _hdrs_r4 = list(_df_exp_r4.columns)
+                            for ci_r4, h_r4 in enumerate(_hdrs_r4, 1):
+                                _cr4 = _wsr4.cell(1, ci_r4, str(h_r4))
+                                _cr4.fill = _PFr4("solid", fgColor="1F3864")
+                                _cr4.font = _FOr4(bold=True, color="FFFFFF", size=10)
+                                _cr4.alignment = _ALr4(horizontal="center")
+                            for ri_r4, row_r4 in _df_exp_r4.reset_index(
+                                    drop=True).iterrows():
+                                for ci_r4, v_r4 in enumerate(row_r4, 1):
+                                    _cr4d = _wsr4.cell(ri_r4 + 2, ci_r4, v_r4)
+                                    _cr4d.alignment = _ALr4(horizontal="center")
+                                    if str(v_r4) == "⚠️ SÍ":
+                                        _cr4d.fill = _PFr4("solid", fgColor="FFE0E0")
+                            for _colr4 in _wsr4.columns:
+                                _wsr4.column_dimensions[
+                                    _colr4[0].column_letter].width = 14
+                            _wsr4.column_dimensions["B"].width = 36
+                            _bufr4 = _io_r4.BytesIO()
+                            _wbr4.save(_bufr4)
+                            _bufr4.seek(0)
+                            _fecha_r4 = (pdata["fecha"].strftime("%d-%m-%Y")
+                                         if hasattr(pdata["fecha"], "strftime") else "hoy")
+                            st.download_button(
+                                "⬇️ Descargar Excel Reposición Cancha",
+                                data=_bufr4.getvalue(),
+                                file_name=f"{_fecha_r4}_reposicion_cancha_bkcc.xlsx",
+                                mime=(
+                                    "application/vnd.openxmlformats-"
+                                    "officedocument.spreadsheetml.sheet"),
+                                use_container_width=True,
+                                key="t4_paso4_dl",
+                            )
+                        except Exception as _er4x:
+                            st.warning(f"⚠️ No se pudo generar Excel reposición: {_er4x}")
+
+                        # ── 6. Botón Enviar a Sheets — Reposición AE ──────────
+                        # Mismo GAS que Agregados AE, acción distinta.
+                        # Rango destino: A2:J  (K y L tienen fórmulas → intocables).
+                        _GAS_URL_REPOS = st.secrets.get(
+                            "GAS_AGREGADOS_AE_URL",
+                            "https://script.google.com/macros/s/AKfycbyyfBFJ4TIv98TavxhBtTa6spC8QPor4jh6tbFLhkUHYmFPIQSYLNSxLrmdzKFvEzI0EA/exec"
                         )
-                    except Exception as _er4x:
-                        st.warning(f"⚠️ No se pudo generar Excel reposición: {_er4x}")
+
+                        st.markdown("---")
+                        if st.button(
+                            "📤 Enviar a Sheets (Reposición AE)",
+                            key="t4_paso4_send_sheets",
+                            use_container_width=True,
+                            help="Borra A2:J de la hoja 'reposición ae' y escribe los datos actuales. "
+                                 "Las columnas K y L (fórmulas) no se modifican.",
+                            type="primary",
+                        ):
+                            try:
+                                import requests as _rq4s, json as _js4s
+
+                                def _ser4(v):
+                                    if v is None or (isinstance(v, float) and v != v):
+                                        return ""
+                                    try:
+                                        import numpy as _np4s
+                                        if isinstance(v, (_np4s.integer,)):
+                                            return int(v)
+                                        if isinstance(v, (_np4s.floating,)):
+                                            return float(v)
+                                    except ImportError:
+                                        pass
+                                    if hasattr(v, "item"):
+                                        return v.item()
+                                    return v
+
+                                # Enviar TODOS los SKUs (no solo los negativos)
+                                _df_send_repos = _df_repos.copy()
+                                _hdrs4s = list(_df_send_repos.columns)
+                                _rows4s = [
+                                    [_ser4(v) for v in row]
+                                    for row in _df_send_repos.itertuples(
+                                        index=False, name=None)
+                                ]
+
+                                _payload4s = {
+                                    "action":     "limpiarYCargarReposicion",
+                                    "headers":    _hdrs4s,
+                                    "rows":       _rows4s,
+                                }
+
+                                with st.spinner("Enviando a Google Sheets…"):
+                                    _resp4s = _rq4s.post(
+                                        _GAS_URL_REPOS,
+                                        data=_js4s.dumps(_payload4s),
+                                        headers={"Content-Type": "application/json"},
+                                        timeout=60,
+                                    )
+
+                                if _resp4s.status_code == 200:
+                                    try:
+                                        _r4s_json = _resp4s.json()
+                                    except Exception:
+                                        _r4s_json = {"ok": True,
+                                                     "msg": _resp4s.text[:200]}
+                                    if _r4s_json.get("ok"):
+                                        st.success(
+                                            f"✅ Enviado correctamente — "
+                                            f"{len(_rows4s)} filas escritas en "
+                                            f"'reposición ae'."
+                                        )
+                                    else:
+                                        st.error(
+                                            f"❌ El script respondió con error: "
+                                            f"{_r4s_json.get('msg', _resp4s.text[:300])}"
+                                        )
+                                else:
+                                    st.error(
+                                        f"❌ HTTP {_resp4s.status_code}: "
+                                        f"{_resp4s.text[:300]}"
+                                    )
+
+                            except Exception as _esp4:
+                                st.error(f"❌ Error al enviar a Sheets: {_esp4}")
+                                with st.expander("Detalle del error"):
+                                    import traceback as _tb4s
+                                    st.code(_tb4s.format_exc())
 
         except Exception as _ep4:
             st.error(f"❌ Error en Paso 4: {_ep4}")
