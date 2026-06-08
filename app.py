@@ -427,7 +427,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.91.1"
+APP_VERSION = "4.92.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -6065,40 +6065,51 @@ def render_tab_proyeccion():
                                 import requests as _rq4s, json as _js4s
 
                                 def _ser4(v):
-                                    if v is None or (isinstance(v, float) and v != v):
+                                    """Convierte cualquier valor a tipo nativo Python serializable por JSON."""
+                                    if v is None:
                                         return ""
+                                    # Manejar numpy antes que float nativo
                                     try:
                                         import numpy as _np4s
-                                        if isinstance(v, (_np4s.integer,)):
+                                        if isinstance(v, _np4s.integer):
                                             return int(v)
-                                        if isinstance(v, (_np4s.floating,)):
-                                            return float(v)
+                                        if isinstance(v, _np4s.floating):
+                                            if _np4s.isnan(v):
+                                                return ""
+                                            return round(float(v), 4)
+                                        if isinstance(v, _np4s.bool_):
+                                            return bool(v)
                                     except ImportError:
                                         pass
+                                    # float nativo
+                                    if isinstance(v, float):
+                                        import math
+                                        if math.isnan(v) or math.isinf(v):
+                                            return ""
+                                        return v
+                                    # int nativo
+                                    if isinstance(v, int):
+                                        return v
+                                    # fallback: .item() para otros tipos numpy
                                     if hasattr(v, "item"):
                                         return v.item()
                                     return v
 
                                 # Enviar solo SKUs con reposición negativa
                                 _df_send_repos = _df_repos_neg.reset_index(drop=True).copy()
-                                # Forzar float nativo Python en col Reposición Pall (fix col K)
-                                if "Reposición Pall" in _df_send_repos.columns:
-                                    _df_send_repos["Reposición Pall"] = (
-                                        _df_send_repos["Reposición Pall"]
-                                        .apply(lambda x: round(float(x), 2))
-                                    )
                                 _col_order4s = [
                                     "Fecha", "Almacén", "Descripción", "Cancha",
                                     "bxp", "Posiciones", "Stock", "En Cancha",
                                     "Carga", "AE Puras", "Reposición Pall",
                                 ]
                                 _hdrs4s = _col_order4s
+                                # Usar .loc con nombre de columna directo — evita problemas de encoding en .index
                                 _rows4s = []
-                                for _, _rr4s in _df_send_repos.iterrows():
+                                for _i4s in range(len(_df_send_repos)):
                                     _row4s = []
                                     for _cc in _col_order4s:
                                         try:
-                                            _vv = _rr4s[_cc] if _cc in _rr4s.index else ""
+                                            _vv = _df_send_repos.at[_i4s, _cc] if _cc in _df_send_repos.columns else ""
                                             _row4s.append(_ser4(_vv))
                                         except Exception:
                                             _row4s.append("")
@@ -6186,27 +6197,39 @@ def render_tab_proyeccion():
                                         "Carga", "AE Puras", "Reposición Pall",
                                     ]
                                     def _ser4h(v):
-                                        if v is None or (isinstance(v, float) and v != v):
+                                        """Convierte cualquier valor a tipo nativo Python serializable por JSON."""
+                                        if v is None:
                                             return ""
                                         try:
                                             import numpy as _np4h
-                                            if isinstance(v, (_np4h.integer,)): return int(v)
-                                            if isinstance(v, (_np4h.floating,)): return float(v)
+                                            if isinstance(v, _np4h.integer):
+                                                return int(v)
+                                            if isinstance(v, _np4h.floating):
+                                                if _np4h.isnan(v):
+                                                    return ""
+                                                return round(float(v), 4)
+                                            if isinstance(v, _np4h.bool_):
+                                                return bool(v)
                                         except ImportError:
                                             pass
-                                        if hasattr(v, "item"): return v.item()
+                                        if isinstance(v, float):
+                                            import math
+                                            if math.isnan(v) or math.isinf(v):
+                                                return ""
+                                            return v
+                                        if isinstance(v, int):
+                                            return v
+                                        if hasattr(v, "item"):
+                                            return v.item()
                                         return v
                                     _df_h = _df_repos_neg.reset_index(drop=True).copy()
-                                    if "Reposición Pall" in _df_h.columns:
-                                        _df_h["Reposición Pall"] = _df_h["Reposición Pall"].apply(
-                                            lambda x: round(float(x), 2))
                                     _hdrs4h = _col_order4h
                                     _rows4h = []
-                                    for _, _rrh in _df_h.iterrows():
+                                    for _i4h in range(len(_df_h)):
                                         _row4h = []
                                         for _cc in _col_order4h:
                                             try:
-                                                _vv = _rrh[_cc] if _cc in _rrh.index else ""
+                                                _vv = _df_h.at[_i4h, _cc] if _cc in _df_h.columns else ""
                                                 _row4h.append(_ser4h(_vv))
                                             except Exception:
                                                 _row4h.append("")
