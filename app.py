@@ -427,7 +427,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.89.0"
+APP_VERSION = "4.90.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -5889,41 +5889,107 @@ def render_tab_proyeccion():
                     import datetime as _dt4
                     _fecha_p4_str = _dt4.date.today().strftime("%d/%m/%Y")
 
-                    # ── AE Puras por SKU desde Paso 3 (_df_final3) ─────────
-                    # _df_final3: col "Cod" = SKU int, col "TOTALES" = sum AE pallets
+                    # ── AE Puras por SKU — CÁLCULO DIRECTO desde CAR+DDM ───
+                    # Independiente del Paso 3: lee CAR Hoja1, agrupa bultos_eq
+                    # por SKU × camión, calcula floor(bultos_eq/BXP) y suma.
+                    # Aplica exclusiones de t4_p3_cams_excluir.
                     _ae_puras_p4 = {}  # {sku (int): ae_pallets (int)}
                     try:
-                        _df_f3_ref = st.session_state.get("_df_final3_paso3")
-                        if _df_f3_ref is not None and not _df_f3_ref.empty:
-                            # Detectar columna SKU (puede ser "Cod" o primer int-like)
-                            _col_sku_f3 = None
-                            for _cc in _df_f3_ref.columns:
-                                if str(_cc).strip().lower() in ("cod", "sku", "almacén", "almacen"):
-                                    _col_sku_f3 = _cc
-                                    break
-                            if _col_sku_f3 is None and len(_df_f3_ref.columns) > 0:
-                                _col_sku_f3 = _df_f3_ref.columns[0]
-                            # Detectar columna TOTALES
-                            _col_tot_f3 = None
-                            for _cc in _df_f3_ref.columns:
-                                if str(_cc).strip().upper() == "TOTALES":
-                                    _col_tot_f3 = _cc
-                                    break
-                            if _col_sku_f3 and _col_tot_f3:
-                                for _, _r3ref in _df_f3_ref.iterrows():
-                                    try:
-                                        _raw_sku = _r3ref[_col_sku_f3]
-                                        _raw_tot = _r3ref[_col_tot_f3]
-                                        if pd.isna(_raw_sku) or pd.isna(_raw_tot):
-                                            continue
-                                        _s3ref = int(float(str(_raw_sku).strip()))
-                                        _t3ref = int(float(str(_raw_tot).strip()))
-                                        if _s3ref > 0:
-                                            _ae_puras_p4[_s3ref] = _t3ref
-                                    except Exception:
-                                        pass
-                    except Exception:
-                        pass
+                        _car_p4.seek(0)
+                        _df_car4ae = pd.read_excel(_car_p4, sheet_name=0, header=0)
+                        _car_p4.seek(0)
+                        _df_car4ae.columns = [str(c).strip() for c in _df_car4ae.columns]
+                        def _fc4ae(df_, *names):
+                            for n in names:
+                                for c in df_.columns:
+                                    if n.lower() in c.lower():
+                                        return c
+                            return None
+                        _csku4ae  = _fc4ae(_df_car4ae, "artículo", "articulo", "sku")
+                        _cbult4ae = _fc4ae(_df_car4ae, "bultos")
+                        _cunid4ae = _fc4ae(_df_car4ae, "unids", "unidades")
+                        _ccam4ae  = _fc4ae(_df_car4ae, "transporte")
+                        if _csku4ae and _cbult4ae and _ccam4ae:
+                            # Leer un_x_bulto desde DDM
+                            _un_x_b_p4 = {}
+                            try:
+                                _fr_p4.seek(0)
+                                _df_ddm4ae = pd.read_excel(_fr_p4, sheet_name="DDM", header=0)
+                                _fr_p4.seek(0)
+                                _cart4d = _fc4ae(_df_ddm4ae, "artículo", "articulo")
+                                _cun4d  = _fc4ae(_df_ddm4ae, "unidades")
+                                if _cart4d and _cun4d:
+                                    for _, _rd4 in _df_ddm4ae.iterrows():
+                                        try:
+                                            _sd4 = int(float(str(_rd4[_cart4d])))
+                                            _vd4 = float(_rd4[_cun4d]) if pd.notna(_rd4[_cun4d]) else 0
+                                            if _vd4 > 0:
+                                                _un_x_b_p4[_sd4] = _vd4
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
+
+                            _df_car4ae = _df_car4ae[
+                                _df_car4ae[_csku4ae].notna() & _df_car4ae[_ccam4ae].notna()
+                            ].copy()
+                            _df_car4ae["_sku"]  = _df_car4ae[_csku4ae].astype(float).astype(int)
+                            _df_car4ae["_cam"]  = _df_car4ae[_ccam4ae].astype(float).astype(int)
+                            _df_car4ae["_bult"] = pd.to_numeric(
+                                _df_car4ae[_cbult4ae], errors="coerce").fillna(0)
+                            _df_car4ae["_unid"] = (
+                                pd.to_numeric(_df_car4ae[_cunid4ae], errors="coerce").fillna(0)
+                                if _cunid4ae else 0.0
+                            )
+                            # bultos_eq = bultos + unids/un_x_bulto
+                            def _calc_beq4(row):
+                                _s = int(row["_sku"])
+                                _ub = _un_x_b_p4.get(_s, 0)
+                                _bult = float(row["_bult"])
+                                _unid = float(row["_unid"])
+                                if _ub > 0 and _unid > 0:
+                                    return _bult + (_unid / _ub)
+                                return _bult
+                            _df_car4ae["_beq"] = _df_car4ae.apply(_calc_beq4, axis=1)
+
+                            # Aplicar exclusiones de t4_p3_cams_excluir
+                            _CAM_ID_LABEL_P4AE = [
+                                (101,"COL F."),(102,"TRE"),(103,"PON"),(104,"BEL J."),
+                                (105,"BAR"),(106,"CAN"),(107,"TOTH"),(108,"ALM"),
+                                (109,"PRA"),(110,"CEB"),(111,"QUI"),(112,"VAL M."),
+                                (113,"COL S."),(114,"VIL"),(115,"ARA"),(117,"GAR"),
+                                (118,"ROB"),(119,"MINI"),(120,"IBAX"),(121,"PER"),
+                                (122,"SCA"),(123,"BEL P."),(124,"CHA"),(125,"KAR"),
+                                (127,"JER"),(128,"VILL"),(129,"DÍAZ"),
+                            ]
+                            _p4ae_excl_raw = set(st.session_state.get("t4_p3_cams_excluir", []))
+                            _lbl2id_p4ae  = {lbl: cid for cid, lbl in _CAM_ID_LABEL_P4AE}
+                            _full2id_p4ae = {f"{cid} — {lbl}": cid for cid, lbl in _CAM_ID_LABEL_P4AE}
+                            _p4ae_excl_ids = set()
+                            for _ev in _p4ae_excl_raw:
+                                if _ev in _full2id_p4ae:
+                                    _p4ae_excl_ids.add(_full2id_p4ae[_ev])
+                                elif _ev in _lbl2id_p4ae:
+                                    _p4ae_excl_ids.add(_lbl2id_p4ae[_ev])
+
+                            if _p4ae_excl_ids:
+                                _df_car4ae = _df_car4ae[~_df_car4ae["_cam"].isin(_p4ae_excl_ids)].copy()
+
+                            # Agrupar por SKU×CAM, calcular paletas enteras, sumar
+                            _agg4ae = _df_car4ae.groupby(["_sku", "_cam"])["_beq"].sum().reset_index()
+                            _agg4ae["BXP"] = _agg4ae["_sku"].map(
+                                lambda s: float(_ddm_p4.get(int(s), {}).get("bxp", 0))
+                            ).fillna(0)
+                            _agg4ae["PALL"] = 0
+                            _mae4 = _agg4ae["BXP"] > 0
+                            _agg4ae.loc[_mae4, "PALL"] = (
+                                (_agg4ae.loc[_mae4, "_beq"] / _agg4ae.loc[_mae4, "BXP"])
+                                .apply(lambda x: int(x))  # floor
+                            )
+                            for _s_ae, _grp_ae in _agg4ae.groupby("_sku"):
+                                _ae_puras_p4[int(_s_ae)] = int(_grp_ae["PALL"].sum())
+                    except Exception as _exc_ae4:
+                        st.warning(f"⚠️ AE Puras cálculo directo falló: {_exc_ae4}")
 
                     # ── Stock por SKU desde Frescura hoja "Frescura" ────────
                     # col G (idx 6) = STOCK LOTE → sumar por SKU → dividir BXP
@@ -6178,6 +6244,90 @@ def render_tab_proyeccion():
                                 with st.expander("Detalle del error"):
                                     import traceback as _tb4s
                                     st.code(_tb4s.format_exc())
+
+                        # ── Botón APPEND a Rep AE Histórico ───────────────
+                        st.markdown("---")
+                        st.markdown("##### 📚 Append a Rep AE Histórico")
+                        st.caption(
+                            "Agrega las filas actuales al final de la hoja "
+                            "'Rep AE Histórico' sin borrar datos existentes."
+                        )
+                        if st.button(
+                            "📚 Append a Rep AE Histórico",
+                            key="t4_btn_send_hist",
+                            use_container_width=True,
+                            type="secondary",
+                        ):
+                            try:
+                                import requests as _rq4h, json as _js4h
+                                _GAS_URL_HIST = st.secrets.get(
+                                    "GAS_AGREGADOS_AE_URL", ""
+                                )
+                                if not _GAS_URL_HIST:
+                                    st.error("❌ Falta GAS_AGREGADOS_AE_URL en secrets.")
+                                else:
+                                    # Reconstruir headers/rows desde _df_repos_neg
+                                    _col_order4h = [
+                                        "Fecha", "Almacén", "Descripción", "Cancha",
+                                        "bxp", "Posiciones", "Stock", "En Cancha",
+                                        "Carga", "AE Puras", "Reposición Pall",
+                                    ]
+                                    def _ser4h(v):
+                                        if v is None or (isinstance(v, float) and v != v):
+                                            return ""
+                                        try:
+                                            import numpy as _np4h
+                                            if isinstance(v, (_np4h.integer,)): return int(v)
+                                            if isinstance(v, (_np4h.floating,)): return float(v)
+                                        except ImportError:
+                                            pass
+                                        if hasattr(v, "item"): return v.item()
+                                        return v
+                                    _df_h = _df_repos_neg.reset_index(drop=True).copy()
+                                    if "Reposición Pall" in _df_h.columns:
+                                        _df_h["Reposición Pall"] = _df_h["Reposición Pall"].apply(
+                                            lambda x: round(float(x), 2))
+                                    _hdrs4h = _col_order4h
+                                    _rows4h = []
+                                    for _, _rrh in _df_h.iterrows():
+                                        _rows4h.append([_ser4h(_rrh.get(c, "")) for c in _col_order4h])
+                                    _payload4h = {
+                                        "action":  "appendReposicionHistorico",
+                                        "headers": _hdrs4h,
+                                        "rows":    _rows4h,
+                                    }
+                                    with st.spinner("Append a 'Rep AE Histórico'…"):
+                                        _resp4h = _rq4h.post(
+                                            _GAS_URL_HIST,
+                                            data=_js4h.dumps(_payload4h),
+                                            headers={"Content-Type": "application/json"},
+                                            timeout=60,
+                                        )
+                                    if _resp4h.status_code == 200:
+                                        try:
+                                            _r4h_json = _resp4h.json()
+                                        except Exception:
+                                            _r4h_json = {"ok": True, "msg": _resp4h.text[:200]}
+                                        if _r4h_json.get("ok"):
+                                            st.success(
+                                                f"✅ Append OK — {len(_rows4h)} filas "
+                                                f"agregadas en 'Rep AE Histórico'."
+                                            )
+                                        else:
+                                            st.error(
+                                                f"❌ GAS respondió error: "
+                                                f"{_r4h_json.get('msg', _resp4h.text[:300])}"
+                                            )
+                                    else:
+                                        st.error(
+                                            f"❌ HTTP {_resp4h.status_code}: "
+                                            f"{_resp4h.text[:300]}"
+                                        )
+                            except Exception as _esp4h:
+                                st.error(f"❌ Error append histórico: {_esp4h}")
+                                with st.expander("Detalle"):
+                                    import traceback as _tb4h
+                                    st.code(_tb4h.format_exc())
 
         except Exception as _ep4:
             st.error(f"❌ Error en Paso 4: {_ep4}")
