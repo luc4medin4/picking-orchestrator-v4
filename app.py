@@ -427,7 +427,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.84.0"
+APP_VERSION = "4.86.1"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -5852,43 +5852,7 @@ def render_tab_proyeccion():
                         except Exception:
                             pass
 
-                    # ── 3. Sub-pallet desde CAR hoja AGR ──────────────────
-                    _pick_agr_sub = {}
-                    try:
-                        _car_p4.seek(0)
-                        _xl_p4 = pd.ExcelFile(_car_p4)
-                        _agr4_sh = next(
-                            (s for s in _xl_p4.sheet_names if s.upper() == "AGR"), None)
-                        if _agr4_sh:
-                            _car_p4.seek(0)
-                            _df_agr4 = pd.read_excel(_car_p4, sheet_name=_agr4_sh, header=0)
-                            _car_p4.seek(0)
-                            _cols4a = [str(c).strip() for c in _df_agr4.columns]
-                            def _fca4(*nms):
-                                for n in nms:
-                                    for c in _cols4a:
-                                        if n.lower() in c.lower(): return c
-                                return None
-                            _csku4a = _fca4("cod", "almac", "artíc")
-                            _cblt4a = _fca4("cantidad", "bultos")
-                            if _csku4a and _cblt4a:
-                                for _, _rr4 in _df_agr4.dropna(
-                                        subset=[_csku4a, _cblt4a]).iterrows():
-                                    try:
-                                        _s4a  = int(float(str(_rr4[_csku4a])))
-                                        _b4a  = float(_rr4[_cblt4a])
-                                        _bx4a = _ddm_p4.get(_s4a, {}).get("bxp", 0)
-                                        if _bx4a > 0:
-                                            _sub4 = _b4a % _bx4a
-                                            if _sub4 > 0:
-                                                _pick_agr_sub[_s4a] = (
-                                                    _pick_agr_sub.get(_s4a, 0) + _sub4)
-                                    except Exception:
-                                        pass
-                    except Exception:
-                        pass
-
-                    # ── 4. Construir tabla reposición ──────────────────────
+                    # ── 3. Construir tabla reposición ──────────────────────
                     # Fecha del día (siempre hoy, independiente del ANR)
                     import datetime as _dt4
                     _fecha_p4_str = _dt4.date.today().strftime("%d/%m/%Y")
@@ -5953,28 +5917,28 @@ def render_tab_proyeccion():
                         _can4 = _ddm_v4.get("can", "")
                         if _bxp4 <= 0 or not _can4:
                             continue
-                        _pick_tot4 = _pick_anr.get(_sku4, 0) + _pick_agr_sub.get(_sku4, 0)
-                        if _pick_tot4 <= 0:
+
+                        # CARGA: bultos ANR / BXP → pallets totales de carga
+                        _bultos_anr4 = _pick_anr.get(_sku4, 0)
+                        if _bultos_anr4 <= 0:
                             continue
-                        _pos4       = _POSICIONES_ESPECIALES.get(_sku4, 1)
-                        _en_cancha4 = _pos4 * _bxp4
+                        _pick_pall4 = round(_bultos_anr4 / _bxp4, 2)
 
-                        # Stock en pallets (bultos totales / BXP)
-                        _stk4_bult  = _stk4.get(_sku4, 0)
-                        _stk4_pall  = round(_stk4_bult / _bxp4, 2) if _bxp4 > 0 else 0.0
+                        _pos4 = _POSICIONES_ESPECIALES.get(_sku4, 1)
 
-                        # En cancha: fracción sobrante del stock (parte no entera)
-                        # Refleja el stock teórico disponible para picking en cancha
-                        _stk4_int   = int(_stk4_pall)
-                        _en_cancha4_frac = round(_stk4_pall - _stk4_int, 2)  # fracción < 1 paleta
+                        # STOCK en pallets (sum Frescura col G por SKU / BXP)
+                        _stk4_bult = _stk4.get(_sku4, 0)
+                        _stk4_pall = round(_stk4_bult / _bxp4, 2) if _bxp4 > 0 else 0.0
 
-                        # PICK en pallets = bultos ANR / BXP
-                        _pick_pall4 = round(_pick_tot4 / _bxp4, 2)
+                        # EN CANCHA: fraccionado del stock (parte no entera < 1 pallet)
+                        # Es lo que físicamente está en la cancha de picking
+                        _stk4_int        = int(_stk4_pall)
+                        _en_cancha4_frac = round(_stk4_pall - _stk4_int, 2)
 
-                        # AE Puras = paletas completas asignadas al AE en Paso 3
+                        # AE PURAS: pallets completos asignados al AE en Paso 3
                         _ae_puras4 = _ae_puras_p4.get(_sku4, 0)
 
-                        # Reposición según lógica Excel:
+                        # REPOSICIÓN (en pallets):
                         #   Pos=1:  -(Carga - AE_Puras) + En_Cancha_frac
                         #   Pos>1:  -(Carga - AE_Puras)
                         if _pos4 == 1:
@@ -5983,7 +5947,7 @@ def render_tab_proyeccion():
                         else:
                             _repos_pall4 = round(-(_pick_pall4 - _ae_puras4), 2)
 
-                        # Solo incluir filas con reposición negativa (falta stock)
+                        # Solo incluir filas con reposición negativa (hay que reponer)
                         if _repos_pall4 >= 0:
                             continue
 
@@ -5992,10 +5956,10 @@ def render_tab_proyeccion():
                             "Almacén":         _sku4,
                             "Descripción":     _desc_anr.get(_sku4, ""),
                             "Cancha":          _can4,
-                            "BXP":             int(_bxp4),
+                            "bxp":             int(_bxp4),
                             "Posiciones":      _pos4,
-                            "En cancha":       int(_en_cancha4),
                             "Stock":           round(_stk4_pall, 2),
+                            "En Cancha":       round(_en_cancha4_frac, 2),
                             "Carga":           _pick_pall4,
                             "AE Puras":        _ae_puras4,
                             "Reposición Pall": _repos_pall4,
