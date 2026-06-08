@@ -10793,8 +10793,13 @@ def render_tab_tablero():
                 if _excluidos:
                     pd.DataFrame({"Cam excluidos": sorted(_excluidos)}).to_excel(_wr, sheet_name="Excluidos", index=False)
             _buf_xl.seek(0)
-            st.download_button("⬇️ Descargar Excel completo", data=_buf_xl.getvalue(),
-                file_name=f"{fecha_dia.strftime('%d%m%Y')}_tablero_ruteador_bkcc.xlsx",
+            _excel_dia_bytes = _buf_xl.getvalue()
+            _excel_dia_fname = f"{fecha_dia.strftime('%d%m%Y')}_tablero_ruteador_bkcc.xlsx"
+            # v4.94: guardar en session_state para descarga automática desde Excel/PDF Tablero
+            ss["excel_dia_bytes"] = _excel_dia_bytes
+            ss["excel_dia_fname"] = _excel_dia_fname
+            st.download_button("⬇️ Descargar Excel completo", data=_excel_dia_bytes,
+                file_name=_excel_dia_fname,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="tr_dl_xl", use_container_width=True)
 
@@ -10938,45 +10943,53 @@ def render_tab_tablero():
                     _ws2.row_dimensions[row+1].height = 18
                     row += 3
 
-                    # ── GRÁFICOS PRIMERO (igual que PDF) ──────────────────────
+                    # ── GRÁFICO COMBINADO (barras Bultos UP + línea PDV — igual que PDF) ─
                     if tabla_rows:
                         try:
-                            _gd_col  = 15  # col O — datos auxiliares
+                            from openpyxl.chart import BarChart, LineChart, Reference
+                            _gd_col = 15  # col O — datos auxiliares (ocultas)
                             _gdr = row
-                            for _ghi, _ghn in enumerate(["Camión","Bultos UP","HL","Peso(kg)","PDV"], 1):
-                                _ws2.cell(row, _gd_col + _ghi - 1, _ghn).font = _fo(True, _NX, 8)
+                            for _ghi, _ghn in enumerate(["Camión", "Bultos UP", "PDV"], 1):
+                                _ws2.cell(row, _gd_col + _ghi - 1, _ghn)
                             for _gi2, _gr2 in enumerate(tabla_rows, 1):
                                 _ws2.cell(_gdr + _gi2, _gd_col,     str(_gr2["N° Cam"]))
                                 _ws2.cell(_gdr + _gi2, _gd_col + 1, round(_gr2["Bultos UP"], 1))
-                                _ws2.cell(_gdr + _gi2, _gd_col + 2, round(_gr2.get("HL", 0), 2))
-                                _ws2.cell(_gdr + _gi2, _gd_col + 3, round(_gr2.get("Peso(kg)", 0), 0))
-                                _ws2.cell(_gdr + _gi2, _gd_col + 4, _gr2["PDV"])
+                                _ws2.cell(_gdr + _gi2, _gd_col + 2, _gr2["PDV"])
                             _gd_end = _gdr + len(tabla_rows)
 
-                            def _make_bar(col_offset, title, chart_anchor, w=14, h=8, color="4472C4"):
-                                _bc = BarChart()
-                                _bc.type = "col"; _bc.grouping = "clustered"
-                                _bc.title = title; _bc.style = 2
-                                _bc.width = w; _bc.height = h
-                                _bc.dataLabels = None
-                                _ref_d = Reference(_ws2, min_col=_gd_col + col_offset,
-                                    min_row=_gdr, max_row=_gd_end)
-                                _ref_c = Reference(_ws2, min_col=_gd_col,
-                                    min_row=_gdr + 1, max_row=_gd_end)
-                                _bc.add_data(_ref_d, titles_from_data=True)
-                                _bc.set_categories(_ref_c)
-                                _bc.series[0].graphicalProperties.solidFill = color
-                                _ws2.add_chart(_bc, chart_anchor)
+                            # Ocultar columnas auxiliares O, P, Q
+                            for _hc in ["O", "P", "Q"]:
+                                _ws2.column_dimensions[_hc].hidden = True
 
-                            _make_bar(1, f"Bultos UP por Camión — {fecha_dia.strftime('%d/%m/%Y')}",
-                                      f"A{row}", w=12, h=9, color="1F3864")
-                            _make_bar(2, f"HL por Camión — {fecha_dia.strftime('%d/%m/%Y')}",
-                                      f"E{row}", w=12, h=9, color="2e5fa3")
-                            _make_bar(3, f"Peso (kg) por Camión — {fecha_dia.strftime('%d/%m/%Y')}",
-                                      f"I{row}", w=12, h=9, color="00796B")
-                            row += 19
+                            # Barras — Bultos UP
+                            _bc = BarChart()
+                            _bc.type = "col"; _bc.grouping = "clustered"
+                            _bc.title = f"Bultos UP y PDV por Camión — {fecha_dia.strftime('%d/%m/%Y')}"
+                            _bc.style = 2; _bc.width = 26; _bc.height = 10
+                            _bc.y_axis.title = "Bultos UP"
+                            _ref_bup = Reference(_ws2, min_col=_gd_col + 1, min_row=_gdr, max_row=_gd_end)
+                            _ref_cat = Reference(_ws2, min_col=_gd_col, min_row=_gdr + 1, max_row=_gd_end)
+                            _bc.add_data(_ref_bup, titles_from_data=True)
+                            _bc.set_categories(_ref_cat)
+                            _bc.series[0].graphicalProperties.solidFill = "1F3864"
+
+                            # Línea — PDV (eje secundario)
+                            _lc = LineChart()
+                            _lc.y_axis.axId = 200
+                            _lc.y_axis.title = "PDV"
+                            _lc.y_axis.crosses = "max"
+                            _ref_pdv = Reference(_ws2, min_col=_gd_col + 2, min_row=_gdr, max_row=_gd_end)
+                            _lc.add_data(_ref_pdv, titles_from_data=True)
+                            _lc.series[0].graphicalProperties.line.solidFill = "FF6600"
+                            _lc.series[0].graphicalProperties.line.width = 20000
+                            _lc.series[0].marker.symbol = "circle"
+                            _lc.series[0].marker.size = 5
+
+                            _bc += _lc
+                            _ws2.add_chart(_bc, f"A{row}")
+                            row += 21
                         except Exception as _ge_xl:
-                            _ws2.cell(row, 1, f"[Gráficos no disponibles: {_ge_xl}]")
+                            _ws2.cell(row, 1, f"[Gráfico no disponible: {_ge_xl}]")
                             row += 1
 
                     # ── ANÁLISIS OPERATIVO (después del gráfico, igual que PDF) ─
@@ -11139,15 +11152,15 @@ def render_tab_tablero():
                     file_name=ss.get("tr_xl2_fname","tablero_ruteador_bkcc.xlsx"),
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="tr_dl_xl2", use_container_width=True)
-                # v4.94: auto-descarga del export del día
-                if ss.get("fx_picking_bytes"):
+                # v4.94: auto-descarga del Excel del día
+                if ss.get("excel_dia_bytes"):
                     st.download_button(
-                        f"⬇️ También: {ss.get('fx_picking_fname','fx_Picking.xlsx')}",
-                        data=ss["fx_picking_bytes"],
-                        file_name=ss.get("fx_picking_fname","fx_Picking.xlsx"),
+                        f"⬇️ También: {ss.get('excel_dia_fname','excel_dia.xlsx')}",
+                        data=ss["excel_dia_bytes"],
+                        file_name=ss.get("excel_dia_fname","excel_dia.xlsx"),
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="tr_dl_xl2_fx", use_container_width=True,
-                        help="Export del día — se descarga junto al Tablero para no olvidarlo.",
+                        key="tr_dl_xl2_dia", use_container_width=True,
+                        help="Excel del día (exportación completa) — se descarga junto al Tablero para no olvidarlo.",
                     )
 
         # ── PDF Tablero ────────────────────────────────────────────────────────
@@ -11551,15 +11564,15 @@ def render_tab_tablero():
                     file_name=ss.get("tr_pdf_fname","tablero.pdf"),
                     mime="application/pdf", key="tr_dl_pdf",
                     use_container_width=True)
-                # v4.94: auto-descarga del export del día
-                if ss.get("fx_picking_bytes"):
+                # v4.94: auto-descarga del Excel del día junto al PDF
+                if ss.get("excel_dia_bytes"):
                     st.download_button(
-                        f"⬇️ También: {ss.get('fx_picking_fname','fx_Picking.xlsx')}",
-                        data=ss["fx_picking_bytes"],
-                        file_name=ss.get("fx_picking_fname","fx_Picking.xlsx"),
+                        f"⬇️ También: {ss.get('excel_dia_fname','excel_dia.xlsx')}",
+                        data=ss["excel_dia_bytes"],
+                        file_name=ss.get("excel_dia_fname","excel_dia.xlsx"),
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="tr_dl_pdf_fx", use_container_width=True,
-                        help="Export del día — se descarga junto al PDF para no olvidarlo.",
+                        key="tr_dl_pdf_dia", use_container_width=True,
+                        help="Excel del día (exportación completa) — se descarga junto al PDF para no olvidarlo.",
                     )
 
     # ══════════════════════════════════════════════════════════════════
