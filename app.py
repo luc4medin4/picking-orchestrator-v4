@@ -1,5 +1,17 @@
 """
-Picking Orchestrator v4.96.0 — Beccacece Hnos SA
+Picking Orchestrator v4.97.0 — Beccacece Hnos SA
+
+CAMBIOS v4.97.0:
+  1. EXCEL TABLERO — eliminada la tabla "ANÁLISIS OPERATIVO" (segunda tabla redundante).
+     El Excel ahora tiene una sola tabla de detalle por camión, espejo exacto del PDF.
+  2. EXCEL TABLERO — agregada hoja "KPIs" con todos los KPIs del día en formato
+     clave/valor. Esto reemplaza al "Excel del día" eliminado en v4.96 y mantiene
+     compatibilidad con la sección Histórico Mensual (que lee hoja "KPIs").
+     Al generar el Excel Tablero ya no hace falta generar un archivo separado para
+     alimentar el histórico.
+  3. GRÁFICO EXCEL — se mantiene anchor string estándar pero se corrige el problema
+     de solapamiento con tabla: el gráfico ahora se inserta ANTES de la tabla de
+     detalle, igual que en el PDF (orden: KPIs → Targets → Totales → Gráfico → Tabla).
 
 CAMBIOS v4.96.0:
   1. TÍTULOS DE SECCIÓN — eliminados los st.subheader/st.markdown duplicados dentro de
@@ -446,7 +458,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.96.0"
+APP_VERSION = "4.97.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -10970,41 +10982,6 @@ def render_tab_tablero():
                             _ws2.cell(row, 1, f"[Gráfico no disponible: {_ge_xl}]")
                             row += 1
 
-                    # ── ANÁLISIS OPERATIVO (después del gráfico, igual que PDF) ─
-                    if tabla_rows:
-                        _ws2.merge_cells(f"A{row}:N{row}")
-                        _cell(row, 1, "ANÁLISIS OPERATIVO", bold=True, color="FFFFFF", sz=9, bg=_NX)
-                        _ws2.row_dimensions[row].height = 16; row += 1
-
-                        _bup_t = sum(r.get("Bultos UP", 0) for r in tabla_rows)
-
-                        _ah = ["N° Cam","Chofer","Bultos","Bultos UP","%Carga UP","HL","Peso(kg)","Peso OK","PDV","Drop Size"]
-                        for _ai, _ah2 in enumerate(_ah, 1):
-                            _cell(row, _ai, _ah2, bold=True, color="FFFFFF", sz=8, bg="2e5fa3")
-                        _ws2.row_dimensions[row].height = 14; row += 1
-
-                        for _ri3, _rr3 in enumerate(sorted(tabla_rows, key=lambda x: x.get("Bultos UP",0), reverse=True)):
-                            _bg3 = _LGX if _ri3 % 2 else "FFFFFF"
-                            _pct_bup = _rr3.get("Bultos UP",0) / _bup_t * 100 if _bup_t > 0 else 0
-                            _peso_ok_a = _rr3.get("_peso_ok", None)
-                            _peso_semaf_a = "OK" if _peso_ok_a is True else ("EXCEDE" if _peso_ok_a is False else "—")
-                            _ds2 = _rr3.get("Bultos UP",0) / _rr3["PDV"] if _rr3["PDV"] > 0 else 0
-                            _av3 = [str(_rr3["N° Cam"]), _rr3["Chofer"] or "—",
-                                    round(_rr3.get("Bultos",0), 0),
-                                    round(_rr3.get("Bultos UP",0), 2), f"{_pct_bup:.1f}%",
-                                    round(_rr3.get("HL", 0), 2),
-                                    round(_rr3.get("Peso(kg)", 0), 0), _peso_semaf_a,
-                                    _rr3["PDV"], round(_ds2, 2)]
-                            for _ci8, _vv8 in enumerate(_av3, 1):
-                                _cell(row, _ci8, _vv8, sz=8, bg=_bg3,
-                                      halign="left" if _ci8 == 2 else "center")
-                            if _peso_ok_a is False:
-                                _ws2.cell(row, 8).fill = _fx(_RX); _ws2.cell(row, 8).font = _fo(True,"FFFFFF",8)
-                            elif _peso_ok_a is True:
-                                _ws2.cell(row, 8).fill = _fx(_GRX); _ws2.cell(row, 8).font = _fo(True,"FFFFFF",8)
-                            _ws2.row_dimensions[row].height = 13; row += 1
-                        row += 1
-
                     # ════════════════════════════════════════════════════════
                     # TABLA DETALLE POR CAMIÓN — continúa en la misma hoja
                     # (espejo exacto del PDF, hoja única)
@@ -11097,6 +11074,34 @@ def render_tab_tablero():
                     ).font = _fo(False, "888888", 7)
                     _ws2.row_dimensions[row].height = 12
 
+                    # ── HOJA 2: KPIs (para Histórico Mensual) ────────────────
+                    _ws_kpi = _wb2.create_sheet(title="KPIs")
+                    _kpi_rows_data = [
+                        ("Fecha",               fecha_dia.strftime("%d/%m/%Y")),
+                        ("Camiones reparto",    camiones_en_reparto),
+                        ("Total PDV",           total_pedidos),
+                        ("Bultos UP",           round(total_up, 2)),
+                        ("Paletas",             round(paletas_total, 2)),
+                        ("HL",                  round(total_hl, 2)),
+                        ("Peso(kg)",            round(total_peso_kg, 0)),
+                        ("Drop Size",           round(drop_size, 2)),
+                        ("Eficiencia",          round(eficiencia, 4)),
+                        ("Util. Vehículos",     round(util_vehiculos, 4)),
+                        ("Fuera de zona (%)",   round(fuera_zona_pct, 4)),
+                        ("Ocup. bodega",        round(ocup_bodega, 2)),
+                        ("Productividad ruteo", round(prod_ruteo, 4)),
+                        ("Causa demora",        causa_demora or ""),
+                    ]
+                    _ws_kpi.cell(1, 1, "KPI").font = _fo(True, "FFFFFF", 9)
+                    _ws_kpi.cell(1, 1).fill = _fx(_NX)
+                    _ws_kpi.cell(1, 2, "Valor").font = _fo(True, "FFFFFF", 9)
+                    _ws_kpi.cell(1, 2).fill = _fx(_NX)
+                    for _ki_r, (_kn, _kv) in enumerate(_kpi_rows_data, 2):
+                        _ws_kpi.cell(_ki_r, 1, _kn).font = _fo(False, "000000", 9)
+                        _ws_kpi.cell(_ki_r, 2, _kv).font = _fo(False, "000000", 9)
+                    _ws_kpi.column_dimensions["A"].width = 26
+                    _ws_kpi.column_dimensions["B"].width = 20
+
                     # Anchos hoja única (A:M detalle + N overflow)
                     _col_widths_h1 = {
                         "A": 5,   # N° Cam
@@ -11120,7 +11125,7 @@ def render_tab_tablero():
                     _buf_xl2 = io.BytesIO(); _wb2.save(_buf_xl2); _buf_xl2.seek(0)
                     ss["tr_xl2_bytes"] = _buf_xl2.getvalue()
                     ss["tr_xl2_fname"] = f"{fecha_dia.strftime('%d-%m-%Y')}_Tablero-Ruteador_BKCC.xlsx"
-                    st.success("✅ Excel Tablero generado — hoja única, espejo del PDF")
+                    st.success("✅ Excel Tablero generado — tabla única espejo del PDF + hoja KPIs para Histórico")
                 except Exception as _xe2:
                     import traceback
                     st.error(f"Error: {_xe2}")
