@@ -427,7 +427,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.88.0"
+APP_VERSION = "4.88.1"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -6109,6 +6109,14 @@ def render_tab_proyeccion():
                                     "headers":    _hdrs4s,
                                     "rows":       _rows4s,
                                 }
+
+                                # Debug: mostrar payload fila 0 para verificar col K
+                                if _rows4s:
+                                    st.caption(
+                                        f"🔍 Debug payload fila 0 "
+                                        f"({len(_rows4s[0])} vals): "
+                                        f"col K = `{_rows4s[0][10] if len(_rows4s[0]) > 10 else 'FALTA'}`"
+                                    )
 
                                 with st.spinner("Enviando a Google Sheets…"):
                                     _resp4s = _rq4s.post(
