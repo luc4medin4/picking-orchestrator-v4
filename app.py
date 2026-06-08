@@ -10947,25 +10947,29 @@ def render_tab_tablero():
                     if tabla_rows:
                         try:
                             from openpyxl.chart import BarChart, LineChart, Reference
-                            _gd_col = 15  # col O — datos auxiliares (ocultas)
-                            _gdr = row
+                            from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
+
+                            # Datos auxiliares en filas FIJAS altas (col R=18, fuera del flujo)
+                            # para que no colisionen con el gráfico anclado en col A
+                            _gd_col = 18  # col R — datos auxiliares ocultos
+                            _gdr = 1      # siempre fila 1 (zona segura, no pisamos el layout)
                             for _ghi, _ghn in enumerate(["Camión", "Bultos UP", "PDV"], 1):
-                                _ws2.cell(row, _gd_col + _ghi - 1, _ghn)
+                                _ws2.cell(_gdr, _gd_col + _ghi - 1, _ghn)
                             for _gi2, _gr2 in enumerate(tabla_rows, 1):
                                 _ws2.cell(_gdr + _gi2, _gd_col,     str(_gr2["N° Cam"]))
                                 _ws2.cell(_gdr + _gi2, _gd_col + 1, round(_gr2["Bultos UP"], 1))
                                 _ws2.cell(_gdr + _gi2, _gd_col + 2, _gr2["PDV"])
                             _gd_end = _gdr + len(tabla_rows)
 
-                            # Ocultar columnas auxiliares O, P, Q
-                            for _hc in ["O", "P", "Q"]:
+                            # Ocultar columnas auxiliares R, S, T
+                            for _hc in ["R", "S", "T"]:
                                 _ws2.column_dimensions[_hc].hidden = True
 
                             # Barras — Bultos UP
                             _bc = BarChart()
                             _bc.type = "col"; _bc.grouping = "clustered"
                             _bc.title = f"Bultos UP y PDV por Camión — {fecha_dia.strftime('%d/%m/%Y')}"
-                            _bc.style = 2; _bc.width = 26; _bc.height = 10
+                            _bc.style = 2
                             _bc.y_axis.title = "Bultos UP"
                             _ref_bup = Reference(_ws2, min_col=_gd_col + 1, min_row=_gdr, max_row=_gd_end)
                             _ref_cat = Reference(_ws2, min_col=_gd_col, min_row=_gdr + 1, max_row=_gd_end)
@@ -10986,8 +10990,18 @@ def render_tab_tablero():
                             _lc.series[0].marker.size = 5
 
                             _bc += _lc
-                            _ws2.add_chart(_bc, f"A{row}")
-                            row += 21
+
+                            # TwoCellAnchor: ancla el gráfico exactamente entre fila `row` y `row+18`
+                            # sin depender del tamaño automático que desplaza el layout
+                            _chart_start_row = row - 1   # 0-indexed para AnchorMarker
+                            _chart_end_row   = row + 17  # ~18 filas de alto
+                            _anc = TwoCellAnchor()
+                            _anc._from = AnchorMarker(col=0, colOff=0, row=_chart_start_row, rowOff=0)
+                            _anc.to    = AnchorMarker(col=13, colOff=0, row=_chart_end_row, rowOff=0)
+                            _anc.editAs = "twoCell"
+                            _bc.anchor = _anc
+                            _ws2._charts.append(_bc)
+                            row += 20  # avanzar el cursor de filas debajo del gráfico
                         except Exception as _ge_xl:
                             _ws2.cell(row, 1, f"[Gráfico no disponible: {_ge_xl}]")
                             row += 1
