@@ -427,7 +427,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.90.0"
+APP_VERSION = "4.91.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -5889,107 +5889,11 @@ def render_tab_proyeccion():
                     import datetime as _dt4
                     _fecha_p4_str = _dt4.date.today().strftime("%d/%m/%Y")
 
-                    # ── AE Puras por SKU — CÁLCULO DIRECTO desde CAR+DDM ───
-                    # Independiente del Paso 3: lee CAR Hoja1, agrupa bultos_eq
-                    # por SKU × camión, calcula floor(bultos_eq/BXP) y suma.
-                    # Aplica exclusiones de t4_p3_cams_excluir.
-                    _ae_puras_p4 = {}  # {sku (int): ae_pallets (int)}
-                    try:
-                        _car_p4.seek(0)
-                        _df_car4ae = pd.read_excel(_car_p4, sheet_name=0, header=0)
-                        _car_p4.seek(0)
-                        _df_car4ae.columns = [str(c).strip() for c in _df_car4ae.columns]
-                        def _fc4ae(df_, *names):
-                            for n in names:
-                                for c in df_.columns:
-                                    if n.lower() in c.lower():
-                                        return c
-                            return None
-                        _csku4ae  = _fc4ae(_df_car4ae, "artículo", "articulo", "sku")
-                        _cbult4ae = _fc4ae(_df_car4ae, "bultos")
-                        _cunid4ae = _fc4ae(_df_car4ae, "unids", "unidades")
-                        _ccam4ae  = _fc4ae(_df_car4ae, "transporte")
-                        if _csku4ae and _cbult4ae and _ccam4ae:
-                            # Leer un_x_bulto desde DDM
-                            _un_x_b_p4 = {}
-                            try:
-                                _fr_p4.seek(0)
-                                _df_ddm4ae = pd.read_excel(_fr_p4, sheet_name="DDM", header=0)
-                                _fr_p4.seek(0)
-                                _cart4d = _fc4ae(_df_ddm4ae, "artículo", "articulo")
-                                _cun4d  = _fc4ae(_df_ddm4ae, "unidades")
-                                if _cart4d and _cun4d:
-                                    for _, _rd4 in _df_ddm4ae.iterrows():
-                                        try:
-                                            _sd4 = int(float(str(_rd4[_cart4d])))
-                                            _vd4 = float(_rd4[_cun4d]) if pd.notna(_rd4[_cun4d]) else 0
-                                            if _vd4 > 0:
-                                                _un_x_b_p4[_sd4] = _vd4
-                                        except Exception:
-                                            pass
-                            except Exception:
-                                pass
-
-                            _df_car4ae = _df_car4ae[
-                                _df_car4ae[_csku4ae].notna() & _df_car4ae[_ccam4ae].notna()
-                            ].copy()
-                            _df_car4ae["_sku"]  = _df_car4ae[_csku4ae].astype(float).astype(int)
-                            _df_car4ae["_cam"]  = _df_car4ae[_ccam4ae].astype(float).astype(int)
-                            _df_car4ae["_bult"] = pd.to_numeric(
-                                _df_car4ae[_cbult4ae], errors="coerce").fillna(0)
-                            _df_car4ae["_unid"] = (
-                                pd.to_numeric(_df_car4ae[_cunid4ae], errors="coerce").fillna(0)
-                                if _cunid4ae else 0.0
-                            )
-                            # bultos_eq = bultos + unids/un_x_bulto
-                            def _calc_beq4(row):
-                                _s = int(row["_sku"])
-                                _ub = _un_x_b_p4.get(_s, 0)
-                                _bult = float(row["_bult"])
-                                _unid = float(row["_unid"])
-                                if _ub > 0 and _unid > 0:
-                                    return _bult + (_unid / _ub)
-                                return _bult
-                            _df_car4ae["_beq"] = _df_car4ae.apply(_calc_beq4, axis=1)
-
-                            # Aplicar exclusiones de t4_p3_cams_excluir
-                            _CAM_ID_LABEL_P4AE = [
-                                (101,"COL F."),(102,"TRE"),(103,"PON"),(104,"BEL J."),
-                                (105,"BAR"),(106,"CAN"),(107,"TOTH"),(108,"ALM"),
-                                (109,"PRA"),(110,"CEB"),(111,"QUI"),(112,"VAL M."),
-                                (113,"COL S."),(114,"VIL"),(115,"ARA"),(117,"GAR"),
-                                (118,"ROB"),(119,"MINI"),(120,"IBAX"),(121,"PER"),
-                                (122,"SCA"),(123,"BEL P."),(124,"CHA"),(125,"KAR"),
-                                (127,"JER"),(128,"VILL"),(129,"DÍAZ"),
-                            ]
-                            _p4ae_excl_raw = set(st.session_state.get("t4_p3_cams_excluir", []))
-                            _lbl2id_p4ae  = {lbl: cid for cid, lbl in _CAM_ID_LABEL_P4AE}
-                            _full2id_p4ae = {f"{cid} — {lbl}": cid for cid, lbl in _CAM_ID_LABEL_P4AE}
-                            _p4ae_excl_ids = set()
-                            for _ev in _p4ae_excl_raw:
-                                if _ev in _full2id_p4ae:
-                                    _p4ae_excl_ids.add(_full2id_p4ae[_ev])
-                                elif _ev in _lbl2id_p4ae:
-                                    _p4ae_excl_ids.add(_lbl2id_p4ae[_ev])
-
-                            if _p4ae_excl_ids:
-                                _df_car4ae = _df_car4ae[~_df_car4ae["_cam"].isin(_p4ae_excl_ids)].copy()
-
-                            # Agrupar por SKU×CAM, calcular paletas enteras, sumar
-                            _agg4ae = _df_car4ae.groupby(["_sku", "_cam"])["_beq"].sum().reset_index()
-                            _agg4ae["BXP"] = _agg4ae["_sku"].map(
-                                lambda s: float(_ddm_p4.get(int(s), {}).get("bxp", 0))
-                            ).fillna(0)
-                            _agg4ae["PALL"] = 0
-                            _mae4 = _agg4ae["BXP"] > 0
-                            _agg4ae.loc[_mae4, "PALL"] = (
-                                (_agg4ae.loc[_mae4, "_beq"] / _agg4ae.loc[_mae4, "BXP"])
-                                .apply(lambda x: int(x))  # floor
-                            )
-                            for _s_ae, _grp_ae in _agg4ae.groupby("_sku"):
-                                _ae_puras_p4[int(_s_ae)] = int(_grp_ae["PALL"].sum())
-                    except Exception as _exc_ae4:
-                        st.warning(f"⚠️ AE Puras cálculo directo falló: {_exc_ae4}")
+                    # ── AE Puras por SKU — derivado de Carga ────────────────
+                    # AE Puras = floor(Carga en paletas)
+                    # Se computa más adelante por SKU dentro del loop principal
+                    # usando el _pick_pall4 ya calculado.
+                    _ae_puras_p4 = {}  # se completa en el loop
 
                     # ── Stock por SKU desde Frescura hoja "Frescura" ────────
                     # col G (idx 6) = STOCK LOTE → sumar por SKU → dividir BXP
@@ -6053,8 +5957,8 @@ def render_tab_proyeccion():
                         _stk4_int        = int(_stk4_pall)
                         _en_cancha4_frac = round(_stk4_pall - _stk4_int, 2)
 
-                        # AE PURAS: pallets completos asignados al AE en Paso 3
-                        _ae_puras4 = _ae_puras_p4.get(_sku4, 0)
+                        # AE PURAS: floor(Carga) — paletas enteras que mueve el AE
+                        _ae_puras4 = int(_pick_pall4)  # floor de la carga en paletas
 
                         # REPOSICIÓN (en pallets):
                         #   Pos=1:  -(Carga - AE_Puras) + En_Cancha_frac
@@ -6261,10 +6165,11 @@ def render_tab_proyeccion():
                             try:
                                 import requests as _rq4h, json as _js4h
                                 _GAS_URL_HIST = st.secrets.get(
-                                    "GAS_AGREGADOS_AE_URL", ""
+                                    "GAS_AGREGADOS_AE_URL",
+                                    "https://script.google.com/macros/s/AKfycbyYlGl92yGUE2HznznsL4CrACgUR-R3juNQF0Fejra9gd0igz2_FLO30VAC1eKlMyd0/exec"
                                 )
-                                if not _GAS_URL_HIST:
-                                    st.error("❌ Falta GAS_AGREGADOS_AE_URL en secrets.")
+                                if False:  # nunca falla
+                                    st.error("nunca")
                                 else:
                                     # Reconstruir headers/rows desde _df_repos_neg
                                     _col_order4h = [
