@@ -427,7 +427,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.92.1"
+APP_VERSION = "4.93.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -6045,141 +6045,120 @@ def render_tab_proyeccion():
                             st.warning(f"⚠️ No se pudo generar Excel reposición: {_er4x}")
 
                         # ── 6. Botón Enviar a Sheets — Reposición AE ──────────
-                        # Mismo GAS que Agregados AE, acción distinta.
-                        # Rango destino: A2:J  (K y L tienen fórmulas → intocables).
-                        _GAS_URL_REPOS = st.secrets.get(
-                            "GAS_AGREGADOS_AE_URL",
-                            "https://script.google.com/macros/s/AKfycbyYlGl92yGUE2HznznsL4CrACgUR-R3juNQF0Fejra9gd0igz2_FLO30VAC1eKlMyd0/exec"
-                        )
+                        # ════════════════════════════════════════════════════════════
+                        # NUEVO ENFOQUE v4.93: gspread DIRECTO sin GAS
+                        # Escribe directo a Sheets usando la service account.
+                        # ════════════════════════════════════════════════════════════
+                        _SPREADSHEET_ID_REPOS = "1OjIhtpzwV-MpnBWu09lKyguit2iKR-nCFG9g5MOd-mM"
+                        _SHEET_REPOSICION_NAME = "reposición ae"
+                        _SHEET_HISTORICO_NAME  = "Rep AE Histórico"
+
+                        def _sanitize_for_gspread(v):
+                            """Convierte cualquier valor a tipo nativo serializable por gspread."""
+                            if v is None:
+                                return ""
+                            try:
+                                import numpy as _np_g
+                                if isinstance(v, _np_g.integer):
+                                    return int(v)
+                                if isinstance(v, _np_g.floating):
+                                    if _np_g.isnan(v):
+                                        return ""
+                                    return round(float(v), 4)
+                                if isinstance(v, _np_g.bool_):
+                                    return bool(v)
+                            except ImportError:
+                                pass
+                            if isinstance(v, float):
+                                import math as _m_g
+                                if _m_g.isnan(v) or _m_g.isinf(v):
+                                    return ""
+                                return round(v, 4)
+                            if isinstance(v, int):
+                                return v
+                            if hasattr(v, "item"):
+                                return v.item()
+                            return str(v) if v != "" else ""
+
+                        def _build_matrix_repos(df_in, col_order):
+                            """Arma matriz lista para gspread.update."""
+                            df_loc = df_in.reset_index(drop=True).copy()
+                            matrix = []
+                            for i in range(len(df_loc)):
+                                row = []
+                                for cc in col_order:
+                                    try:
+                                        vv = df_loc.at[i, cc] if cc in df_loc.columns else ""
+                                        row.append(_sanitize_for_gspread(vv))
+                                    except Exception:
+                                        row.append("")
+                                matrix.append(row)
+                            return matrix
+
+                        _col_order_rep = [
+                            "Fecha", "Almacén", "Descripción", "Cancha",
+                            "bxp", "Posiciones", "Stock", "En Cancha",
+                            "Carga", "AE Puras", "Reposición Pall",
+                        ]
 
                         st.markdown("---")
                         if st.button(
                             "📤 Enviar a Sheets (Reposición AE)",
                             key="t4_paso4_send_sheets",
                             use_container_width=True,
-                            help="Borra A2:J de la hoja 'reposición ae' y escribe los datos actuales. "
-                                 "Las columnas K y L (fórmulas) no se modifican.",
+                            help="Borra A2:K de la hoja 'reposición ae' y escribe los datos actuales "
+                                 "directamente vía gspread (sin GAS).",
                             type="primary",
                         ):
                             try:
-                                import requests as _rq4s, json as _js4s
+                                import gspread as _gs_r
+                                from google.oauth2.service_account import Credentials as _Cred_r
 
-                                def _ser4(v):
-                                    """Convierte cualquier valor a tipo nativo Python serializable por JSON."""
-                                    if v is None:
-                                        return ""
-                                    # Manejar numpy antes que float nativo
-                                    try:
-                                        import numpy as _np4s
-                                        if isinstance(v, _np4s.integer):
-                                            return int(v)
-                                        if isinstance(v, _np4s.floating):
-                                            if _np4s.isnan(v):
-                                                return ""
-                                            return round(float(v), 4)
-                                        if isinstance(v, _np4s.bool_):
-                                            return bool(v)
-                                    except ImportError:
-                                        pass
-                                    # float nativo
-                                    if isinstance(v, float):
-                                        import math
-                                        if math.isnan(v) or math.isinf(v):
-                                            return ""
-                                        return v
-                                    # int nativo
-                                    if isinstance(v, int):
-                                        return v
-                                    # fallback: .item() para otros tipos numpy
-                                    if hasattr(v, "item"):
-                                        return v.item()
-                                    return v
+                                _matrix_r = _build_matrix_repos(_df_repos_neg, _col_order_rep)
 
-                                # Enviar solo SKUs con reposición negativa
-                                _df_send_repos = _df_repos_neg.reset_index(drop=True).copy()
-                                _col_order4s = [
-                                    "Fecha", "Almacén", "Descripción", "Cancha",
-                                    "bxp", "Posiciones", "Stock", "En Cancha",
-                                    "Carga", "AE Puras", "Reposición Pall",
-                                ]
-                                _hdrs4s = _col_order4s
-                                # Usar .loc con nombre de columna directo — evita problemas de encoding en .index
-                                _rows4s = []
-                                for _i4s in range(len(_df_send_repos)):
-                                    _row4s = []
-                                    for _cc in _col_order4s:
-                                        try:
-                                            _vv = _df_send_repos.at[_i4s, _cc] if _cc in _df_send_repos.columns else ""
-                                            _row4s.append(_ser4(_vv))
-                                        except Exception:
-                                            _row4s.append("")
-                                    _rows4s.append(_row4s)
-
-                                _payload4s = {
-                                    "action":     "limpiarYCargarReposicion",
-                                    "headers":    _hdrs4s,
-                                    "rows":       _rows4s,
-                                }
-
-                                # Debug: mostrar payload COMPLETO antes de enviar
-                                _payload_json_str = _js4s.dumps(_payload4s, ensure_ascii=False)
-                                if _rows4s:
-                                    _k_val = _rows4s[0][10] if len(_rows4s[0]) > 10 else "FALTA"
-                                    _cols_df = list(_df_send_repos.columns)
+                                # Debug visible
+                                if _matrix_r:
                                     st.caption(
-                                        f"🔍 Debug: {len(_rows4s[0])} vals | "
-                                        f"col K = `{_k_val}` (tipo={type(_k_val).__name__}) | "
-                                        f"cols df: {_cols_df}"
-                                    )
-                                    # DEBUG EXTRA: tipos exactos de cada celda fila 0
-                                    _tipos_fila0 = [
-                                        f"[{_idx}]={type(_v).__name__}:{_v!r}"
-                                        for _idx, _v in enumerate(_rows4s[0])
-                                    ]
-                                    with st.expander("🔬 Diagnóstico fila 0 (tipos)"):
-                                        for _t in _tipos_fila0:
-                                            st.code(_t)
-                                    with st.expander("🔬 JSON crudo enviado"):
-                                        st.code(_payload_json_str[:3000])
-
-                                with st.spinner("Enviando a Google Sheets…"):
-                                    _resp4s = _rq4s.post(
-                                        _GAS_URL_REPOS,
-                                        data=_payload_json_str.encode("utf-8"),
-                                        headers={"Content-Type": "application/json; charset=utf-8"},
-                                        timeout=60,
+                                        f"🔍 Debug: {len(_matrix_r)} filas | "
+                                        f"col K fila 0 = `{_matrix_r[0][10]}` "
+                                        f"(tipo={type(_matrix_r[0][10]).__name__})"
                                     )
 
-                                if _resp4s.status_code == 200:
-                                    try:
-                                        _r4s_json = _resp4s.json()
-                                    except Exception:
-                                        _r4s_json = {"ok": True,
-                                                     "msg": _resp4s.text[:200]}
-                                    if _r4s_json.get("ok"):
-                                        st.success(
-                                            f"✅ Enviado correctamente — "
-                                            f"{len(_rows4s)} filas escritas en "
-                                            f"'reposición ae'."
+                                _scopes_r = ["https://www.googleapis.com/auth/spreadsheets"]
+                                _creds_r = _Cred_r.from_service_account_info(
+                                    dict(st.secrets["gcp_service_account"]),
+                                    scopes=_scopes_r,
+                                )
+                                _client_r = _gs_r.authorize(_creds_r)
+                                _ss_r = _client_r.open_by_key(_SPREADSHEET_ID_REPOS)
+                                _ws_r = _ss_r.worksheet(_SHEET_REPOSICION_NAME)
+
+                                with st.spinner("Borrando datos existentes…"):
+                                    # Limpiar A2:K hasta la última fila con datos
+                                    _last_row_r = len(_ws_r.col_values(1))
+                                    if _last_row_r >= 2:
+                                        _ws_r.batch_clear([f"A2:K{_last_row_r}"])
+
+                                with st.spinner(f"Escribiendo {len(_matrix_r)} filas…"):
+                                    if _matrix_r:
+                                        _end_row_r = 1 + len(_matrix_r)
+                                        _ws_r.update(
+                                            range_name=f"A2:K{_end_row_r}",
+                                            values=_matrix_r,
+                                            value_input_option="USER_ENTERED",
                                         )
-                                    else:
-                                        st.error(
-                                            f"❌ El script respondió con error: "
-                                            f"{_r4s_json.get('msg', _resp4s.text[:300])}"
-                                        )
-                                else:
-                                    st.error(
-                                        f"❌ HTTP {_resp4s.status_code}: "
-                                        f"{_resp4s.text[:300]}"
-                                    )
 
+                                st.success(
+                                    f"✅ Enviado correctamente — {len(_matrix_r)} filas "
+                                    f"escritas en 'reposición ae' (vía gspread)."
+                                )
                             except Exception as _esp4:
                                 st.error(f"❌ Error al enviar a Sheets: {_esp4}")
                                 with st.expander("Detalle del error"):
                                     import traceback as _tb4s
                                     st.code(_tb4s.format_exc())
 
-                        # ── Botón APPEND a Rep AE Histórico ───────────────
+                        # ── Botón APPEND a Rep AE Histórico (gspread directo) ──
                         st.markdown("---")
                         st.markdown("##### 📚 Append a Rep AE Histórico")
                         st.caption(
@@ -6193,90 +6172,41 @@ def render_tab_proyeccion():
                             type="secondary",
                         ):
                             try:
-                                import requests as _rq4h, json as _js4h
-                                _GAS_URL_HIST = st.secrets.get(
-                                    "GAS_AGREGADOS_AE_URL",
-                                    "https://script.google.com/macros/s/AKfycbyYlGl92yGUE2HznznsL4CrACgUR-R3juNQF0Fejra9gd0igz2_FLO30VAC1eKlMyd0/exec"
+                                import gspread as _gs_h
+                                from google.oauth2.service_account import Credentials as _Cred_h
+
+                                _matrix_h = _build_matrix_repos(_df_repos_neg, _col_order_rep)
+
+                                if _matrix_h:
+                                    st.caption(
+                                        f"🔍 Debug append: {len(_matrix_h)} filas | "
+                                        f"col K fila 0 = `{_matrix_h[0][10]}` "
+                                        f"(tipo={type(_matrix_h[0][10]).__name__})"
+                                    )
+
+                                _scopes_h = ["https://www.googleapis.com/auth/spreadsheets"]
+                                _creds_h = _Cred_h.from_service_account_info(
+                                    dict(st.secrets["gcp_service_account"]),
+                                    scopes=_scopes_h,
                                 )
-                                if False:  # nunca falla
-                                    st.error("nunca")
-                                else:
-                                    # Reconstruir headers/rows desde _df_repos_neg
-                                    _col_order4h = [
-                                        "Fecha", "Almacén", "Descripción", "Cancha",
-                                        "bxp", "Posiciones", "Stock", "En Cancha",
-                                        "Carga", "AE Puras", "Reposición Pall",
-                                    ]
-                                    def _ser4h(v):
-                                        """Convierte cualquier valor a tipo nativo Python serializable por JSON."""
-                                        if v is None:
-                                            return ""
-                                        try:
-                                            import numpy as _np4h
-                                            if isinstance(v, _np4h.integer):
-                                                return int(v)
-                                            if isinstance(v, _np4h.floating):
-                                                if _np4h.isnan(v):
-                                                    return ""
-                                                return round(float(v), 4)
-                                            if isinstance(v, _np4h.bool_):
-                                                return bool(v)
-                                        except ImportError:
-                                            pass
-                                        if isinstance(v, float):
-                                            import math
-                                            if math.isnan(v) or math.isinf(v):
-                                                return ""
-                                            return v
-                                        if isinstance(v, int):
-                                            return v
-                                        if hasattr(v, "item"):
-                                            return v.item()
-                                        return v
-                                    _df_h = _df_repos_neg.reset_index(drop=True).copy()
-                                    _hdrs4h = _col_order4h
-                                    _rows4h = []
-                                    for _i4h in range(len(_df_h)):
-                                        _row4h = []
-                                        for _cc in _col_order4h:
-                                            try:
-                                                _vv = _df_h.at[_i4h, _cc] if _cc in _df_h.columns else ""
-                                                _row4h.append(_ser4h(_vv))
-                                            except Exception:
-                                                _row4h.append("")
-                                        _rows4h.append(_row4h)
-                                    _payload4h = {
-                                        "action":  "appendReposicionHistorico",
-                                        "headers": _hdrs4h,
-                                        "rows":    _rows4h,
-                                    }
-                                    with st.spinner("Append a 'Rep AE Histórico'…"):
-                                        _resp4h = _rq4h.post(
-                                            _GAS_URL_HIST,
-                                            data=_js4h.dumps(_payload4h),
-                                            headers={"Content-Type": "application/json"},
-                                            timeout=60,
+                                _client_h = _gs_h.authorize(_creds_h)
+                                _ss_h = _client_h.open_by_key(_SPREADSHEET_ID_REPOS)
+                                _ws_h = _ss_h.worksheet(_SHEET_HISTORICO_NAME)
+
+                                with st.spinner("Append en 'Rep AE Histórico'…"):
+                                    # Append usa append_rows (agrega al final, no sobreescribe)
+                                    if _matrix_h:
+                                        _ws_h.append_rows(
+                                            _matrix_h,
+                                            value_input_option="USER_ENTERED",
+                                            insert_data_option="INSERT_ROWS",
+                                            table_range="A1",
                                         )
-                                    if _resp4h.status_code == 200:
-                                        try:
-                                            _r4h_json = _resp4h.json()
-                                        except Exception:
-                                            _r4h_json = {"ok": True, "msg": _resp4h.text[:200]}
-                                        if _r4h_json.get("ok"):
-                                            st.success(
-                                                f"✅ Append OK — {len(_rows4h)} filas "
-                                                f"agregadas en 'Rep AE Histórico'."
-                                            )
-                                        else:
-                                            st.error(
-                                                f"❌ GAS respondió error: "
-                                                f"{_r4h_json.get('msg', _resp4h.text[:300])}"
-                                            )
-                                    else:
-                                        st.error(
-                                            f"❌ HTTP {_resp4h.status_code}: "
-                                            f"{_resp4h.text[:300]}"
-                                        )
+
+                                st.success(
+                                    f"✅ Append OK — {len(_matrix_h)} filas "
+                                    f"agregadas en 'Rep AE Histórico' (vía gspread)."
+                                )
                             except Exception as _esp4h:
                                 st.error(f"❌ Error append histórico: {_esp4h}")
                                 with st.expander("Detalle"):
@@ -14559,3 +14489,4 @@ if __name__ == "__main__":
 def _render_historico_tablas(df_h):
     import pandas as pd
     st.dataframe(df_h, use_container_width=True, hide_index=True)
+
