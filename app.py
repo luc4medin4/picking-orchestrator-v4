@@ -427,7 +427,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.93.0"
+APP_VERSION = "4.93.1"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -6131,7 +6131,20 @@ def render_tab_proyeccion():
                                 )
                                 _client_r = _gs_r.authorize(_creds_r)
                                 _ss_r = _client_r.open_by_key(_SPREADSHEET_ID_REPOS)
-                                _ws_r = _ss_r.worksheet(_SHEET_REPOSICION_NAME)
+
+                                # Buscar hoja por nombre case-insensitive (tolera "Reposición AE", "reposición ae", etc.)
+                                _ws_r = None
+                                _available_names_r = [_w.title for _w in _ss_r.worksheets()]
+                                for _w_iter in _ss_r.worksheets():
+                                    if _w_iter.title.strip().lower() == _SHEET_REPOSICION_NAME.strip().lower():
+                                        _ws_r = _w_iter
+                                        break
+                                if _ws_r is None:
+                                    st.error(
+                                        f"❌ No se encontró la hoja '{_SHEET_REPOSICION_NAME}'. "
+                                        f"Hojas disponibles: {_available_names_r}"
+                                    )
+                                    st.stop()
 
                                 with st.spinner("Borrando datos existentes…"):
                                     # Limpiar A2:K hasta la última fila con datos
@@ -6191,7 +6204,20 @@ def render_tab_proyeccion():
                                 )
                                 _client_h = _gs_h.authorize(_creds_h)
                                 _ss_h = _client_h.open_by_key(_SPREADSHEET_ID_REPOS)
-                                _ws_h = _ss_h.worksheet(_SHEET_HISTORICO_NAME)
+
+                                # Buscar hoja Histórico por nombre case-insensitive
+                                _ws_h = None
+                                _available_names_h = [_w.title for _w in _ss_h.worksheets()]
+                                for _w_iter in _ss_h.worksheets():
+                                    if _w_iter.title.strip().lower() == _SHEET_HISTORICO_NAME.strip().lower():
+                                        _ws_h = _w_iter
+                                        break
+                                if _ws_h is None:
+                                    st.error(
+                                        f"❌ No se encontró la hoja '{_SHEET_HISTORICO_NAME}'. "
+                                        f"Hojas disponibles: {_available_names_h}"
+                                    )
+                                    st.stop()
 
                                 with st.spinner("Append en 'Rep AE Histórico'…"):
                                     # Append usa append_rows (agrega al final, no sobreescribe)
