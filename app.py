@@ -427,7 +427,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.91.1"
+APP_VERSION = "4.91.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -6095,13 +6095,7 @@ def render_tab_proyeccion():
                                 _hdrs4s = _col_order4s
                                 _rows4s = []
                                 for _, _rr4s in _df_send_repos.iterrows():
-                                    _row4s = []
-                                    for _cc in _col_order4s:
-                                        try:
-                                            _vv = _rr4s[_cc] if _cc in _rr4s.index else ""
-                                            _row4s.append(_ser4(_vv))
-                                        except Exception:
-                                            _row4s.append("")
+                                    _row4s = [_ser4(_rr4s.get(c, "")) for c in _col_order4s]
                                     _rows4s.append(_row4s)
 
                                 _payload4s = {
@@ -6112,12 +6106,10 @@ def render_tab_proyeccion():
 
                                 # Debug: mostrar payload fila 0 para verificar col K
                                 if _rows4s:
-                                    _k_val = _rows4s[0][10] if len(_rows4s[0]) > 10 else "FALTA"
-                                    _cols_df = list(_df_send_repos.columns)
                                     st.caption(
-                                        f"🔍 Debug: {len(_rows4s[0])} vals | "
-                                        f"col K = `{_k_val}` | "
-                                        f"cols df: {_cols_df}"
+                                        f"🔍 Debug payload fila 0 "
+                                        f"({len(_rows4s[0])} vals): "
+                                        f"col K = `{_rows4s[0][10] if len(_rows4s[0]) > 10 else 'FALTA'}`"
                                     )
 
                                 with st.spinner("Enviando a Google Sheets…"):
@@ -6203,14 +6195,7 @@ def render_tab_proyeccion():
                                     _hdrs4h = _col_order4h
                                     _rows4h = []
                                     for _, _rrh in _df_h.iterrows():
-                                        _row4h = []
-                                        for _cc in _col_order4h:
-                                            try:
-                                                _vv = _rrh[_cc] if _cc in _rrh.index else ""
-                                                _row4h.append(_ser4h(_vv))
-                                            except Exception:
-                                                _row4h.append("")
-                                        _rows4h.append(_row4h)
+                                        _rows4h.append([_ser4h(_rrh.get(c, "")) for c in _col_order4h])
                                     _payload4h = {
                                         "action":  "appendReposicionHistorico",
                                         "headers": _hdrs4h,
