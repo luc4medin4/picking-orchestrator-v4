@@ -427,7 +427,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.88.1"
+APP_VERSION = "4.89.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -5890,18 +5890,38 @@ def render_tab_proyeccion():
                     _fecha_p4_str = _dt4.date.today().strftime("%d/%m/%Y")
 
                     # ── AE Puras por SKU desde Paso 3 (_df_final3) ─────────
-                    # _df_final3 tiene col "Cod" y col "TOTALES" (sum AE pallets)
-                    _ae_puras_p4 = {}  # {sku: total_paletas_ae}
+                    # _df_final3: col "Cod" = SKU int, col "TOTALES" = sum AE pallets
+                    _ae_puras_p4 = {}  # {sku (int): ae_pallets (int)}
                     try:
                         _df_f3_ref = st.session_state.get("_df_final3_paso3")
                         if _df_f3_ref is not None and not _df_f3_ref.empty:
-                            for _, _r3ref in _df_f3_ref.iterrows():
-                                try:
-                                    _s3ref = int(_r3ref["Cod"])
-                                    _t3ref = int(_r3ref.get("TOTALES", 0))
-                                    _ae_puras_p4[_s3ref] = _t3ref
-                                except Exception:
-                                    pass
+                            # Detectar columna SKU (puede ser "Cod" o primer int-like)
+                            _col_sku_f3 = None
+                            for _cc in _df_f3_ref.columns:
+                                if str(_cc).strip().lower() in ("cod", "sku", "almacén", "almacen"):
+                                    _col_sku_f3 = _cc
+                                    break
+                            if _col_sku_f3 is None and len(_df_f3_ref.columns) > 0:
+                                _col_sku_f3 = _df_f3_ref.columns[0]
+                            # Detectar columna TOTALES
+                            _col_tot_f3 = None
+                            for _cc in _df_f3_ref.columns:
+                                if str(_cc).strip().upper() == "TOTALES":
+                                    _col_tot_f3 = _cc
+                                    break
+                            if _col_sku_f3 and _col_tot_f3:
+                                for _, _r3ref in _df_f3_ref.iterrows():
+                                    try:
+                                        _raw_sku = _r3ref[_col_sku_f3]
+                                        _raw_tot = _r3ref[_col_tot_f3]
+                                        if pd.isna(_raw_sku) or pd.isna(_raw_tot):
+                                            continue
+                                        _s3ref = int(float(str(_raw_sku).strip()))
+                                        _t3ref = int(float(str(_raw_tot).strip()))
+                                        if _s3ref > 0:
+                                            _ae_puras_p4[_s3ref] = _t3ref
+                                    except Exception:
+                                        pass
                     except Exception:
                         pass
 
@@ -6097,12 +6117,16 @@ def render_tab_proyeccion():
                                         _df_send_repos["Reposición Pall"]
                                         .apply(lambda x: round(float(x), 2))
                                     )
-                                _hdrs4s = list(_df_send_repos.columns)
-                                _rows4s = [
-                                    [_ser4(v) for v in row]
-                                    for row in _df_send_repos.itertuples(
-                                        index=False, name=None)
+                                _col_order4s = [
+                                    "Fecha", "Almacén", "Descripción", "Cancha",
+                                    "bxp", "Posiciones", "Stock", "En Cancha",
+                                    "Carga", "AE Puras", "Reposición Pall",
                                 ]
+                                _hdrs4s = _col_order4s
+                                _rows4s = []
+                                for _, _rr4s in _df_send_repos.iterrows():
+                                    _row4s = [_ser4(_rr4s.get(c, "")) for c in _col_order4s]
+                                    _rows4s.append(_row4s)
 
                                 _payload4s = {
                                     "action":     "limpiarYCargarReposicion",
