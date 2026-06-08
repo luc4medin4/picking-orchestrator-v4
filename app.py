@@ -427,7 +427,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.92.0"
+APP_VERSION = "4.92.1"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -6121,21 +6121,32 @@ def render_tab_proyeccion():
                                     "rows":       _rows4s,
                                 }
 
-                                # Debug: mostrar payload fila 0 para verificar col K
+                                # Debug: mostrar payload COMPLETO antes de enviar
+                                _payload_json_str = _js4s.dumps(_payload4s, ensure_ascii=False)
                                 if _rows4s:
                                     _k_val = _rows4s[0][10] if len(_rows4s[0]) > 10 else "FALTA"
                                     _cols_df = list(_df_send_repos.columns)
                                     st.caption(
                                         f"🔍 Debug: {len(_rows4s[0])} vals | "
-                                        f"col K = `{_k_val}` | "
+                                        f"col K = `{_k_val}` (tipo={type(_k_val).__name__}) | "
                                         f"cols df: {_cols_df}"
                                     )
+                                    # DEBUG EXTRA: tipos exactos de cada celda fila 0
+                                    _tipos_fila0 = [
+                                        f"[{_idx}]={type(_v).__name__}:{_v!r}"
+                                        for _idx, _v in enumerate(_rows4s[0])
+                                    ]
+                                    with st.expander("🔬 Diagnóstico fila 0 (tipos)"):
+                                        for _t in _tipos_fila0:
+                                            st.code(_t)
+                                    with st.expander("🔬 JSON crudo enviado"):
+                                        st.code(_payload_json_str[:3000])
 
                                 with st.spinner("Enviando a Google Sheets…"):
                                     _resp4s = _rq4s.post(
                                         _GAS_URL_REPOS,
-                                        data=_js4s.dumps(_payload4s),
-                                        headers={"Content-Type": "application/json"},
+                                        data=_payload_json_str.encode("utf-8"),
+                                        headers={"Content-Type": "application/json; charset=utf-8"},
                                         timeout=60,
                                     )
 
@@ -14548,4 +14559,3 @@ if __name__ == "__main__":
 def _render_historico_tablas(df_h):
     import pandas as pd
     st.dataframe(df_h, use_container_width=True, hide_index=True)
-
