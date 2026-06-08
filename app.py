@@ -1,5 +1,24 @@
 """
-Picking Orchestrator v4.85.0 — Beccacece Hnos SA
+Picking Orchestrator v4.96.0 — Beccacece Hnos SA
+
+CAMBIOS v4.96.0:
+  1. TÍTULOS DE SECCIÓN — eliminados los st.subheader/st.markdown duplicados dentro de
+     cada render_tab_*. El main() ya renderiza "## {ico} {nombre}" por sección;
+     los títulos internos duplicaban la cabecera en pantalla. Aplica a todas las secciones:
+     Planilla Carga, Resumen Camiones, Camiones T2, Proyección Picking, Clasificación,
+     Top SKUs, Tablero Ruteador, Boletas, Cierre, Validación + Log.
+  2. EXCEL TABLERO — fix gráfico: reemplaza TwoCellAnchor/AnchorMarker (API privada
+     que falla silenciosamente) por anchor estándar string "A{row}" + _ws2.add_chart().
+     El gráfico Bultos UP + PDV ahora aparece correctamente en el Excel exportado.
+  3. TABLERO RUTEADOR — eliminado el botón "📊 Excel del día" de la sección Exportar.
+     La data del tablero se genera en el Excel Tablero y el PDF; el "Excel del día" era
+     redundante y confuso. También eliminados los botones auto-descarga "También: ..."
+     que aparecían junto al Excel Tablero y junto al PDF (v4.94 feature revertida).
+
+CAMBIOS v4.95.0:
+  (sin registro previo — se incorporan correcciones menores de v4.95.1)
+
+CAMBIOS v4.85.0:
 
 CAMBIOS v4.85.0:
   1. PASO 3 — Botón "📤 Enviar a Sheets (Agregados AE)":
@@ -427,7 +446,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.94.0"
+APP_VERSION = "4.96.0"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -2436,7 +2455,7 @@ def render_tab_archivos():
 
 
 def render_tab_planilla():
-    st.subheader("📦 Planilla de Carga")
+    # título ya renderizado por main()
     st.caption(
         "Genera el PDF multi-página de la planilla diaria de picking. "
         "Lógica idéntica a la app v3.9.1 validada en producción. "
@@ -2511,7 +2530,7 @@ def render_tab_planilla():
 # ── TAB 2 — Resumen por Camión (REUSO v3.9) ────────────────────────────────
 
 def render_tab_resumen():
-    st.subheader("📋 Resumen de Carga por Camión")
+    # título ya renderizado por main()
     st.caption(
         "Genera un PDF compacto con bultos consolidados por SKU por camión "
         "(hoja AGR del CAR). **Se genera automáticamente** al subir el CAR "
@@ -2691,7 +2710,7 @@ def _t2_fetch_pdf_from_apps_script() -> tuple[bytes | None, str, list[str], str 
 def render_tab_t2():
     import base64
 
-    st.subheader("🚛 Camiones T2 — PDF único para imprimir")
+    # título ya renderizado por main()
     st.caption(
         "v4.18.1 — Detecta automáticamente los camiones con reparto en el "
         "**Sheet T2 Status Carga** (F3 > 0) y genera un PDF combinado "
@@ -4294,7 +4313,7 @@ def render_tab_proyeccion():
     """
     import datetime as _dt
 
-    st.subheader("📊 Proyección Picking ×5")
+    # título ya renderizado por main()
     st.caption(
         "Fuente: **CAR.xlsx (VE + CHESS) + Frescura 3.0 (DDM)** — Calcula PICK vs AE por "
         "**UP** (`bultos_eq / BXP`) por cancha, sumando sueltas con UNIDADES x BULTO. v4.36"
@@ -7041,7 +7060,7 @@ def _render_top10_section(pdata: dict, car_bytes: bytes, fr_bytes: bytes):
     Se llama automáticamente si CAR y Frescura están disponibles.
     """
     st.divider()
-    st.subheader("🏆 Top 10 SKUs — Día de Carga")
+    # título ya renderizado por main()
     st.caption(
         "Ranking por **Bultos** del CAR del día · "
         "HL calculado con **VALOR HL × Bultos** (DDM Frescura) · "
@@ -7208,7 +7227,7 @@ def render_tab_extraibles():
 # ── TAB 6 — Validación + Log (PLACEHOLDER, Sprint 2) ───────────────────────
 
 def render_tab_validacion():
-    st.subheader("✅ Validación + Reglas + Log")
+    # título ya renderizado por main()
     st.caption(
         "Pre-checks + reglas de negocio + validación cruzada CAR↔MASTER. "
         "**Sprint 2** — pendiente."
@@ -8289,7 +8308,7 @@ def _duracion_hhmm(ratio_horas: float) -> str:
 
 
 def render_tab_clasificacion():
-    st.subheader("🏷️ Clasificación — Retornables por Camión (Almacén 1 y 3)")
+    # título ya renderizado por main()
     st.caption(
         "v4.18 — Input: **ANR.xlsx** y **Frescura 3.0** (desde 📁 Archivos). "
         "Filtra los SKUs de **ALMACÉN ∈ {1, 3}** (envases vacíos + esqueletos) y muestra "
@@ -9205,7 +9224,7 @@ def build_top_clientes_anr_jpeg(df_top, fecha_str="") -> bytes:
     return buf.getvalue()
 
 def render_tab_top_skus():
-    st.subheader("🏆 Tops del Día — ANR (Análisis de Rechazos / Venta)")
+    # título ya renderizado por main()
     st.caption(
         "Input: **ANR.xlsx** (cargado en 📁 Archivos). "
         "Genera **Venta total**, **Top 10 SKUs** y **Top 10 Clientes**."
@@ -9557,7 +9576,7 @@ def render_tab_boletas():
     """
     import streamlit.components.v1 as components
 
-    st.subheader("🖨️ Boletas — Unión e Impresión")
+    # título ya renderizado por main()
     st.caption(
         "Subí los PDFs, ordenalos si es necesario y generá un único archivo para imprimir. "
         "Todo el procesamiento ocurre en el browser — los archivos no se suben al servidor."
@@ -9951,7 +9970,7 @@ def render_tab_tablero():
         import datetime
         import io
 
-        st.markdown("## 🚚 Tablero Ruteador")
+        # título ya renderizado por main()
         st.caption("Reemplaza el Excel 05-Tablero Ruteador. Fuentes: ANR (Chess) + Ventas Especiales + Licencias.")
 
         ss = st.session_state
@@ -10753,57 +10772,9 @@ def render_tab_tablero():
         st.markdown("---")
         st.markdown("#### 📤 Exportar")
 
-        _ex1, _ex2, _ex3 = st.columns(3)
+        _ex2, _ex3 = st.columns(2)
 
-        # ── Excel 1: Exportación completa ─────────────────────────────────────
-        with _ex1:
-            st.markdown("**📊 Excel del día** (exportación completa)")
-            _buf_xl = io.BytesIO()
-            _total_bup_xl = sum(r.get("Bultos",0) for r in tabla_rows)
-            with pd.ExcelWriter(_buf_xl, engine="openpyxl") as _wr:
-                pd.DataFrame({
-                    "KPI": ["Fecha","Camiones reparto","Total PDV","Bultos (equiv.)","Bultos UP","Paletas",
-                             "HL","Peso(kg)","Drop Size","Eficiencia","Util. Vehículos",
-                             "Fuera de zona (PDV)","Fuera de zona (%)","Ocup. bodega",
-                             "Productividad ruteo","Causa demora","Segundas vueltas"],
-                    "Valor": [fecha_dia.strftime("%d/%m/%Y"), camiones_en_reparto, total_pedidos,
-                               round(total_bup,2), round(total_up,2), round(paletas_total,2),
-                               round(total_hl,2), round(total_peso_kg,2), round(drop_size,2),
-                               round(eficiencia,4), round(util_vehiculos,4),
-                               fuera_zona_real, round(fuera_zona_pct,4),
-                               round(ocup_bodega,2), round(prod_ruteo,4),
-                               causa_demora, segundas_vueltas],
-                    "Target": ["—","—","—","—","—","—","—","—","—",
-                                f"≥{_TR_TARGET_EFICIENCIA:.0%}", f"≥{_TR_TARGET_UTIL_VEH:.0%}",
-                                "—", f"≤{fz_target:.0%}", f"≥{ocup_target}", "≥70%","—","—"],
-                    "Status": ["—","—","—","—","—","—","—","—","—",
-                                "OK" if efic_ok else "NO", "OK" if util_ok else "NO",
-                                "—", "OK" if fz_ok else "NO",
-                                "OK" if ocup_ok else "NO", f"{prod_ruteo:.0%}","—","—"],
-                }).to_excel(_wr, sheet_name="KPIs", index=False)
-                if tabla_rows:
-                    # Detalle completo (sin columnas internas)
-                    _df_det = pd.DataFrame(tabla_rows).drop(columns=["_bloqueado","_cap_kg","_peso_ok","⚖️"], errors="ignore")
-                    _df_det.to_excel(_wr, sheet_name="Detalle Camiones", index=False)
-                    _df_det[["N° Cam","Chofer","PDV","Bultos","Bultos UP","Paletas","HL","Peso(kg)","Rechazos","Venc. Lic.","Lic."]].to_excel(
-                        _wr, sheet_name="Resumen Camiones", index=False)
-                _ve_cl = ve_auto.dropna(subset=["camion","sku","bultos"]) if not ve_auto.empty else pd.DataFrame()
-                if not _ve_cl.empty:
-                    _ve_cl.to_excel(_wr, sheet_name="Ventas Especiales", index=False)
-                if _excluidos:
-                    pd.DataFrame({"Cam excluidos": sorted(_excluidos)}).to_excel(_wr, sheet_name="Excluidos", index=False)
-            _buf_xl.seek(0)
-            _excel_dia_bytes = _buf_xl.getvalue()
-            _excel_dia_fname = f"{fecha_dia.strftime('%d%m%Y')}_tablero_ruteador_bkcc.xlsx"
-            # v4.94: guardar en session_state para descarga automática desde Excel/PDF Tablero
-            ss["excel_dia_bytes"] = _excel_dia_bytes
-            ss["excel_dia_fname"] = _excel_dia_fname
-            st.download_button("⬇️ Descargar Excel completo", data=_excel_dia_bytes,
-                file_name=_excel_dia_fname,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="tr_dl_xl", use_container_width=True)
-
-        # ── Excel 2: Excel Tablero con formato A4 landscape ──────────────────
+        # ── Excel Tablero con formato A4 landscape ────────────────────────────
         with _ex2:
             st.markdown("**📋 Excel Tablero**")
             if st.button("🖨️ Generar Excel Tablero", key="tr_btn_xl2", use_container_width=True):
@@ -10947,12 +10918,10 @@ def render_tab_tablero():
                     if tabla_rows:
                         try:
                             from openpyxl.chart import BarChart, LineChart, Reference
-                            from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
 
-                            # Datos auxiliares en filas FIJAS altas (col R=18, fuera del flujo)
-                            # para que no colisionen con el gráfico anclado en col A
-                            _gd_col = 18  # col R — datos auxiliares ocultos
-                            _gdr = 1      # siempre fila 1 (zona segura, no pisamos el layout)
+                            # Datos auxiliares en columnas ocultas (col R=18, fila 1+)
+                            _gd_col = 18  # col R
+                            _gdr = 1
                             for _ghi, _ghn in enumerate(["Camión", "Bultos UP", "PDV"], 1):
                                 _ws2.cell(_gdr, _gd_col + _ghi - 1, _ghn)
                             for _gi2, _gr2 in enumerate(tabla_rows, 1):
@@ -10971,6 +10940,8 @@ def render_tab_tablero():
                             _bc.title = f"Bultos UP y PDV por Camión — {fecha_dia.strftime('%d/%m/%Y')}"
                             _bc.style = 2
                             _bc.y_axis.title = "Bultos UP"
+                            _bc.width  = 22   # cm
+                            _bc.height = 10   # cm
                             _ref_bup = Reference(_ws2, min_col=_gd_col + 1, min_row=_gdr, max_row=_gd_end)
                             _ref_cat = Reference(_ws2, min_col=_gd_col, min_row=_gdr + 1, max_row=_gd_end)
                             _bc.add_data(_ref_bup, titles_from_data=True)
@@ -10991,16 +10962,9 @@ def render_tab_tablero():
 
                             _bc += _lc
 
-                            # TwoCellAnchor: ancla el gráfico exactamente entre fila `row` y `row+18`
-                            # sin depender del tamaño automático que desplaza el layout
-                            _chart_start_row = row - 1   # 0-indexed para AnchorMarker
-                            _chart_end_row   = row + 17  # ~18 filas de alto
-                            _anc = TwoCellAnchor()
-                            _anc._from = AnchorMarker(col=0, colOff=0, row=_chart_start_row, rowOff=0)
-                            _anc.to    = AnchorMarker(col=13, colOff=0, row=_chart_end_row, rowOff=0)
-                            _anc.editAs = "twoCell"
-                            _bc.anchor = _anc
-                            _ws2._charts.append(_bc)
+                            # Anchor estándar: celda string "A{row}" — método más robusto en openpyxl
+                            _bc.anchor = f"A{row}"
+                            _ws2.add_chart(_bc)
                             row += 20  # avanzar el cursor de filas debajo del gráfico
                         except Exception as _ge_xl:
                             _ws2.cell(row, 1, f"[Gráfico no disponible: {_ge_xl}]")
@@ -11166,16 +11130,6 @@ def render_tab_tablero():
                     file_name=ss.get("tr_xl2_fname","tablero_ruteador_bkcc.xlsx"),
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="tr_dl_xl2", use_container_width=True)
-                # v4.94: auto-descarga del Excel del día
-                if ss.get("excel_dia_bytes"):
-                    st.download_button(
-                        f"⬇️ También: {ss.get('excel_dia_fname','excel_dia.xlsx')}",
-                        data=ss["excel_dia_bytes"],
-                        file_name=ss.get("excel_dia_fname","excel_dia.xlsx"),
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="tr_dl_xl2_dia", use_container_width=True,
-                        help="Excel del día (exportación completa) — se descarga junto al Tablero para no olvidarlo.",
-                    )
 
         # ── PDF Tablero ────────────────────────────────────────────────────────
         with _ex3:
@@ -11578,16 +11532,6 @@ def render_tab_tablero():
                     file_name=ss.get("tr_pdf_fname","tablero.pdf"),
                     mime="application/pdf", key="tr_dl_pdf",
                     use_container_width=True)
-                # v4.94: auto-descarga del Excel del día junto al PDF
-                if ss.get("excel_dia_bytes"):
-                    st.download_button(
-                        f"⬇️ También: {ss.get('excel_dia_fname','excel_dia.xlsx')}",
-                        data=ss["excel_dia_bytes"],
-                        file_name=ss.get("excel_dia_fname","excel_dia.xlsx"),
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="tr_dl_pdf_dia", use_container_width=True,
-                        help="Excel del día (exportación completa) — se descarga junto al PDF para no olvidarlo.",
-                    )
 
     # ══════════════════════════════════════════════════════════════════
     # TAB 2 — HISTÓRICO MENSUAL
@@ -13343,7 +13287,7 @@ def render_tab_cierre():
     Fuente: SR.xlsx (col A TotVal Chess) + ANR.xlsx (detalle cliente/camión).
     Sin 'Cobro por otros medios'. PDF en landscape.
     """
-    st.subheader("💰 Cierre Financiero del Día")
+    # título ya renderizado por main()
     st.caption(
         "Dashboard para gerencia. Fuente: **SR.xlsx** (TotVal Chess por camión) + "
         "**ANR.xlsx** (CTA CTE y rechazos). PDF exportado en **A4 horizontal**."
