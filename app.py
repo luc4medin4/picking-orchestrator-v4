@@ -1,7 +1,12 @@
 """
-Picking Orchestrator v4.97.0 — Beccacece Hnos SA
+Picking Orchestrator v4.98.0 — Beccacece Hnos SA
 
-CAMBIOS v4.97.0:
+CAMBIOS v4.98.0:
+  1. CAR Hoja1 — bloque de Ventas Especiales (filas azules) extendido de
+     Excel filas 2-41 (índices 1-40) a Excel filas 2-101 (índices 1-100),
+     para soportar mayor volumen de venta VE/alternativa.
+     El bloque normal (CHESS/Planillas de Carga) arranca ahora desde
+     Excel fila 102 (índice 101+) en lugar de fila 42.
   1. EXCEL TABLERO — eliminada la tabla "ANÁLISIS OPERATIVO" (segunda tabla redundante).
      El Excel ahora tiene una sola tabla de detalle por camión, espejo exacto del PDF.
   2. EXCEL TABLERO — agregada hoja "KPIs" con todos los KPIs del día en formato
@@ -715,9 +720,9 @@ def load_car(file, ddm=None):
     # Fila 0 = header (Excel fila 1)
     header = raw.iloc[0].tolist()
 
-    # ── FILAS AZULES: Excel filas 2-41 → índices 1-40 ────────────────────────
+    # ── FILAS AZULES: Excel filas 2-101 → índices 1-100 ─────────────────────
     # Columna T = índice 19 (A=0 … T=19)
-    blue_raw = raw.iloc[1:41].copy()
+    blue_raw = raw.iloc[1:101].copy()
     blue_raw.columns = header
 
     blue_raw["Artículo"]   = pd.to_numeric(blue_raw["Artículo"], errors="coerce")
@@ -743,8 +748,8 @@ def load_car(file, ddm=None):
                 .agg(_bultos_azul=("_bultos_azul", "sum")))
     blue_total_in = float(blue_agg["_bultos_azul"].sum()) if len(blue_agg) else 0.0
 
-    # ── FILAS NORMALES: Excel fila 42 en adelante → índice 41+ ───────────────
-    normal_raw = raw.iloc[41:].copy()
+    # ── FILAS NORMALES: Excel fila 102 en adelante → índice 101+ ────────────
+    normal_raw = raw.iloc[101:].copy()
     normal_raw.columns = header
 
     df = normal_raw.copy()
