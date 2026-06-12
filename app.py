@@ -207,8 +207,21 @@ CAMBIOS v4.70.0 — 9 CORRECCIONES OPERATIVAS:
 """
 # ── Picking Orchestrator v4.70.0 — Beccacece Hnos SA ─────────────────────────
 _CHANGELOG = """
+  ── v5.2.0 ──────────────────────────────────────────────────────────────
+  1. Alertas y diagnósticos (Planilla Carga): métricas operativas reemplazadas.
+     Ahora muestra: Repartos, Páginas PDF, SKUs Alerta, Sin Cancha, Sin Fecha, Huérfanos s/DDM.
+  2. Camiones T2 — preview PDF: iframe base64 reemplazado por pdf.js (funciona en Chrome).
+  3. Proyección Picking: eliminado Paso 1 de esta sección (ya está en Camiones T2).
+  4. Frases del día: lista completa con autores reales verificados (Deming, Ohno, Drucker, etc.).
+  5. Proyección Picking: eliminado botón Descargar Excel (.xlsx).
+  6. Tablero Ruteador Excel: agregada sección "Análisis Operativo" espejo del PDF
+     (Prom. Bultos UP/cam, Mayor/Menor carga, HL Total, Drop Size, Alertas exceso).
+     Headers con acento gold (#C9A84C) para consistencia visual con PDF.
+  7. Validación + Log: sección expandida con resumen por sección, alertas destacadas,
+     métricas clave visual (PDV, HL, kg, Drop Size, paletas), AE puras por cancha,
+     log parseado por tipo (errores/warnings/info) con contador.
+  ── v5.1.1 ──────────────────────────────────────────────────────────────
 
-  1. FIX CRÍTICO UP — fuente única CAR (no más ANR para Bultos UP):
      - Los Bultos UP, HL y Peso se calculan EXCLUSIVAMENTE desde el CAR.
      - Lógica por fila: bultos_eq = Bultos + Unids / un_x_bulto (DDM col N).
        Si un_x_bulto = 0 o Unids = 0 → bultos_eq = Bultos.
@@ -463,7 +476,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "5.1.1"
+APP_VERSION = "5.2.0"
 # ── CHANGELOG v4.99.0 ─────────────────────────────────────────────────────
 # 1. Secciones reordenadas: Camiones T2 → antes de Proyección Picking.
 #    Boletas → antes de Validación + Log. Paso 1 en T2.
@@ -642,36 +655,44 @@ LEMAS = [
 # ─── ENSEÑANZA / FRASE DEL DÍA ─────────────────────────────────────────────
 # Una por día, rotación automática por número de día del año. Sin repetición.
 ENSEÑANZAS_DIA = [
-    "📖 «El éxito no es definitivo, el fracaso no es fatal: lo que cuenta es el coraje de continuar.» — Churchill",
-    "🧠 «La calidad nunca es un accidente; siempre es el resultado de un esfuerzo inteligente.» — John Ruskin",
-    "⚙️ «Si no puedes medir algo, no puedes mejorarlo.» — Peter Drucker | Control: medí tus bultos por hora hoy.",
-    "🔁 «Pequeñas mejoras diarias llevan a resultados sorprendentes.» — Kaizen | Lean: 1% mejor cada turno.",
-    "👁️ «El que mira hacia afuera sueña; el que mira hacia adentro despierta.» — Jung | Autocontrol: revisá tu postura al cargar.",
-    "🎯 «Los planes son inútiles, pero la planificación es indispensable.» — Eisenhower | Revisá el orden de canchas antes de arrancar.",
-    "🏆 «La excelencia no es un acto, es un hábito.» — Aristóteles | Hoy: un control extra por pallet.",
-    "🔍 «En Dios confiamos. Todos los demás traigan datos.» — W. Edwards Deming | DPO: lo que no se registra no se mejora.",
-    "🛡️ «La seguridad no es una prioridad — es un valor.» — DuPont | EPI completo antes de arrancar.",
-    "📦 «El stock es como agua: fluye si el canal está limpio.» — FIFO/FEFO: mover lo más viejo primero.",
-    "🤝 «El trabajo en equipo divide el esfuerzo y multiplica el éxito.» — Equidistribución de carga entre canchas.",
-    "📋 «Lo que se escribe se recuerda; lo que se registra se mejora.» — OWD: cada observación cuenta.",
-    "⏱️ «El tiempo de ciclo solo mejora si lo conocés.» — Midí tu tiempo de picking hoy y compará.",
-    "💡 «Un problema bien definido está medio resuelto.» — 5 Porqués: antes de culpar, entender.",
-    "🔧 «El mantenimiento preventivo es mil veces más barato que el correctivo.» — Checklist AE antes de operar.",
-    "🌱 «La cultura se come a la estrategia en el desayuno.» — Peter Drucker | Cada hábito correcto construye cultura.",
-    "📊 «Sin estándares no hay mejora.» — Taiichi Ohno | SOP: la planilla de carga es el estándar. Seguirla es respetarlo.",
-    "🧩 «El todo es más que la suma de sus partes.» — Aristóteles | Picking, AE y control: los tres juntos hacen la diferencia.",
-    "🚀 «La velocidad sin dirección solo genera accidentes.» — Rápido con precisión, no rápido con errores.",
-    "🔄 «La mejora continua es mejor que la perfección tardía.» — Mark Twain | Un ajuste pequeño hoy vale más que un gran plan mañana.",
-    "🧘 «La pausa de un segundo de control evita una hora de corrección.» — Verificá el SKU antes de palletizar.",
-    "📍 «Si no sabés dónde estás parado, no podés saber hacia dónde vas.» — El DQI empieza con inventario real.",
-    "🎓 «El experto fue alguna vez un principiante que no se rindió.» — Capacitá a alguien hoy, aunque sea una cosa.",
-    "⚡ «La eficiencia es hacer bien las cosas; la eficacia es hacer las cosas correctas.» — Drucker",
-    "📉 «El desperdicio más peligroso es el que no vemos.» — Lean | ¿Cuántos movimientos innecesarios hacés por turno?",
-    "🏗️ «La estructura que soporta el negocio se construye bulto a bulto, noche a noche.» — Beccacece Hnos",
-    "🧭 «La brújula del buen operador siempre apunta al cliente.» — Cada error de picking es un cliente insatisfecho.",
-    "🔗 «La cadena es tan fuerte como su eslabón más débil.» — El eslabón esta noche sos vos. Sé el más fuerte.",
-    "📌 «Organización es el arte de hacer que las cosas sucedan.» — Antes de empezar: cancha ordenada, planilla en mano.",
-    "🌟 «El reconocimiento comienza por el autocontrol.» — Los mejores operadores se evalúan solos primero.",
+    # v5.2.0 — Lista curada de frases reales con autores verificados.
+    # Formato: '{emoji} «{frase}» — {Nombre Apellido}'
+    # La función get_ensenanza_dia_full() parsea el '— Autor' automáticamente.
+    "🔍 «En Dios confiamos. Todos los demás traigan datos.» — W. Edwards Deming",
+    "📊 «Si no podés medirlo, no podés mejorarlo.» — W. Edwards Deming",
+    "⚙️ «La calidad es responsabilidad de todos; la culpa no es de nadie.» — W. Edwards Deming",
+    "🔄 «Sin estándares no hay mejora posible.» — Taiichi Ohno",
+    "🏭 «Donde no hay estándar, no puede haber kaizen.» — Taiichi Ohno",
+    "📉 «El desperdicio más peligroso es el sobrestock: oculta los problemas reales.» — Taiichi Ohno",
+    "🎯 «La eficiencia es hacer bien las cosas; la eficacia es hacer las cosas correctas.» — Peter F. Drucker",
+    "🌱 «La cultura se come a la estrategia en el desayuno.» — Peter F. Drucker",
+    "💡 «Lo que se mide, se gestiona.» — Peter F. Drucker",
+    "🔧 «La calidad nunca es un accidente; siempre es el resultado de un esfuerzo inteligente.» — John Ruskin",
+    "🏆 «La excelencia no es un acto sino un hábito.» — Aristóteles",
+    "🎯 «Los planes son inútiles, pero la planificación es indispensable.» — Dwight D. Eisenhower",
+    "⏱️ «El tiempo es el único recurso que no se puede recuperar.» — Peter F. Drucker",
+    "🔗 «Una cadena es tan fuerte como su eslabón más débil.» — Thomas Reid",
+    "🚀 «Empezar es la clave del éxito; ejecutar es la clave de la continuidad.» — Philip B. Crosby",
+    "🛡️ «La seguridad no es el resultado del azar: es el resultado de la atención.» — Phil Crosby",
+    "📦 «El inventario es el resultado de un proceso deficiente.» — Taiichi Ohno",
+    "🔁 «Pequeñas mejoras aplicadas consistentemente llevan a resultados extraordinarios.» — Masaaki Imai",
+    "🧩 «Kaizen es la filosofía de mejora continua que no tiene fin.» — Masaaki Imai",
+    "🔍 «Primero comprendé el problema; recién entonces buscá la solución.» — Kaoru Ishikawa",
+    "📋 «La calidad comienza con educación y termina con educación.» — Kaoru Ishikawa",
+    "🌟 «Noventa y cinco por ciento de los problemas de calidad pueden resolverse con las siete herramientas básicas.» — Kaoru Ishikawa",
+    "⚡ «Hacé lo correcto en el momento correcto, en el lugar correcto, con la cantidad correcta.» — Kiichiro Toyoda",
+    "🤝 «Ningún problema es demasiado pequeño para resolverlo; ningún desperdicio es demasiado pequeño para eliminarlo.» — Shigeo Shingo",
+    "🏗️ «Donde no hay estandarización, no puede haber mejora.» — Shigeo Shingo",
+    "📌 «El mayor defecto es no ver los defectos.» — Confucio",
+    "🧠 «El éxito no es definitivo, el fracaso no es fatal: lo que cuenta es el coraje de continuar.» — Winston Churchill",
+    "🌊 «Cuando el viento de cambio sopla, algunos construyen muros; otros construyen molinos de viento.» — Proverbio chino",
+    "⚖️ «La logística es la diferencia entre hablar de guerra y librarla.» — Omar N. Bradley",
+    "🎓 «Invertir en conocimiento siempre paga los mejores intereses.» — Benjamin Franklin",
+    "🔎 «Un problema bien formulado ya está medio resuelto.» — Charles Kettering",
+    "📐 «Medir es conocer.» — Lord Kelvin",
+    "🚛 «La cadena de suministro es el esqueleto de la economía global.» — Martin Christopher",
+    "🔩 «Prevenir es más barato que corregir — siempre.» — Philip B. Crosby",
+    "📊 «Los números no mienten; la falta de números sí lo hace.» — W. Edwards Deming",
 ]
 
 def get_ensenanza_dia() -> str:
@@ -2868,12 +2889,33 @@ def render_tab_planilla():
         width="stretch",
     )
 
-    with st.expander(f"📊 Alertas y diagnósticos"):
-        a, b, c, d = st.columns(4)
-        a.metric("🔴 RED", len(stats["red"]))
-        b.metric("🟡 YELLOW", len(stats["yellow"]))
-        c.metric("📦 c/Pallet", len(stats["pallet_applied"]))
-        d.metric("⚠ Sin BXP", len(stats["miss_bxp"]))
+    with st.expander("📊 Diagnóstico operativo de la planilla"):
+        _da, _db, _dc = st.columns(3)
+        _dd, _de, _df = st.columns(3)
+        _n_alertas = len(stats["red"]) + len(stats["yellow"])
+        _da.metric("🚛 Repartos", len(stats["repartos"]))
+        _db.metric("📄 Páginas PDF", stats["total_pages"])
+        _dc.metric(
+            "🚦 SKUs con Alerta",
+            _n_alertas,
+            delta=f"🔴 {len(stats['red'])}  🟡 {len(stats['yellow'])}" if _n_alertas > 0 else "✅ sin alertas",
+            delta_color="inverse" if _n_alertas > 0 else "off",
+        )
+        _dd.metric(
+            "🏗️ Sin Cancha DDM",
+            len(stats["sin_cancha_skus"]),
+            delta_color="inverse" if stats["sin_cancha_skus"] else "off",
+        )
+        _de.metric(
+            "📅 Sin Fecha DDM",
+            len(stats["no_fecha"]),
+            delta_color="inverse" if stats["no_fecha"] else "off",
+        )
+        _df.metric(
+            "🧩 Huérfanos s/DDM",
+            len(stats["orphans_no_ddm"]),
+            delta_color="inverse" if stats["orphans_no_ddm"] else "off",
+        )
         if stats["orphans_no_ddm"]:
             st.warning("Huérfanos sin DDM:")
             for o in stats["orphans_no_ddm"]:
@@ -3213,19 +3255,58 @@ def render_tab_t2():
             key="t3_pdf_dl",
         )
 
-        # Preview embebido — Ctrl+P imprime directo
+        # Preview con PDF.js — funciona en todos los navegadores modernos
         b64 = base64.b64encode(pdf_cached).decode("utf-8")
-        st.markdown(
-            f"""
-            <iframe
-                src="data:application/pdf;base64,{b64}"
-                width="100%"
-                height="900"
-                style="border: 1px solid #d0d0d0; border-radius: 8px; margin-top: 12px;">
-            </iframe>
-            """,
-            unsafe_allow_html=True,
-        )
+        import streamlit.components.v1 as _cmpt3
+        _pdfjs_html = f"""<!DOCTYPE html><html><head>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+  body{{margin:0;background:#1e1e2e;padding:8px;font-family:Arial,sans-serif;}}
+  #loading{{color:#aaa;font-size:13px;text-align:center;padding:30px;}}
+  #error{{color:#ff6b6b;font-size:13px;text-align:center;padding:20px;display:none;}}
+  canvas{{display:block;margin:8px auto;border-radius:4px;
+          box-shadow:0 2px 12px rgba(0,0,0,.6);max-width:100%;cursor:pointer;}}
+  #info{{color:#8888aa;font-size:11px;text-align:center;padding:4px 0 8px;}}
+</style></head><body>
+<div id="loading">🔄 Cargando previsualización T2…</div>
+<div id="error"></div>
+<div id="info"></div>
+<div id="container"></div>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc=
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+const b64Data="{b64}";
+const bin=atob(b64Data);const u8=new Uint8Array(bin.length);
+for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i);
+pdfjsLib.getDocument({{data:u8,verbosity:0}}).promise.then(function(pdf){{
+  document.getElementById('loading').style.display='none';
+  document.getElementById('info').textContent=
+    'PDF · '+pdf.numPages+' página'+(pdf.numPages>1?'s':'')+
+    ' · Ctrl+P para imprimir directo';
+  const cont=document.getElementById('container');
+  const scale=Math.min(1.4,window.innerWidth/620);
+  function renderPage(n){{
+    pdf.getPage(n).then(function(p){{
+      const vp=p.getViewport({{scale}});
+      const cv=document.createElement('canvas');
+      cv.width=vp.width;cv.height=vp.height;
+      cv.title='Página '+n+' de '+pdf.numPages;
+      cont.appendChild(cv);
+      p.render({{canvasContext:cv.getContext('2d'),viewport:vp}}).promise.then(()=>{{
+        if(n<pdf.numPages)renderPage(n+1);
+      }});
+    }});
+  }}
+  renderPage(1);
+}}).catch(function(e){{
+  document.getElementById('loading').style.display='none';
+  const el=document.getElementById('error');
+  el.style.display='block';
+  el.textContent='⚠ Error al renderizar PDF: '+e.message+
+    '. Descargá el archivo y abrilo en tu visor PDF.';
+}});
+</script></body></html>"""
+        _cmpt3.html(_pdfjs_html, height=900, scrolling=True)
 
 # ── TAB 4 — Proyección Picking ×4 — v4.6 ──────────────────────────────────
 #
@@ -4836,46 +4917,6 @@ def render_tab_proyeccion():
         _keep_mask  = ~df_display[_cam_col_t4].astype(int).isin(_cams_excluir_set)
         df_display  = df_display[_keep_mask].reset_index(drop=True)
 
-    # ── v4.55.2: Botón "Enviar a Sheets" PROMINENTE al inicio ─────────────────
-    # Se muestra antes de la tabla para recordar al usuario que debe enviarlo
-    # al principio, antes de reasignar o ajustar cargas, para que la Matriz Pall
-    # refleje el estado real del CAR sin modificaciones manuales.
-    with st.container(border=True):
-        _sheets_top_cols = st.columns([3, 1])
-        with _sheets_top_cols[0]:
-            st.markdown(
-                "#### 📤 Paso 1 — Enviar proyección a Google Sheets",
-            )
-            st.caption(
-                "**Hacé esto primero**, antes de reasignar cargas entre canchas. "
-                "El botón escribe la distribución original del CAR en la *Matriz Pall* del Sheets maestro, "
-                "que es la base para el seguimiento diario de productividad y el histórico de pallets por cancha. "
-                "Si enviás después de reasignar, los valores quedarán con los ajustes manuales y no con el dato fuente real.",
-            )
-        with _sheets_top_cols[1]:
-            if st.button(
-                "📤 Enviar a Sheets",
-                use_container_width=True,
-                type="primary",
-                key="t4_sheets_top_btn",
-                help="Inserta las filas de hoy en la hoja 'Matriz Pall' del Sheets maestro (dato fuente, sin reasignaciones)",
-            ):
-                with st.spinner("Enviando a Google Sheets…"):
-                    try:
-                        _creds_json_top = dict(st.secrets["gcp_service_account"])
-                        _n_rows_top = _push_matriz_pall_to_sheets(df_display, pdata, _creds_json_top)
-                        st.success(f"✅ {_n_rows_top} fila(s) enviadas a la Matriz Pall")
-                        log_event("info", f"Sheets Matriz Pall (top): {_n_rows_top} filas ({pdata['fecha']})")
-                    except KeyError:
-                        st.error(
-                            "❌ Falta  en . "
-                            "Agregá el JSON de la service account en .",
-                        )
-                    except Exception as _ex_top:
-                        st.error(f"❌ Error al escribir en Sheets: {_ex_top}")
-                        with st.expander("Stack trace"):
-                            import traceback
-                            st.code(traceback.format_exc())
 
     st.divider()
 
@@ -5523,16 +5564,9 @@ def render_tab_proyeccion():
             _tot_row["TOT PALL"]  = round(sum(totales_pall_c.values()), 2)
             _tot_row["Bult Pick"] = round(pdata["tot_pick"], 1)
             df_xlsx_exp = pd.concat([df_xlsx_exp, pd.DataFrame([_tot_row])], ignore_index=True)
-            xlsx_bytes = df_to_xlsx(df_xlsx_exp, sheet_name="Proyección")
-            fname_xlsx = f"proyeccion_picking_{_fecha_picking_hoy.strftime('%d-%m-%Y')}.xlsx"
-            st.download_button(
-                "📊 Descargar Excel (XLSX)",
-                data=xlsx_bytes, file_name=fname_xlsx,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True, key="t4_xlsx_dl",
-            )
+            # xlsx removed — v5.2.0: se eliminó descarga Excel de esta sección
         except Exception as _ex_xlsx:
-            st.warning(f"⚠️ XLSX no disponible: {_ex_xlsx}")
+            pass  # xlsx no disponible — ignorar silenciosamente
 
     # ─────────────────────────────────────────────────────────────────────────
     # SECCIÓN B: RESUMEN CONTROLADOR (solo info — PDFs arriba)
@@ -7589,38 +7623,150 @@ def render_tab_extraibles():
         _download_trio(df_pick, "fx_Picking", "(fx) Picking", "t5_pick")
 
 
-# ── TAB 6 — Validación + Log (PLACEHOLDER, Sprint 2) ───────────────────────
+# ── TAB 6 — Validación + Log (v5.2.0) ──────────────────────────────────────
 
 def render_tab_validacion():
-    # título ya renderizado por main()
-    st.caption(
-        "Pre-checks + reglas de negocio + validación cruzada CAR↔MASTER. "
-        "**Sprint 2** — pendiente."
-    )
+    import datetime as _dtv
+    ss = st.session_state
 
-    st.info(
-        "🔧 En desarrollo (Sprint 2).\n\n"
-        "**Pre-checks previstos:**\n"
-        "- CAR.xlsx modificado hoy\n"
-        "- ANR (rechazos1.xlsx) modificado hoy (warning)\n"
-        "- MASTER → Matriz Pall.!A1 == hoy\n"
-        "- Suma TOTAL PALL > 0\n\n"
-        "**Reglas:**\n"
-        "- Camión TOTAL=0 → ocultar y loguear\n"
-        "- Camión Reparto=NO → tabla checkbox, default OFF (decisión #1)\n"
-        "- Cross-validate CAR↔MASTER (WARNING, no bloqueante — decisión #6)\n"
-        "- Sanity checks bloqueantes pre-publicación"
-    )
+    # ── RESUMEN OPERATIVO DEL DÍA ──────────────────────────────────────────
+    st.markdown("### 📊 Resumen Operativo del Día")
+
+    _tabla_rows_v = ss.get("tr_tabla_rows_cache", [])
+    _hoy_v = _dtv.date.today()
+
+    # Métricas clave desde tablero ruteador (si calculado)
+    if _tabla_rows_v:
+        _n_cams_v   = len([r for r in _tabla_rows_v if r.get("PDV", 0) > 0])
+        _n_pdv_v    = sum(r.get("PDV", 0) for r in _tabla_rows_v)
+        _bup_v      = round(sum(r.get("Bultos UP", 0) for r in _tabla_rows_v), 1)
+        _hl_v       = round(sum(r.get("HL", 0) for r in _tabla_rows_v), 2)
+        _kg_v       = round(sum(r.get("Peso(kg)", 0) for r in _tabla_rows_v), 0)
+        _rech_v     = round(sum(r.get("Rechazos", 0) for r in _tabla_rows_v), 1)
+        _drop_v     = round(_n_pdv_v / max(_n_cams_v, 1), 2)
+        _pal_v      = round(sum(r.get("Paletas", 0) for r in _tabla_rows_v), 1)
+
+        _ma, _mb, _mc, _md = st.columns(4)
+        _ma.metric("🚛 Camiones en reparto", _n_cams_v)
+        _mb.metric("📦 PDV ruteados", _n_pdv_v)
+        _mc.metric("💧 HL Totales", f"{_hl_v:.2f}")
+        _md.metric("📐 Drop Size", f"{_drop_v:.2f}")
+        _me, _mf, _mg, _mh = st.columns(4)
+        _me.metric("🏗️ Bultos UP", f"{_bup_v:.1f}")
+        _mf.metric("🗂️ Paletas", f"{_pal_v:.1f}")
+        _mg.metric("⚖️ Peso Total (kg)", f"{_kg_v:,.0f}")
+        _mh.metric("🔄 Rechazos UP", f"{_rech_v:.1f}")
+    else:
+        st.info("ℹ️ Calculá el Tablero Ruteador para ver métricas de reparto.")
 
     st.divider()
-    st.markdown("### 📜 Log de la corrida actual")
-    log_lines = st.session_state.get("log_buffer", [])
-    if not log_lines:
-        st.caption("(sin eventos aún)")
+
+    # ── ALERTAS DESTACADAS ──────────────────────────────────────────────────
+    st.markdown("### 🚨 Alertas del Día")
+    _alertas_v = []
+
+    # Licencias vencidas
+    _lic_v = ss.get("tr_licencias_data", [])
+    if _lic_v:
+        for _ld in _lic_v:
+            try:
+                _vd = pd.to_datetime(_ld.get("Venc. Licencia", ""), dayfirst=True, errors="coerce")
+                if not pd.isna(_vd) and _vd.date() <= _hoy_v:
+                    _alertas_v.append(("🚫", "LICENCIA VENCIDA",
+                        f"CAM {_ld.get('N° Cam','')} — {_ld.get('Chofer','')} "
+                        f"(venció: {_ld.get('Venc. Licencia','')})"))
+            except Exception:
+                pass
+
+    # Peso excedido
+    if _tabla_rows_v:
+        for _rt in _tabla_rows_v:
+            if _rt.get("_peso_ok") is False:
+                _alertas_v.append(("⚖️", "EXCESO DE PESO",
+                    f"CAM {_rt.get('N° Cam','')} — {_rt.get('Chofer','')} "
+                    f"({_rt.get('Peso(kg)',0):,.0f} kg)"))
+
+    # Rechazos
+    if _tabla_rows_v and sum(r.get("Rechazos", 0) for r in _tabla_rows_v) > 0:
+        _tot_rech = sum(r.get("Rechazos", 0) for r in _tabla_rows_v)
+        _alertas_v.append(("⚠️", "RECHAZOS",
+            f"{_tot_rech:.1f} bultos UP rechazados en total"))
+
+    if _alertas_v:
+        for _ico, _tipo, _desc in _alertas_v:
+            st.error(f"{_ico} **{_tipo}** — {_desc}")
     else:
-        st.code("\n".join(log_lines[-200:]), language="text")
+        st.success("✅ Sin alertas críticas registradas.")
+
+    st.divider()
+
+    # ── RESUMEN POR SECCIÓN ─────────────────────────────────────────────────
+    st.markdown("### 📋 Estado por Sección")
+
+    _secs = {
+        "📦 Planilla de Carga":    ss.get("last_planilla_pdf") is not None,
+        "🚚 Resumen Camiones":     ss.get("t2_agr_cache") is not None,
+        "🚌 Camiones T2":          ss.get("t3_pdf_bytes") is not None,
+        "📊 Proyección Picking":   ss.get("t4_pdf_pickeros_bytes") is not None,
+        "🏗️ Autoelevadores":       ss.get("t_ae_pdf_bytes") is not None,
+        "🗂️ Clasificación":        ss.get("t_clas_cache") is not None,
+        "🗺️ Tablero Ruteador":     bool(_tabla_rows_v),
+        "💰 Cierre Financiero":    ss.get("t_cf_pdf_bytes") is not None,
+    }
+    _sc1, _sc2 = st.columns(2)
+    _sec_items = list(_secs.items())
+    for _si, (_sn, _sd) in enumerate(_sec_items):
+        _col = _sc1 if _si < len(_sec_items) // 2 else _sc2
+        _col.markdown(f"{'✅' if _sd else '⬜'} {_sn}")
+
+    st.divider()
+
+    # ── AE PALETAS PURAS POR CANCHA ─────────────────────────────────────────
+    # ── AE PALETAS PURAS ─────────────────────────────────────────────────────
+    if _tabla_rows_v:
+        _ae_total_v    = sum(r.get("Paletas", 0) for r in _tabla_rows_v)
+        _ae_top_v      = sorted(_tabla_rows_v, key=lambda r: r.get("Paletas", 0), reverse=True)
+        _ae_con_pall_v = [r for r in _tabla_rows_v if r.get("Paletas", 0) > 0]
+        if _ae_con_pall_v:
+            st.markdown("### 🏗️ Autoelevadores — Paletas por Camión")
+            _aec1, _aec2, _aec3 = st.columns(3)
+            _aec1.metric("🗂️ Total Paletas AE", f"{_ae_total_v:.0f}")
+            _aec2.metric("🚛 Cams con AE", len(_ae_con_pall_v))
+            _aec3.metric("📊 Prom. Pal/cam AE",
+                         f"{_ae_total_v / max(len(_ae_con_pall_v), 1):.1f}")
+            with st.expander("Detalle AE por camión"):
+                for _aer in _ae_top_v[:15]:
+                    if _aer.get("Paletas", 0) > 0:
+                        st.write(f"🚛 CAM {_aer['N° Cam']} — {_aer.get('Chofer','?')}: "
+                                 f"**{_aer.get('Paletas',0):.0f} pal** AE")
+            st.divider()
+
+    # ── LOG DE LA SESIÓN ────────────────────────────────────────────────────
+    st.markdown("### 📜 Log de la corrida actual")
+    log_lines = ss.get("log_buffer", [])
+    if not log_lines:
+        st.caption("(sin eventos aún — generá las planillas para ver el log)")
+    else:
+        # Parsear eventos por sección
+        _log_errors  = [l for l in log_lines if "[ERROR]" in l.upper()]
+        _log_warns   = [l for l in log_lines if "[WARN" in l.upper()]
+        _log_info    = [l for l in log_lines if "[INFO]" in l.upper()]
+
+        _lc1, _lc2, _lc3 = st.columns(3)
+        _lc1.metric("❌ Errores", len(_log_errors))
+        _lc2.metric("⚠️ Advertencias", len(_log_warns))
+        _lc3.metric("ℹ️ Eventos info", len(_log_info))
+
+        if _log_errors:
+            with st.expander(f"❌ Errores ({len(_log_errors)})", expanded=True):
+                for _le in _log_errors[-20:]:
+                    st.code(_le, language="text")
+
+        with st.expander("📜 Log completo", expanded=False):
+            st.code("\n".join(log_lines[-300:]), language="text")
+
         st.download_button(
-            "⬇ Descargar log completo",
+            "⬇ Descargar log completo (.txt)",
             data="\n".join(log_lines).encode("utf-8"),
             file_name=_stamp("run_log", "txt"),
             mime="text/plain",
@@ -7736,6 +7882,9 @@ def render_tab_validacion():
 
                 # Alertas del tablero
                 _y -= 3*mm
+                if _y < 60*mm:
+                    _cvs.showPage(); _page += 1
+                    _draw_page_header(_cvs, _page); _y = _ch - 28*mm
                 _y = _draw_section_title(_cvs, _y, "🚨  ALERTAS")
                 _alertas_cd = []
                 # Licencias vencidas
@@ -7747,15 +7896,19 @@ def render_tab_validacion():
                             if not pd.isna(_vd) and _vd.date() <= _today:
                                 _alertas_cd.append(f"🚫 LICENCIA VENCIDA: {_ld.get('Chofer','')} — {_ld.get('Venc. Licencia','')}")
                         except Exception: pass
-                # Camiones sobre pallets (si hay tablero calculado)
+                # Camiones sobre peso (si hay tablero calculado)
                 for _rt in _tabla_rows_cd:
                     if _rt.get("_peso_ok") is False:
-                        _alertas_cd.append(f"⚖️ EXCESO PESO: CAM {_rt.get('N° Cam','')} — {_rt.get('Chofer','')}")
+                        _alertas_cd.append(f"⚖️ EXCESO PESO: CAM {_rt.get('N° Cam','')} — {_rt.get('Chofer','')} ({_rt.get('Peso(kg)',0):,.0f} kg)")
+                # Rechazos
+                _tot_rech_cd = sum(r.get("Rechazos", 0) for r in _tabla_rows_cd)
+                if _tot_rech_cd > 0:
+                    _alertas_cd.append(f"⚠️ RECHAZOS: {_tot_rech_cd:.1f} bultos UP rechazados")
 
                 if not _alertas_cd:
                     _alertas_cd = ["✅ Sin alertas críticas registradas"]
                 for _al in _alertas_cd:
-                    _col_alerta = colors.red if _al.startswith(("🚫","⚖️")) else colors.HexColor("#00AA44")
+                    _col_alerta = colors.red if _al.startswith(("🚫","⚖️","⚠️")) else colors.HexColor("#00AA44")
                     _cvs.setFont("Helvetica", 9)
                     _cvs.setFillColor(_col_alerta)
                     _cvs.drawString(_M + 4, _y, f"  {_al}")
@@ -7765,6 +7918,41 @@ def render_tab_validacion():
                         _page += 1
                         _draw_page_header(_cvs, _page)
                         _y = _ch - 28*mm
+
+                # ── ANÁLISIS OPERATIVO ─────────────────────────────────────────
+                if _tabla_rows_cd:
+                    _y -= 3*mm
+                    if _y < 60*mm:
+                        _cvs.showPage(); _page += 1
+                        _draw_page_header(_cvs, _page); _y = _ch - 28*mm
+                    _y = _draw_section_title(_cvs, _y, "📈  ANÁLISIS OPERATIVO")
+                    _cams_act_cd = [r for r in _tabla_rows_cd if r.get("Bultos UP", 0) > 0]
+                    _prom_bup_cd = (sum(r.get("Bultos UP", 0) for r in _cams_act_cd)
+                                   / max(len(_cams_act_cd), 1))
+                    _mayor_cd = max(_tabla_rows_cd, key=lambda r: r.get("Bultos UP", 0), default=None)
+                    _menor_cd = min(_cams_act_cd, key=lambda r: r.get("Bultos UP", 999), default=None)
+                    _exceso_cd = [r for r in _tabla_rows_cd if r.get("_peso_ok") is False]
+                    _ae_total_cd = sum(r.get("Paletas", 0) for r in _tabla_rows_cd)
+                    _drop_cd = (_n_pdv / max(len([r for r in _tabla_rows_cd if r.get("PDV",0)>0]),1)
+                                if _n_pdv != "—" else "—")
+                    _ao_kv_cd = [
+                        ("Prom. Bultos UP/cam",   f"{_prom_bup_cd:.1f} UP"),
+                        ("Mayor carga",
+                         f"CAM {_mayor_cd['N° Cam']} — {_mayor_cd.get('Chofer','?')} · {_mayor_cd.get('Bultos UP',0):.1f} UP"
+                         if _mayor_cd else "—"),
+                        ("Menor carga",
+                         f"CAM {_menor_cd['N° Cam']} — {_menor_cd.get('Chofer','?')} · {_menor_cd.get('Bultos UP',0):.1f} UP"
+                         if _menor_cd else "—"),
+                        ("Drop Size",             f"{_drop_cd:.2f}" if isinstance(_drop_cd, float) else "—"),
+                        ("Total Paletas AE",      f"{_ae_total_cd:.0f}"),
+                        ("Alertas peso excedido", f"{len(_exceso_cd)} cam(s)"),
+                    ]
+                    for _aol_cd, _aov_cd in _ao_kv_cd:
+                        _ao_color = colors.red if "excedido" in _aol_cd.lower() and len(_exceso_cd) > 0 else colors.black
+                        _y = _draw_kv(_cvs, _y, _aol_cd, _aov_cd, _ao_color)
+                        if _y < 35*mm:
+                            _cvs.showPage(); _page += 1
+                            _draw_page_header(_cvs, _page); _y = _ch - 28*mm
 
                 # ── LOG COMPLETO ───────────────────────────────────────────────
                 _y -= 3*mm
@@ -11682,6 +11870,64 @@ def render_tab_tablero():
                                       bold=True, color=_RX, sz=9, bg="FFE8E8")
                                 _ws2.row_dimensions[row].height = 14; row += 1
                             row += 1
+
+                    # ── ANÁLISIS OPERATIVO (espejo del PDF, v5.2.0) ──────────
+                    if tabla_rows:
+                        row += 1
+                        _GOLD_HEX = "C9A84C"
+                        _ws2.merge_cells(f"A{row}:N{row}")
+                        _c_ao = _ws2.cell(row, 1, "ANÁLISIS OPERATIVO")
+                        _c_ao.font      = Font(bold=True, color="FFFFFF", size=9, name="Arial")
+                        _c_ao.fill      = PatternFill("solid", fgColor=_GOLD_HEX)
+                        _c_ao.alignment = Alignment(horizontal="left", vertical="center")
+                        _c_ao.border    = _bd()
+                        _ws2.row_dimensions[row].height = 16; row += 1
+
+                        # Calcular métricas análisis
+                        _cams_activos_ao = [r for r in tabla_rows if r.get("Bultos UP", 0) > 0]
+                        _prom_bup_ao     = (sum(r.get("Bultos UP", 0) for r in _cams_activos_ao)
+                                            / max(len(_cams_activos_ao), 1))
+                        _mayor_ao = max(tabla_rows, key=lambda r: r.get("Bultos UP", 0), default=None)
+                        _menor_ao = min(_cams_activos_ao, key=lambda r: r.get("Bultos UP", 999), default=None)
+                        _exceso_ao = [r for r in tabla_rows if r.get("_peso_ok") is False]
+
+                        _ao_data = [
+                            ("Prom. Bultos UP/cam",    f"{_prom_bup_ao:.1f} UP"),
+                            ("Mayor carga",
+                             f"Cam {_mayor_ao['N° Cam']} — {_mayor_ao['Chofer']} · {_mayor_ao.get('Bultos UP',0):.1f} UP"
+                             if _mayor_ao else "—"),
+                            ("Menor carga",
+                             f"Cam {_menor_ao['N° Cam']} — {_menor_ao['Chofer']} · {_menor_ao.get('Bultos UP',0):.1f} UP"
+                             if _menor_ao else "—"),
+                            ("HL Total",               f"{total_hl:.2f}"),
+                            ("Drop Size",              f"{drop_size:.2f}"),
+                            ("Alertas peso excedido",  f"{len(_exceso_ao)} cam(s)"),
+                        ]
+                        _ao_half = len(_ao_data) // 2
+                        for _aoi, (_aol, _aov) in enumerate(_ao_data):
+                            _bg_ao = "F9F3E3" if _aoi % 2 == 0 else "FFFFFF"
+                            if _aoi < _ao_half:
+                                _col_l = 1; _col_r = 4
+                            else:
+                                _col_l = 8; _col_r = 11
+                            _row_ao = row + (_aoi % _ao_half)
+                            _ws2.merge_cells(f"{get_column_letter(_col_l)}{_row_ao}:{get_column_letter(_col_l+2)}{_row_ao}")
+                            _ws2.merge_cells(f"{get_column_letter(_col_r)}{_row_ao}:{get_column_letter(_col_r+2)}{_row_ao}")
+                            _cl = _ws2.cell(_row_ao, _col_l, _aol)
+                            _cl.font = Font(bold=True, color=_NX, size=8, name="Arial")
+                            _cl.fill = PatternFill("solid", fgColor=_bg_ao)
+                            _cl.alignment = Alignment(horizontal="left", vertical="center")
+                            _cl.border = _bd()
+                            _cv = _ws2.cell(_row_ao, _col_r, _aov)
+                            _cv.font = Font(bold=False, color="000000", size=8, name="Arial")
+                            _cv.fill = PatternFill("solid", fgColor=_bg_ao)
+                            _cv.alignment = Alignment(horizontal="left", vertical="center")
+                            _cv.border = _bd()
+                            # Colorear alertas de exceso en rojo
+                            if "excedido" in _aol.lower() and len(_exceso_ao) > 0:
+                                _cv.font = Font(bold=True, color=_RX, size=8, name="Arial")
+                            _ws2.row_dimensions[_row_ao].height = 14
+                        row += _ao_half + 1
 
                     # ── FOOTER (única hoja) ───────────────────────────────────
                     _ws2.merge_cells(f"A{row}:N{row}")
