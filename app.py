@@ -1,5 +1,22 @@
 """
-Picking Orchestrator v4.98.0 — Beccacece Hnos SA
+Picking Orchestrator v5.2.2 — Beccacece Hnos SA
+
+CAMBIOS v5.2.2:
+  1. FIX TOP CLIENTES (Sección Tops) — lectura robusta de hoja CLIENTES del ANR:
+     - Detección case-insensitive del nombre real de la hoja (acepta "CLIENTES",
+       "Clientes", "clientes", etc. y cualquier variación con "cliente").
+     - Fallback automático a header=0 si con header=1 no se obtienen datos válidos.
+     - Antes: cualquier variación de nombre de hoja o de header causaba excepción
+       silenciosa → df vacío → warning "No se encontraron clientes con ventas > 0".
+  2. FIX AUTOELEVADORES — camiones excluidos aparecían con valores reales en Excel
+     y en envío a Sheets:
+     - ROOT CAUSE: el widget multiselect usa key="tae_p3_cams_excluir" pero el código
+       de zereo leía st.session_state.get("t4_p3_cams_excluir") → keys distintas →
+       set vacío → nunca se aplicaba el zereo.
+     - FIX: el código ahora lee primero "tae_p3_cams_excluir" (key real del widget)
+       con fallback a "t4_p3_cams_excluir" por compatibilidad legacy.
+     - También corregido el default del widget (misma lógica de fallback).
+     - Resultado: camión excluido → columna en 0 en pivot, Excel y Sheets.
 
 CAMBIOS v4.98.0:
   1. CAR Hoja1 — bloque de Ventas Especiales (filas azules) extendido de
@@ -207,8 +224,21 @@ CAMBIOS v4.70.0 — 9 CORRECCIONES OPERATIVAS:
 """
 # ── Picking Orchestrator v4.70.0 — Beccacece Hnos SA ─────────────────────────
 _CHANGELOG = """
+  ── v5.2.0 ──────────────────────────────────────────────────────────────
+  1. Alertas y diagnósticos (Planilla Carga): métricas operativas reemplazadas.
+     Ahora muestra: Repartos, Páginas PDF, SKUs Alerta, Sin Cancha, Sin Fecha, Huérfanos s/DDM.
+  2. Camiones T2 — preview PDF: iframe base64 reemplazado por pdf.js (funciona en Chrome).
+  3. Proyección Picking: eliminado Paso 1 de esta sección (ya está en Camiones T2).
+  4. Frases del día: lista completa con autores reales verificados (Deming, Ohno, Drucker, etc.).
+  5. Proyección Picking: eliminado botón Descargar Excel (.xlsx).
+  6. Tablero Ruteador Excel: agregada sección "Análisis Operativo" espejo del PDF
+     (Prom. Bultos UP/cam, Mayor/Menor carga, HL Total, Drop Size, Alertas exceso).
+     Headers con acento gold (#C9A84C) para consistencia visual con PDF.
+  7. Validación + Log: sección expandida con resumen por sección, alertas destacadas,
+     métricas clave visual (PDV, HL, kg, Drop Size, paletas), AE puras por cancha,
+     log parseado por tipo (errores/warnings/info) con contador.
+  ── v5.1.1 ──────────────────────────────────────────────────────────────
 
-  1. FIX CRÍTICO UP — fuente única CAR (no más ANR para Bultos UP):
      - Los Bultos UP, HL y Peso se calculan EXCLUSIVAMENTE desde el CAR.
      - Lógica por fila: bultos_eq = Bultos + Unids / un_x_bulto (DDM col N).
        Si un_x_bulto = 0 o Unids = 0 → bultos_eq = Bultos.
@@ -463,7 +493,38 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.97.0"
+APP_VERSION = "5.2.1"
+# ── CHANGELOG v4.99.0 ─────────────────────────────────────────────────────
+# 1. Secciones reordenadas: Camiones T2 → antes de Proyección Picking.
+#    Boletas → antes de Validación + Log. Paso 1 en T2.
+# 2. PDF Pickeros + Controladores: botón unificado (genera ambos de una vez).
+# 3. Paso 3 + Paso 4: 3 botones de Sheets unificados en uno.
+# 4. Frase del día: autor separado y visible en la UI.
+# 5. fx Picking: fecha = siempre today() (no D+1 del CAR).
+# 6. Tablero mensual: auto-guardado de KPIs del día en Sheets dedicado
+#    al generar Excel Tablero. Histórico lee del Sheets + acepta
+#    tablero.xlsx mensual (formato DPO) para semilla histórica.
+# 7. Licencias conductores: persistencia real vía Sheets dedicado.
+# 8. Distancias clientes: nueva subsección en Tablero Ruteador.
+# 9. Performance picking: debounce aplicado, pdata cacheado.
+# 10. Sección Validación + Log: botón "🔒 Cerrar Día" genera PDF final
+#     completo con log, alertas, vencimientos, resumen de operación.
+# ─────────────────────────────────────────────────────────────────────────
+
+# ── SHEETS DEDICADO — PERSISTENCIA (v4.99) ──────────────────────────────
+# Crear un Google Sheets nuevo, compartirlo con la service account y agregar
+# en Streamlit Secrets: SHEETS_PERSISTENCIA_ID = "ID_DEL_SHEETS"
+# Hojas necesarias (se crean automáticamente si no existen):
+#   "Licencias"        → tabla de vencimientos de conductores
+#   "Tablero Diario"   → una fila por día con todos los KPIs del tablero
+try:
+    _SHEETS_ID_PERSISTENCIA = st.secrets.get("SHEETS_PERSISTENCIA_ID", "")
+except Exception:
+    _SHEETS_ID_PERSISTENCIA = ""
+
+# ── SHEETS DISTANCIAS CLIENTES (v4.99) ────────────────────────────────────
+# Sheets con distancias por cliente (ID extraído de la URL compartida)
+_SHEETS_ID_DISTANCIAS = "1swax74XwPhKPsSLvAmeR4uQFs4r1Fuh70ByYgh7hRzU"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -611,36 +672,44 @@ LEMAS = [
 # ─── ENSEÑANZA / FRASE DEL DÍA ─────────────────────────────────────────────
 # Una por día, rotación automática por número de día del año. Sin repetición.
 ENSEÑANZAS_DIA = [
-    "📖 «El éxito no es definitivo, el fracaso no es fatal: lo que cuenta es el coraje de continuar.» — Churchill",
-    "🧠 «La calidad nunca es un accidente; siempre es el resultado de un esfuerzo inteligente.» — John Ruskin",
-    "⚙️ «Si no puedes medir algo, no puedes mejorarlo.» — Peter Drucker | Control: medí tus bultos por hora hoy.",
-    "🔁 «Pequeñas mejoras diarias llevan a resultados sorprendentes.» — Kaizen | Lean: 1% mejor cada turno.",
-    "👁️ «El que mira hacia afuera sueña; el que mira hacia adentro despierta.» — Jung | Autocontrol: revisá tu postura al cargar.",
-    "🎯 «Los planes son inútiles, pero la planificación es indispensable.» — Eisenhower | Revisá el orden de canchas antes de arrancar.",
-    "🏆 «La excelencia no es un acto, es un hábito.» — Aristóteles | Hoy: un control extra por pallet.",
-    "🔍 «En Dios confiamos. Todos los demás traigan datos.» — W. Edwards Deming | DPO: lo que no se registra no se mejora.",
-    "🛡️ «La seguridad no es una prioridad — es un valor.» — DuPont | EPI completo antes de arrancar.",
-    "📦 «El stock es como agua: fluye si el canal está limpio.» — FIFO/FEFO: mover lo más viejo primero.",
-    "🤝 «El trabajo en equipo divide el esfuerzo y multiplica el éxito.» — Equidistribución de carga entre canchas.",
-    "📋 «Lo que se escribe se recuerda; lo que se registra se mejora.» — OWD: cada observación cuenta.",
-    "⏱️ «El tiempo de ciclo solo mejora si lo conocés.» — Midí tu tiempo de picking hoy y compará.",
-    "💡 «Un problema bien definido está medio resuelto.» — 5 Porqués: antes de culpar, entender.",
-    "🔧 «El mantenimiento preventivo es mil veces más barato que el correctivo.» — Checklist AE antes de operar.",
-    "🌱 «La cultura se come a la estrategia en el desayuno.» — Peter Drucker | Cada hábito correcto construye cultura.",
-    "📊 «Sin estándares no hay mejora.» — Taiichi Ohno | SOP: la planilla de carga es el estándar. Seguirla es respetarlo.",
-    "🧩 «El todo es más que la suma de sus partes.» — Aristóteles | Picking, AE y control: los tres juntos hacen la diferencia.",
-    "🚀 «La velocidad sin dirección solo genera accidentes.» — Rápido con precisión, no rápido con errores.",
-    "🔄 «La mejora continua es mejor que la perfección tardía.» — Mark Twain | Un ajuste pequeño hoy vale más que un gran plan mañana.",
-    "🧘 «La pausa de un segundo de control evita una hora de corrección.» — Verificá el SKU antes de palletizar.",
-    "📍 «Si no sabés dónde estás parado, no podés saber hacia dónde vas.» — El DQI empieza con inventario real.",
-    "🎓 «El experto fue alguna vez un principiante que no se rindió.» — Capacitá a alguien hoy, aunque sea una cosa.",
-    "⚡ «La eficiencia es hacer bien las cosas; la eficacia es hacer las cosas correctas.» — Drucker",
-    "📉 «El desperdicio más peligroso es el que no vemos.» — Lean | ¿Cuántos movimientos innecesarios hacés por turno?",
-    "🏗️ «La estructura que soporta el negocio se construye bulto a bulto, noche a noche.» — Beccacece Hnos",
-    "🧭 «La brújula del buen operador siempre apunta al cliente.» — Cada error de picking es un cliente insatisfecho.",
-    "🔗 «La cadena es tan fuerte como su eslabón más débil.» — El eslabón esta noche sos vos. Sé el más fuerte.",
-    "📌 «Organización es el arte de hacer que las cosas sucedan.» — Antes de empezar: cancha ordenada, planilla en mano.",
-    "🌟 «El reconocimiento comienza por el autocontrol.» — Los mejores operadores se evalúan solos primero.",
+    # v5.2.0 — Lista curada de frases reales con autores verificados.
+    # Formato: '{emoji} «{frase}» — {Nombre Apellido}'
+    # La función get_ensenanza_dia_full() parsea el '— Autor' automáticamente.
+    "🔍 «En Dios confiamos. Todos los demás traigan datos.» — W. Edwards Deming",
+    "📊 «Si no podés medirlo, no podés mejorarlo.» — W. Edwards Deming",
+    "⚙️ «La calidad es responsabilidad de todos; la culpa no es de nadie.» — W. Edwards Deming",
+    "🔄 «Sin estándares no hay mejora posible.» — Taiichi Ohno",
+    "🏭 «Donde no hay estándar, no puede haber kaizen.» — Taiichi Ohno",
+    "📉 «El desperdicio más peligroso es el sobrestock: oculta los problemas reales.» — Taiichi Ohno",
+    "🎯 «La eficiencia es hacer bien las cosas; la eficacia es hacer las cosas correctas.» — Peter F. Drucker",
+    "🌱 «La cultura se come a la estrategia en el desayuno.» — Peter F. Drucker",
+    "💡 «Lo que se mide, se gestiona.» — Peter F. Drucker",
+    "🔧 «La calidad nunca es un accidente; siempre es el resultado de un esfuerzo inteligente.» — John Ruskin",
+    "🏆 «La excelencia no es un acto sino un hábito.» — Aristóteles",
+    "🎯 «Los planes son inútiles, pero la planificación es indispensable.» — Dwight D. Eisenhower",
+    "⏱️ «El tiempo es el único recurso que no se puede recuperar.» — Peter F. Drucker",
+    "🔗 «Una cadena es tan fuerte como su eslabón más débil.» — Thomas Reid",
+    "🚀 «Empezar es la clave del éxito; ejecutar es la clave de la continuidad.» — Philip B. Crosby",
+    "🛡️ «La seguridad no es el resultado del azar: es el resultado de la atención.» — Phil Crosby",
+    "📦 «El inventario es el resultado de un proceso deficiente.» — Taiichi Ohno",
+    "🔁 «Pequeñas mejoras aplicadas consistentemente llevan a resultados extraordinarios.» — Masaaki Imai",
+    "🧩 «Kaizen es la filosofía de mejora continua que no tiene fin.» — Masaaki Imai",
+    "🔍 «Primero comprendé el problema; recién entonces buscá la solución.» — Kaoru Ishikawa",
+    "📋 «La calidad comienza con educación y termina con educación.» — Kaoru Ishikawa",
+    "🌟 «Noventa y cinco por ciento de los problemas de calidad pueden resolverse con las siete herramientas básicas.» — Kaoru Ishikawa",
+    "⚡ «Hacé lo correcto en el momento correcto, en el lugar correcto, con la cantidad correcta.» — Kiichiro Toyoda",
+    "🤝 «Ningún problema es demasiado pequeño para resolverlo; ningún desperdicio es demasiado pequeño para eliminarlo.» — Shigeo Shingo",
+    "🏗️ «Donde no hay estandarización, no puede haber mejora.» — Shigeo Shingo",
+    "📌 «El mayor defecto es no ver los defectos.» — Confucio",
+    "🧠 «El éxito no es definitivo, el fracaso no es fatal: lo que cuenta es el coraje de continuar.» — Winston Churchill",
+    "🌊 «Cuando el viento de cambio sopla, algunos construyen muros; otros construyen molinos de viento.» — Proverbio chino",
+    "⚖️ «La logística es la diferencia entre hablar de guerra y librarla.» — Omar N. Bradley",
+    "🎓 «Invertir en conocimiento siempre paga los mejores intereses.» — Benjamin Franklin",
+    "🔎 «Un problema bien formulado ya está medio resuelto.» — Charles Kettering",
+    "📐 «Medir es conocer.» — Lord Kelvin",
+    "🚛 «La cadena de suministro es el esqueleto de la economía global.» — Martin Christopher",
+    "🔩 «Prevenir es más barato que corregir — siempre.» — Philip B. Crosby",
+    "📊 «Los números no mienten; la falta de números sí lo hace.» — W. Edwards Deming",
 ]
 
 def get_ensenanza_dia() -> str:
@@ -649,7 +718,300 @@ def get_ensenanza_dia() -> str:
     day_of_year = _dte.date.today().timetuple().tm_yday
     return ENSEÑANZAS_DIA[day_of_year % len(ENSEÑANZAS_DIA)]
 
-# ─── UTILIDADES ─────────────────────────────────────────────────────────────
+def get_ensenanza_dia_full() -> dict:
+    """
+    Retorna dict con frase, autor y tip del día.
+    Parsea el formato: '{emoji} «{frase}» — {autor} | {tip opcional}'
+    """
+    import re, datetime as _dte
+    day_of_year = _dte.date.today().timetuple().tm_yday
+    raw = ENSEÑANZAS_DIA[day_of_year % len(ENSEÑANZAS_DIA)]
+    # Intentar parsear: emoji «frase» — autor | tip
+    m = re.match(
+        r'^([\S]+)\s+«(.+?)»(?:\s+[—–-]+\s*([^|]+?))?(?:\s+\|\s+(.+))?$',
+        raw.strip()
+    )
+    if m:
+        emoji, frase, autor, tip = m.groups()
+        return {
+            "emoji": emoji or "💡",
+            "frase": frase.strip() if frase else raw,
+            "autor": (autor or "").strip(),
+            "tip":   (tip or "").strip(),
+            "texto_completo": raw,
+        }
+    return {"emoji": "💡", "frase": raw, "autor": "", "tip": "", "texto_completo": raw}
+
+# ─── PERSISTENCIA SHEETS (v4.99) ────────────────────────────────────────────
+
+def _persistencia_get_client():
+    """Retorna cliente gspread usando service account de secrets. None si no disponible."""
+    if not _SHEETS_ID_PERSISTENCIA:
+        return None
+    try:
+        import gspread as _gs
+        from google.oauth2.service_account import Credentials as _C
+        _creds = _C.from_service_account_info(
+            dict(st.secrets["gcp_service_account"]),
+            scopes=["https://www.googleapis.com/auth/spreadsheets"],
+        )
+        return _gs.authorize(_creds)
+    except Exception:
+        return None
+
+def _persistencia_get_or_create_sheet(client, title: str):
+    """Obtiene o crea una hoja dentro del Sheets de persistencia."""
+    try:
+        ss = client.open_by_key(_SHEETS_ID_PERSISTENCIA)
+        for ws in ss.worksheets():
+            if ws.title.strip().lower() == title.strip().lower():
+                return ws
+        return ss.add_worksheet(title=title, rows=500, cols=30)
+    except Exception:
+        return None
+
+# ── PERSISTENCIA: Configuración de camiones (patentes + capacidades) ─────────
+
+def _guardar_cam_config_sheets(cam_data: list) -> bool:
+    """Guarda tabla de patentes + capacidades en hoja 'CamionesConfig' del Sheets persistencia."""
+    client = _persistencia_get_client()
+    if not client:
+        return False
+    try:
+        ws = _persistencia_get_or_create_sheet(client, "CamionesConfig")
+        if not ws:
+            return False
+        if not cam_data:
+            return True
+        cols = list(cam_data[0].keys())
+        matrix = [cols] + [[str(row.get(c, "")) for c in cols] for row in cam_data]
+        ws.clear()
+        ws.update("A1", matrix, value_input_option="RAW")
+        return True
+    except Exception as _e_cam_save:
+        log_event("error", f"_guardar_cam_config_sheets: {_e_cam_save}")
+        return False
+
+def _cargar_cam_config_sheets() -> list | None:
+    """Carga configuración de camiones desde Sheets. None si no disponible."""
+    client = _persistencia_get_client()
+    if not client:
+        return None
+    try:
+        ws = _persistencia_get_or_create_sheet(client, "CamionesConfig")
+        if not ws:
+            return None
+        data = ws.get_all_records()
+        return data if data else None
+    except Exception as _e_cam_load:
+        log_event("error", f"_cargar_cam_config_sheets: {_e_cam_load}")
+        return None
+
+def _guardar_licencias_sheets(licencias_data: list) -> bool:
+    client = _persistencia_get_client()
+    if not client:
+        return False
+    try:
+        ws = _persistencia_get_or_create_sheet(client, "Licencias")
+        if not ws:
+            return False
+        if not licencias_data:
+            return True
+        cols = list(licencias_data[0].keys())
+        matrix = [cols] + [[str(row.get(c, "")) for c in cols] for row in licencias_data]
+        ws.clear()
+        # v5.1.1: usar API posicional (compatible con gspread 5 y 6) con RAW
+        ws.update("A1", matrix, value_input_option="RAW")
+        return True
+    except Exception as _e_lic_save:
+        log_event("error", f"_guardar_licencias_sheets: {_e_lic_save}")
+        return False
+
+def _cargar_licencias_sheets() -> list | None:
+    """Carga tabla de licencias desde Sheets. None si no disponible."""
+    client = _persistencia_get_client()
+    if not client:
+        return None
+    try:
+        ws = _persistencia_get_or_create_sheet(client, "Licencias")
+        if not ws:
+            return None
+        data = ws.get_all_records()
+        return data if data else None
+    except Exception as _e_lic_load:
+        log_event("error", f"_cargar_licencias_sheets: {_e_lic_load}")
+        return None
+
+def _guardar_kpis_diarios_sheets(fecha, kpis_dict: dict) -> bool:
+    """
+    Agrega (append) una fila de KPIs del día a la hoja 'Tablero Diario' del Sheets.
+    Si ya existe la fecha, la actualiza en lugar de duplicar.
+    """
+    client = _persistencia_get_client()
+    if not client:
+        return False
+    try:
+        ws = _persistencia_get_or_create_sheet(client, "Tablero Diario")
+        if not ws:
+            return False
+        fecha_str = str(fecha)
+        all_vals = ws.get_all_values()
+        if not all_vals:
+            # Crear encabezado
+            headers = ["Fecha"] + list(kpis_dict.keys())
+            ws.append_row(headers)
+        else:
+            headers = all_vals[0]
+            # Chequear si la fecha ya existe
+            for idx, row in enumerate(all_vals[1:], start=2):
+                if row and row[0] == fecha_str:
+                    # Actualizar fila existente
+                    new_row = [fecha_str] + [str(kpis_dict.get(h, "")) for h in headers[1:]]
+                    ws.update(range_name=f"A{idx}", values=[new_row])
+                    return True
+        # Append nueva fila
+        ws.append_row([fecha_str] + [str(kpis_dict.get(h, "")) for h in (
+            ws.row_values(1)[1:] if ws.row_count > 0 and ws.row_values(1) else list(kpis_dict.keys())
+        )])
+        return True
+    except Exception:
+        return False
+
+def _cargar_kpis_diarios_sheets() -> list:
+    """
+    Carga todos los registros diarios de KPIs del Sheets.
+    Retorna lista de dicts compatible con hist_data.
+    """
+    client = _persistencia_get_client()
+    if not client:
+        return []
+    try:
+        ws = _persistencia_get_or_create_sheet(client, "Tablero Diario")
+        if not ws:
+            return []
+        records = ws.get_all_records()
+        result = []
+        for r in records:
+            try:
+                fecha = pd.to_datetime(str(r.get("Fecha", "")), dayfirst=True, errors="coerce")
+                if pd.isna(fecha):
+                    continue
+                result.append({
+                    "fecha":          fecha,
+                    "camiones":       int(float(r.get("Camiones reparto", 0) or 0)),
+                    "pedidos":        int(float(r.get("Total PDV", 0) or 0)),
+                    "bultos_up":      float(r.get("Bultos UP", 0) or 0),
+                    "paletas":        float(r.get("Paletas", 0) or 0),
+                    "hl":             float(r.get("HL", 0) or 0),
+                    "peso_kg":        float(r.get("Peso(kg)", 0) or 0),
+                    "drop_size":      float(r.get("Drop Size", 0) or 0),
+                    "eficiencia":     float(r.get("Eficiencia", 0) or 0),
+                    "util_vehiculos": float(r.get("Util. Vehículos", 0) or 0),
+                    "fuera_zona_pct": float(r.get("Fuera de zona (%)", 0) or 0),
+                    "ocup_bodega":    float(r.get("Ocup. bodega", 0) or 0),
+                    "prod_ruteo":     float(r.get("Productividad ruteo", 0) or 0),
+                    "causa_demora":   str(r.get("Causa demora", "")),
+                })
+            except Exception:
+                pass
+        result.sort(key=lambda x: x["fecha"])
+        return result
+    except Exception:
+        return []
+
+def _parse_tablero_mensual_dpo(xlsx_bytes: bytes) -> list:
+    """
+    Parsea el Excel 'Tablero Ruteador Mensual' en formato DPO.
+    Layout: filas = KPIs (col A), col B = Target, col C = Avance,
+            cols D... = valores diarios con seriales Excel como cabecera.
+    Retorna lista de dicts compatible con hist_data.
+    """
+    try:
+        import openpyxl as _opx
+        from datetime import datetime as _dtt, timedelta as _tdt
+        wb = _opx.load_workbook(io.BytesIO(xlsx_bytes), read_only=True, data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        wb.close()
+
+        # Encontrar fila cabecera (tiene seriales de fecha numéricos)
+        hdr_row_idx = None
+        for i, row in enumerate(rows):
+            date_count = sum(1 for v in row[3:] if isinstance(v, (int, float)) and 40000 < v < 55000)
+            if date_count >= 5:
+                hdr_row_idx = i
+                break
+        if hdr_row_idx is None:
+            return []
+
+        hdr = rows[hdr_row_idx]
+        # Convertir seriales de fecha a datetime
+        date_cols = {}  # col_index → date
+        for ci, val in enumerate(hdr):
+            if isinstance(val, (int, float)) and 40000 < val < 55000:
+                try:
+                    dt = _dtt(1899, 12, 30) + _tdt(int(val))
+                    date_cols[ci] = dt.date()
+                except Exception:
+                    pass
+
+        if not date_cols:
+            return []
+
+        # Construir dict KPI→{date→value}
+        kpi_data = {}
+        for row in rows[hdr_row_idx + 1:]:
+            if not row or row[0] is None:
+                continue
+            kpi_name = str(row[0]).strip()
+            if not kpi_name or kpi_name.startswith("MAIN"):
+                continue
+            for ci, date in date_cols.items():
+                if ci < len(row):
+                    val = row[ci]
+                    if val is not None and val != "" and val is not False:
+                        kpi_data.setdefault(kpi_name, {})[date] = val
+
+        # Construir hist_data por fecha
+        all_dates = sorted(set(d for v in kpi_data.values() for d in v.keys()))
+        result = []
+        for date in all_dates:
+            def _gv(kpi, default=0):
+                v = kpi_data.get(kpi, {}).get(date, default)
+                try:
+                    fv = float(v)
+                    return fv if fv == fv else default  # NaN check
+                except (TypeError, ValueError):
+                    return default
+
+            # Detectar si el día tiene datos (al menos una métrica no nula)
+            if all(_gv(k) == 0 for k in ["Bultos up ruteados", "Total camiones necesarios",
+                                           "Camiones en reparto", "Pedidos ruteados"]):
+                continue
+
+            n_cams = int(_gv("Camiones en reparto") or _gv("Total camiones necesarios"))
+            result.append({
+                "fecha":          pd.Timestamp(date),
+                "camiones":       n_cams,
+                "pedidos":        int(_gv("Pedidos ruteados")),
+                "bultos_up":      _gv("Bultos up ruteados"),
+                "paletas":        _gv("Promedio de paletas") * n_cams if n_cams else 0,
+                "hl":             _gv("HL Ruteados"),
+                "peso_kg":        0.0,
+                "drop_size":      _gv("Drop Size"),
+                "eficiencia":     _gv("Eficiencia"),
+                "util_vehiculos": _gv("Utilizacion de vehiculos"),
+                "fuera_zona_pct": _gv("Fuera de zona"),
+                "ocup_bodega":    _gv("Ocupacion bodega bultos UP"),
+                "prod_ruteo":     _gv("Productividad de Ruteo (new PI)"),
+                "causa_demora":   "",
+            })
+        result.sort(key=lambda x: x["fecha"])
+        return result
+    except Exception as _pe:
+        return []
+
+
 
 def _norm(s):
     """Normaliza string: sin tildes, sin espacios extra, lowercase."""
@@ -2011,13 +2373,14 @@ _SECCIONES = [
     ("📁", "Archivos"),
     ("📦", "Planilla Carga"),
     ("📋", "Resumen Camiones"),
-    ("📊", "Proyección Picking"),
     ("🚛", "Camiones T2"),
+    ("📊", "Proyección Picking"),
+    ("🏗️", "Autoelevadores"),       # ← nuevo (v5.1.1) — Paso 3 + Paso 4
     ("🏷️", "Clasificación"),
     ("🏆", "Top SKUs"),
     ("🚚", "Tablero Ruteador"),
-    ("🖨️", "Boletas"),
     ("💰", "Cierre"),
+    ("🖨️", "Boletas"),
     ("✅", "Validación + Log"),
 ]
 
@@ -2486,54 +2849,37 @@ def render_tab_planilla():
         st.info("⬅️ Subí **CAR.xlsx** y **Frescura 3.0.xlsx** en la pestaña **📁 Archivos** para continuar.")
         return
 
-    if st.button("🚀 Generar Planilla de Carga", type="primary", key="t1_gen"):
+    if st.session_state.get("dry_run"):
         try:
-            with st.spinner("Cargando Frescura..."):
+            with st.spinner("DRY-RUN: cargando archivos…"):
+                api, ddm, fr, fr_diag = load_frescura(fr_file)
+                car_df, blue_audit = load_car(car_file, ddm=ddm)
+            st.success(f"✓ DRY-RUN OK — {len(car_df)} filas listas. PDF no generado.")
+            with st.expander("Preview CAR (primeras 20 filas)"):
+                st.dataframe(car_df.head(20), width="stretch")
+        except Exception as e:
+            st.error(f"❌ Error DRY-RUN: {e}")
+        return
+
+    # ── Generación automática (hash-based, igual que Resumen Camiones) ─────────
+    _pc_hash = hashlib.md5(car_file.getvalue() + fr_file.getvalue()).hexdigest()
+    _pc_cache = f"planilla_pdf_{_pc_hash}"
+
+    if _pc_cache not in st.session_state:
+        try:
+            with st.spinner("Cargando Frescura…"):
                 api, ddm, fr, fr_diag = load_frescura(fr_file)
             log_event("info", f"Frescura cargada: API={len(api)} | DDM={len(ddm)} | FR={len(fr)}")
 
-            with st.spinner("Cargando CAR..."):
+            with st.spinner("Cargando CAR…"):
                 car_df, blue_audit = load_car(car_file, ddm=ddm)
             log_event("info", f"CAR cargado: {len(car_df)} filas | bloque azul={len(blue_audit)}")
 
-            if st.session_state.get("dry_run"):
-                st.success(f"✓ DRY-RUN OK — {len(car_df)} filas listas. PDF no generado.")
-                with st.expander("Preview CAR (primeras 20 filas)"):
-                    st.dataframe(car_df.head(20), width="stretch")
-                return
-
-            with st.spinner("Generando PDF (puede tardar)..."):
+            with st.spinner("Generando PDF Planilla de Carga…"):
                 pdf_bytes, stats = generate_pdf(car_df, api, ddm, fr)
 
-            log_event("info", f"Planilla generada: {stats['total_pages']} páginas, "
-                              f"{len(stats['repartos'])} repartos")
-
-            st.success(
-                f"✓ Planilla lista — {stats['total_pages']} páginas | "
-                f"{len(stats['repartos'])} repartos"
-            )
-
-            st.download_button(
-                "⬇ Descargar Planilla de Carga (PDF)",
-                data=pdf_bytes,
-                file_name=_stamp("Planilla_Carga", "pdf"),
-                mime="application/pdf",
-                type="primary",
-                width="stretch",
-            )
-
-            with st.expander(f"📊 Alertas y diagnósticos"):
-                a, b, c, d = st.columns(4)
-                a.metric("🔴 RED", len(stats["red"]))
-                b.metric("🟡 YELLOW", len(stats["yellow"]))
-                c.metric("📦 c/Pallet", len(stats["pallet_applied"]))
-                d.metric("⚠ Sin BXP", len(stats["miss_bxp"]))
-                if stats["orphans_no_ddm"]:
-                    st.warning("Huérfanos sin DDM:")
-                    for o in stats["orphans_no_ddm"]:
-                        st.write(f"- {o}")
-
-            # Stash para snapshot (Sprint 1: solo en memoria)
+            log_event("info", f"Planilla generada: {stats['total_pages']} páginas, {len(stats['repartos'])} repartos")
+            st.session_state[_pc_cache] = (pdf_bytes, stats)
             st.session_state["last_planilla_pdf"] = pdf_bytes
 
         except Exception as e:
@@ -2542,6 +2888,55 @@ def render_tab_planilla():
             with st.expander("Stack trace"):
                 import traceback
                 st.code(traceback.format_exc())
+            return
+
+    pdf_bytes, stats = st.session_state[_pc_cache]
+
+    st.success(
+        f"✓ Planilla lista — {stats['total_pages']} páginas | "
+        f"{len(stats['repartos'])} repartos"
+    )
+
+    st.download_button(
+        "⬇ Descargar Planilla de Carga (PDF)",
+        data=pdf_bytes,
+        file_name=_stamp("Planilla_Carga", "pdf"),
+        mime="application/pdf",
+        type="primary",
+        width="stretch",
+    )
+
+    with st.expander("📊 Diagnóstico operativo de la planilla"):
+        _da, _db, _dc = st.columns(3)
+        _dd, _de, _df = st.columns(3)
+        _n_alertas = len(stats["red"]) + len(stats["yellow"])
+        _da.metric("🚛 Repartos", len(stats["repartos"]))
+        _db.metric("📄 Páginas PDF", stats["total_pages"])
+        _dc.metric(
+            "🚦 SKUs con Alerta",
+            _n_alertas,
+            delta=f"🔴 {len(stats['red'])}  🟡 {len(stats['yellow'])}" if _n_alertas > 0 else "✅ sin alertas",
+            delta_color="inverse" if _n_alertas > 0 else "off",
+        )
+        _dd.metric(
+            "🏗️ Sin Cancha DDM",
+            len(stats["sin_cancha_skus"]),
+            delta_color="inverse" if stats["sin_cancha_skus"] else "off",
+        )
+        _de.metric(
+            "📅 Sin Fecha DDM",
+            len(stats["no_fecha"]),
+            delta_color="inverse" if stats["no_fecha"] else "off",
+        )
+        _df.metric(
+            "🧩 Huérfanos s/DDM",
+            len(stats["orphans_no_ddm"]),
+            delta_color="inverse" if stats["orphans_no_ddm"] else "off",
+        )
+        if stats["orphans_no_ddm"]:
+            st.warning("Huérfanos sin DDM:")
+            for o in stats["orphans_no_ddm"]:
+                st.write(f"- {o}")
 
 
 # ── TAB 2 — Resumen por Camión (REUSO v3.9) ────────────────────────────────
@@ -2729,15 +3124,64 @@ def render_tab_t2():
 
     # título ya renderizado por main()
     st.caption(
-        "v4.18.1 — Detecta automáticamente los camiones con reparto en el "
+        "v5.1.1 — Detecta automáticamente los camiones con reparto en el "
         "**Sheet T2 Status Carga** (F3 > 0) y genera un PDF combinado "
         "(1 hoja por camión, tamaño Carta) listo para imprimir."
     )
 
-    with st.expander("ℹ️ Cómo funciona", expanded=False):
+    # ── PASO 1 — Enviar proyección a Google Sheets ────────────────────────────
+    # (movido desde Proyección Picking — debe ejecutarse ANTES de generar PDF T2)
+    _t3_car_use = st.session_state.get("t1_car") or st.session_state.get("t4_car")
+    _t3_fr_use  = st.session_state.get("t1_fr")
+
+    with st.container(border=True):
+        _p1_c1, _p1_c2 = st.columns([4, 1])
+        with _p1_c1:
+            st.markdown("#### 📤 Paso 1 — Enviar proyección a Google Sheets")
+            st.caption(
+                "**Hacé esto primero**, antes de generar el PDF. "
+                "Escribe la distribución original del CAR en la *Matriz Pall* del Sheets maestro "
+                "(base para el seguimiento diario de productividad y el histórico de pallets por cancha)."
+            )
+        with _p1_c2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            _t3_paso1_btn = st.button(
+                "📤 Enviar a Sheets",
+                use_container_width=True,
+                type="primary",
+                key="t3_paso1_sheets_btn",
+                disabled=not (_t3_car_use and _t3_fr_use),
+            )
+        if not (_t3_car_use and _t3_fr_use):
+            st.caption("⬅️ Cargá CAR.xlsx y Frescura 3.0 en **📁 Archivos** para habilitar este paso.")
+
+    if _t3_paso1_btn and _t3_car_use and _t3_fr_use:
+        with st.spinner("Calculando proyección y enviando a Matriz Pall…"):
+            try:
+                _pdata_t3 = _t4_load_car_proyeccion(
+                    car_bytes=_t3_car_use.getvalue(),
+                    fr_bytes=_t3_fr_use.getvalue(),
+                )
+                _df_t3 = _pdata_t3["df"].copy()
+                _df_t3 = _df_t3[_df_t3["TOTAL_PICK"] > 0].reset_index(drop=True)
+                _creds_t3 = dict(st.secrets["gcp_service_account"])
+                _n_t3 = _push_matriz_pall_to_sheets(_df_t3, _pdata_t3, _creds_t3)
+                st.success(f"✅ {_n_t3} fila(s) enviadas a la Matriz Pall — {_pdata_t3['fecha']}")
+                log_event("info", f"T2 Paso1 Sheets: {_n_t3} filas ({_pdata_t3['fecha']})")
+            except KeyError:
+                st.error("❌ Falta `gcp_service_account` en `st.secrets`.")
+            except Exception as _ex_t3p1:
+                st.error(f"❌ Error: {_ex_t3p1}")
+                with st.expander("Stack trace"):
+                    import traceback
+                    st.code(traceback.format_exc())
+
+    st.divider()
+
+    with st.expander("ℹ️ Cómo funciona (Paso 2 — PDF T2)", expanded=False):
         st.markdown(
             """
-            1. Al apretar **Generar PDF**, Streamlit llama a un Apps Script
+            1. Al apretar **Generar PDF Camiones**, Streamlit llama a un Apps Script
                deployado dentro del propio Sheet T2 Status Carga.
             2. El Apps Script lee la celda **F3** de cada hoja numérica
                (101–129). Si F3 > 0, ese camión tiene reparto y se incluye.
@@ -2770,7 +3214,7 @@ def render_tab_t2():
     col_gen, col_clear = st.columns([3, 1])
     with col_gen:
         gen_clicked = st.button(
-            "🖨️  Generar PDF Camiones",
+            "🖨️  Paso 2 — Generar PDF Camiones T2",
             type="primary",
             width="stretch",
             key="t3_btn_generate",
@@ -2828,19 +3272,58 @@ def render_tab_t2():
             key="t3_pdf_dl",
         )
 
-        # Preview embebido — Ctrl+P imprime directo
+        # Preview con PDF.js — funciona en todos los navegadores modernos
         b64 = base64.b64encode(pdf_cached).decode("utf-8")
-        st.markdown(
-            f"""
-            <iframe
-                src="data:application/pdf;base64,{b64}"
-                width="100%"
-                height="900"
-                style="border: 1px solid #d0d0d0; border-radius: 8px; margin-top: 12px;">
-            </iframe>
-            """,
-            unsafe_allow_html=True,
-        )
+        import streamlit.components.v1 as _cmpt3
+        _pdfjs_html = f"""<!DOCTYPE html><html><head>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+  body{{margin:0;background:#1e1e2e;padding:8px;font-family:Arial,sans-serif;}}
+  #loading{{color:#aaa;font-size:13px;text-align:center;padding:30px;}}
+  #error{{color:#ff6b6b;font-size:13px;text-align:center;padding:20px;display:none;}}
+  canvas{{display:block;margin:8px auto;border-radius:4px;
+          box-shadow:0 2px 12px rgba(0,0,0,.6);max-width:100%;cursor:pointer;}}
+  #info{{color:#8888aa;font-size:11px;text-align:center;padding:4px 0 8px;}}
+</style></head><body>
+<div id="loading">🔄 Cargando previsualización T2…</div>
+<div id="error"></div>
+<div id="info"></div>
+<div id="container"></div>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc=
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+const b64Data="{b64}";
+const bin=atob(b64Data);const u8=new Uint8Array(bin.length);
+for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i);
+pdfjsLib.getDocument({{data:u8,verbosity:0}}).promise.then(function(pdf){{
+  document.getElementById('loading').style.display='none';
+  document.getElementById('info').textContent=
+    'PDF · '+pdf.numPages+' página'+(pdf.numPages>1?'s':'')+
+    ' · Ctrl+P para imprimir directo';
+  const cont=document.getElementById('container');
+  const scale=Math.min(1.4,window.innerWidth/620);
+  function renderPage(n){{
+    pdf.getPage(n).then(function(p){{
+      const vp=p.getViewport({{scale}});
+      const cv=document.createElement('canvas');
+      cv.width=vp.width;cv.height=vp.height;
+      cv.title='Página '+n+' de '+pdf.numPages;
+      cont.appendChild(cv);
+      p.render({{canvasContext:cv.getContext('2d'),viewport:vp}}).promise.then(()=>{{
+        if(n<pdf.numPages)renderPage(n+1);
+      }});
+    }});
+  }}
+  renderPage(1);
+}}).catch(function(e){{
+  document.getElementById('loading').style.display='none';
+  const el=document.getElementById('error');
+  el.style.display='block';
+  el.textContent='⚠ Error al renderizar PDF: '+e.message+
+    '. Descargá el archivo y abrilo en tu visor PDF.';
+}});
+</script></body></html>"""
+        _cmpt3.html(_pdfjs_html, height=900, scrolling=True)
 
 # ── TAB 4 — Proyección Picking ×4 — v4.6 ──────────────────────────────────
 #
@@ -4451,46 +4934,6 @@ def render_tab_proyeccion():
         _keep_mask  = ~df_display[_cam_col_t4].astype(int).isin(_cams_excluir_set)
         df_display  = df_display[_keep_mask].reset_index(drop=True)
 
-    # ── v4.55.2: Botón "Enviar a Sheets" PROMINENTE al inicio ─────────────────
-    # Se muestra antes de la tabla para recordar al usuario que debe enviarlo
-    # al principio, antes de reasignar o ajustar cargas, para que la Matriz Pall
-    # refleje el estado real del CAR sin modificaciones manuales.
-    with st.container(border=True):
-        _sheets_top_cols = st.columns([3, 1])
-        with _sheets_top_cols[0]:
-            st.markdown(
-                "#### 📤 Paso 1 — Enviar proyección a Google Sheets",
-            )
-            st.caption(
-                "**Hacé esto primero**, antes de reasignar cargas entre canchas. "
-                "El botón escribe la distribución original del CAR en la *Matriz Pall* del Sheets maestro, "
-                "que es la base para el seguimiento diario de productividad y el histórico de pallets por cancha. "
-                "Si enviás después de reasignar, los valores quedarán con los ajustes manuales y no con el dato fuente real.",
-            )
-        with _sheets_top_cols[1]:
-            if st.button(
-                "📤 Enviar a Sheets",
-                use_container_width=True,
-                type="primary",
-                key="t4_sheets_top_btn",
-                help="Inserta las filas de hoy en la hoja 'Matriz Pall' del Sheets maestro (dato fuente, sin reasignaciones)",
-            ):
-                with st.spinner("Enviando a Google Sheets…"):
-                    try:
-                        _creds_json_top = dict(st.secrets["gcp_service_account"])
-                        _n_rows_top = _push_matriz_pall_to_sheets(df_display, pdata, _creds_json_top)
-                        st.success(f"✅ {_n_rows_top} fila(s) enviadas a la Matriz Pall")
-                        log_event("info", f"Sheets Matriz Pall (top): {_n_rows_top} filas ({pdata['fecha']})")
-                    except KeyError:
-                        st.error(
-                            "❌ Falta  en . "
-                            "Agregá el JSON de la service account en .",
-                        )
-                    except Exception as _ex_top:
-                        st.error(f"❌ Error al escribir en Sheets: {_ex_top}")
-                        with st.expander("Stack trace"):
-                            import traceback
-                            st.code(traceback.format_exc())
 
     st.divider()
 
@@ -4975,9 +5418,38 @@ def render_tab_proyeccion():
     cp1, cp2 = st.columns([1, 1])
     # v4.71: layout vertical — pickeros arriba, controladores abajo
 
-    # ── v4.71: Enseñanza/frase del día ──────────────────────────────────────
+    # ── v5.1.1: Frase/enseñanza del día — renderizado HTML correcto ─────────
     _ensenanza = get_ensenanza_dia()
-    st.info(f"💡 **Enseñanza del día** — {_ensenanza}")
+    _ensenanza_full = get_ensenanza_dia_full()
+    _frase_txt = _ensenanza_full["frase"]
+    _frase_aut = _ensenanza_full["autor"]
+    _frase_tip = _ensenanza_full["tip"]
+    _frase_ico = _ensenanza_full["emoji"]
+
+    _aut_html = (
+        f"<div style='margin-top:4px;font-size:12px;color:#888;font-style:italic;'>"
+        f"— {_frase_aut}</div>"
+        if _frase_aut else ""
+    )
+    _tip_html = (
+        f"<div style='margin-top:6px;padding:4px 10px;background:#e8f0fe;"
+        f"border-left:3px solid #1F3864;border-radius:4px;"
+        f"font-size:11.5px;color:#1F3864;font-weight:600;'>"
+        f"🎯 {_frase_tip}</div>"
+        if _frase_tip else ""
+    )
+    _frase_html = (
+        f"<div style='padding:10px 14px;background:linear-gradient(90deg,#1F3864 0%,#2e5fa3 100%);"
+        f"border-radius:8px;color:white;margin-bottom:8px;'>"
+        f"<div style='font-size:13px;font-weight:700;opacity:0.85;margin-bottom:4px;'>"
+        f"💡 Aprendizaje del día</div>"
+        f"<div style='font-size:15px;font-weight:600;line-height:1.45;'>"
+        f"{_frase_ico} <em>«{_frase_txt}»</em></div>"
+        f"{_aut_html}"
+        f"</div>"
+        + (_tip_html if _tip_html else "")
+    )
+    st.markdown(_frase_html, unsafe_allow_html=True)
 
     # ── v4.84: fecha de picking = siempre hoy (el picking se hace hoy aunque
     #           la carga se entregue mañana). Se usa en todos los PDFs/XLSX
@@ -4986,15 +5458,29 @@ def render_tab_proyeccion():
     _fecha_picking_hoy = _dt_pick.date.today()
 
     # ─────────────────────────────────────────────────────────────────────────
-    # SECCIÓN A: PDF PICKEROS
+    # SECCIÓN A: PDF PICKEROS + CONTROLADORES — auto-generación (v5.1.1)
     # ─────────────────────────────────────────────────────────────────────────
     with st.container(border=True):
-        st.markdown("#### 📄 PDF Pickeros — Resumen por cancha (C1/C2/C3/C4/MKPL+Merch)")
-        if st.button("📄 Resumen Pickeros — C1/C2/C3/C4/MKPL+Merch (sin paletas completas)", type="primary",
-                     use_container_width=True, key="t4_pdf_btn"):
-            with st.spinner("Generando PDF…"):
+        st.markdown("#### 📄 PDFs de Picking")
+        st.caption("Se generan automáticamente al cargar los archivos. Usá el botón para regenerar si cambiaste parámetros.")
+
+        # Auto-generación basada en hash de inputs (CAR + Frescura + fecha)
+        import hashlib as _hs
+        _pdf_hash_src = (
+            car_use.getvalue()
+            + fr_use.getvalue()
+            + str(_fecha_picking_hoy).encode()
+            + str(sorted(vel_custom.items())).encode()
+            + str(sorted(pers_custom.items())).encode()
+            + str(hora_inicio_global).encode()
+        )
+        _auto_pdf_hash = _hs.md5(_pdf_hash_src).hexdigest()
+        _auto_pdf_key  = f"t4_auto_pdf_{_auto_pdf_hash}"
+
+        if _auto_pdf_key not in st.session_state:
+            with st.spinner("Generando PDFs de picking automáticamente…"):
                 try:
-                    pdf_bytes = _t4_generar_pdf_x4(
+                    _pdf_auto = _t4_generar_pdf_x4(
                         df=df_display,
                         totales_bult=totales_bult,
                         totales_pall=totales_pall_c,
@@ -5007,35 +5493,78 @@ def render_tab_proyeccion():
                         mix_picking=pdata["mix_picking"],
                         fin_calc=fin_calc_dict,
                         asign_detail=totales_calc.get("asign_detail", {}),
-                        ctrl_params=None,   # v4.70: hoja controlador se genera por separado
+                        ctrl_params=None,
                         ensenanza=_ensenanza,
                     )
-                    fname = f"proyeccion_picking_{_fecha_picking_hoy.strftime('%d-%m-%Y')}.pdf"
-                    st.download_button(
-                        "⬇ Descargar PDF Pickeros (C1/C2/C3/C4/MKPL+Merch — LANDSCAPE)",
-                        data=pdf_bytes, file_name=fname,
-                        mime="application/pdf", use_container_width=True,
-                        key="t4_pdf_dl",
+                    _fname_auto = f"proyeccion_picking_{_fecha_picking_hoy.strftime('%d-%m-%Y')}.pdf"
+                    st.session_state["t4_pdf_pickeros_bytes"] = _pdf_auto
+                    st.session_state["t4_pdf_pickeros_fname"] = _fname_auto
+                    log_event("info", f"PDF Pickeros auto-generado: {_fname_auto}")
+                except Exception as _ep_auto:
+                    log_event("error", f"Auto-gen PDF Pickeros: {_ep_auto}")
+
+                try:
+                    _pdf_ctrl_auto = _t4_generar_pdf_controlador(
+                        fecha=_fecha_picking_hoy,
+                        fin_por_cancha=fin_por_cancha,
+                        fin_global_dt=fin_global_dt,
+                        totales_bult=totales_bult,
+                        totales_hl=totales_hl,
+                        totales_kg=totales_kg,
+                        totales_pall_c=totales_pall_c,
+                        mix_picking=pdata["mix_picking"],
+                        n_camiones=len(df_display[df_display["TOTAL_PICK"] > 0]),
+                        tot_pick=pdata["tot_pick"],
+                        top_skus_lines=_top_skus_lines,
+                        alertas=_alertas,
+                        ensenanza=_ensenanza,
                     )
-                    st.success(f"✓ PDF generado: {fname}")
-                    log_event("info", f"PDF Proyección v4.41 generado: {fname}")
-                except Exception as e:
-                    st.error(f"❌ Error generando PDF: {e}")
-                    with st.expander("Stack trace"):
-                        import traceback
-                        st.code(traceback.format_exc())
+                    _fname_ctrl_auto = f"{_fecha_picking_hoy.strftime('%d-%m-%Y')}_resumen_controlador_picking.pdf"
+                    st.session_state["t4_pdf_ctrl_bytes"] = _pdf_ctrl_auto
+                    st.session_state["t4_pdf_ctrl_fname"] = _fname_ctrl_auto
+                    log_event("info", f"PDF Controlador auto-generado: {_fname_ctrl_auto}")
+                except Exception as _ec_auto:
+                    log_event("error", f"Auto-gen PDF Controlador: {_ec_auto}")
+
+                st.session_state[_auto_pdf_key] = True
+
+        # ── Botones de descarga (persisten en session_state) ──────────────────
+        _dl_c1, _dl_c2, _dl_c3 = st.columns([2, 2, 1])
+        with _dl_c1:
+            if st.session_state.get("t4_pdf_pickeros_bytes"):
+                st.download_button(
+                    "⬇ Descargar PDF Pickeros",
+                    data=st.session_state["t4_pdf_pickeros_bytes"],
+                    file_name=st.session_state.get("t4_pdf_pickeros_fname", "picking.pdf"),
+                    mime="application/pdf", use_container_width=True,
+                    key="t4_pdf_dl",
+                )
+        with _dl_c2:
+            if st.session_state.get("t4_pdf_ctrl_bytes"):
+                st.download_button(
+                    "⬇ Descargar PDF Controladores",
+                    data=st.session_state["t4_pdf_ctrl_bytes"],
+                    file_name=st.session_state.get("t4_pdf_ctrl_fname", "controlador.pdf"),
+                    mime="application/pdf", use_container_width=True,
+                    key="t4_pdf_ctrl_dl",
+                )
+        with _dl_c3:
+            if st.button("🔄 Regenerar", key="t4_pdf_regen_btn",
+                         help="Forzar regeneración (si cambiaste velocidad/personas/hora)"):
+                st.session_state.pop(_auto_pdf_key, None)
+                st.session_state.pop("t4_pdf_pickeros_bytes", None)
+                st.session_state.pop("t4_pdf_ctrl_bytes", None)
+                st.rerun()
 
         # ── Botón XLSX proyección ──────────────────────────────────────────────
         st.markdown("---")
         try:
             import datetime as _dt_xlsx
-            # Construir DataFrame exportable de proyección
             _export_rows = []
             for _, _row in df_display.iterrows():
                 _exp = {"Camión": int(_row["Camión"])}
                 for _cn in _T4_CANCHAS:
-                    _short = _cn.replace("CANCHA ", "C")
-                    _disp  = _cn_short(_cn)       # v4.64: label natural
+                    _disp  = _cn_short(_cn)
                     _exp[f"UP {_disp}"]   = round(float(_row.get(f"_up_{_cn}", 0.0)), 3)
                     _exp[f"Bult {_disp}"] = round(float(_row.get(_cn, 0.0)), 1)
                 _exp["AE Pall"]    = round(float(_row.get("AE_PALL", 0.0)), 2)
@@ -5043,36 +5572,23 @@ def render_tab_proyeccion():
                 _exp["Bult Pick"]  = round(float(_row.get("TOTAL_PICK", 0.0)), 1)
                 _export_rows.append(_exp)
             df_xlsx_exp = pd.DataFrame(_export_rows)
-            # Fila totales
             _tot_row = {"Camión": "TOTAL"}
             for _cn in _T4_CANCHAS:
-                _disp = _cn_short(_cn)            # v4.64: label natural
+                _disp = _cn_short(_cn)
                 _tot_row[f"UP {_disp}"]   = round(totales_pall_c.get(_cn, 0), 3)
                 _tot_row[f"Bult {_disp}"] = round(totales_bult.get(_cn, 0), 1)
             _tot_row["AE Pall"]   = ""
             _tot_row["TOT PALL"]  = round(sum(totales_pall_c.values()), 2)
             _tot_row["Bult Pick"] = round(pdata["tot_pick"], 1)
             df_xlsx_exp = pd.concat([df_xlsx_exp, pd.DataFrame([_tot_row])], ignore_index=True)
-
-            xlsx_bytes = df_to_xlsx(df_xlsx_exp, sheet_name="Proyección")
-            fname_xlsx = f"proyeccion_picking_{_fecha_picking_hoy.strftime('%d-%m-%Y')}.xlsx"
-            st.download_button(
-                "📊 Descargar Excel (XLSX)",
-                data=xlsx_bytes, file_name=fname_xlsx,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key="t4_xlsx_dl",
-            )
+            # xlsx removed — v5.2.0: se eliminó descarga Excel de esta sección
         except Exception as _ex_xlsx:
-            st.warning(f"⚠️ XLSX no disponible: {_ex_xlsx}")
+            pass  # xlsx no disponible — ignorar silenciosamente
 
     # ─────────────────────────────────────────────────────────────────────────
-    # SECCIÓN B: RESUMEN CONTROLADOR + PDF CONTROLADORES
+    # SECCIÓN B: RESUMEN CONTROLADOR (solo info — PDFs arriba)
     # ─────────────────────────────────────────────────────────────────────────
     with st.container(border=True):
-        # ── v4.37: Resumen para el Controlador ───────────────────────────────
-        # v4.41: _top_skus_lines y _alertas ya computados antes del bloque columns
-
         # Construir horarios por cancha
         _horas_lines = []
         for _cn in _T4_CANCHAS:
@@ -5086,7 +5602,7 @@ def render_tab_proyeccion():
 
         _fecha_str_res = _fecha_picking_hoy.strftime("%d/%m/%Y")
 
-        # ── v4.71: Top 3 por CANCHA ──────────────────────────────────────────
+        # Top 3 por cancha
         _top3_por_cancha_lines = []
         try:
             _car_b71 = st.session_state.get("t1_car") or st.session_state.get("t4_car")
@@ -5098,8 +5614,7 @@ def render_tab_proyeccion():
                         _cn71_short = _cn71.replace("CANCHA ", "C")
                         _df_cn = _df_top71[_df_top71["CANCHA"].str.upper().str.contains(
                             _cn71.upper().replace("CANCHA ", "").strip(), na=False)]
-                        if _df_cn.empty:
-                            continue
+                        if _df_cn.empty: continue
                         _t3 = _df_cn.nlargest(3, "BULTOS")
                         _items = []
                         for _, _sk71 in _t3.iterrows():
@@ -5112,7 +5627,7 @@ def render_tab_proyeccion():
         except Exception:
             pass
 
-        # ── v4.71: Info de Frescura (FEFO críticos por cancha) ──────────────
+        # FEFO críticos
         _frescura_lines = []
         try:
             _fr_b71f = st.session_state.get("t1_fr")
@@ -5196,45 +5711,6 @@ def render_tab_proyeccion():
         _resumen_md += f"\n---\n💡 *{_ensenanza}*"
 
         st.info(_resumen_md)
-
-        st.divider()
-        st.markdown("#### 📋 PDF Controladores — Resumen operativo enriquecido")
-        st.caption("Incluye: Top 5 SKUs por cancha, análisis de carga, horarios, recomendaciones SOPs, FEFO y enseñanza del día.")
-
-        if st.button("📄 PDF Controladores", type="secondary",
-                     use_container_width=True, key="t4_pdf_ctrl_btn",
-                     help="Genera PDF landscape con el resumen completo para imprimir junto a las copias de canchas"):
-            with st.spinner("Generando PDF Controlador…"):
-                try:
-                    _pdf_ctrl = _t4_generar_pdf_controlador(
-                        fecha=_fecha_picking_hoy,
-                        fin_por_cancha=fin_por_cancha,
-                        fin_global_dt=fin_global_dt,
-                        totales_bult=totales_bult,
-                        totales_hl=totales_hl,
-                        totales_kg=totales_kg,
-                        totales_pall_c=totales_pall_c,
-                        mix_picking=pdata["mix_picking"],
-                        n_camiones=len(df_display[df_display["TOTAL_PICK"] > 0]),
-                        tot_pick=pdata["tot_pick"],
-                        top_skus_lines=_top_skus_lines,
-                        alertas=_alertas,
-                        ensenanza=_ensenanza,
-                    )
-                    _fecha_ctrl = _fecha_picking_hoy.strftime("%d-%m-%Y")
-                    _fname_ctrl = f"{_fecha_ctrl}_resumen_controlador_picking.pdf"
-                    st.download_button(
-                        "⬇ Descargar PDF Controlador",
-                        data=_pdf_ctrl, file_name=_fname_ctrl,
-                        mime="application/pdf", use_container_width=True,
-                        key="t4_pdf_ctrl_dl",
-                    )
-                    st.success(f"✓ PDF Controlador: {_fname_ctrl}")
-                except Exception as _e_ctrl:
-                    st.error(f"❌ Error generando PDF Controlador: {_e_ctrl}")
-                    with st.expander("Stack trace"):
-                        import traceback
-                        st.code(traceback.format_exc())
 
     # ── Paso 2 — Enviar resumen (fx) Picking a Google Sheets ─────────────────
     # v4.65: Se ubica al FINAL de la sección, después de generar los PDFs,
@@ -5376,12 +5852,10 @@ def render_tab_proyeccion():
         except Exception:
             pass
 
-        _fecha_xl = pdata["fecha"]
-        _fname_xl = (
-            f"fx_Picking_{_fecha_xl.strftime('%d-%m-%Y')}.xlsx"
-            if hasattr(_fecha_xl, "strftime")
-            else "fx_Picking.xlsx"
-        )
+        # v4.99: siempre today() — el picking se hace hoy aunque la entrega sea D+1
+        import datetime as _dt_fx
+        _fecha_xl = _dt_fx.date.today()
+        _fname_xl = f"fx_Picking_{_fecha_xl.strftime('%d-%m-%Y')}.xlsx"
         try:
             _xlsx_bytes = _build_fx_picking_xlsx(
                 totales_bult        = totales_bult,
@@ -5408,6 +5882,42 @@ def render_tab_proyeccion():
             )
         except Exception as _ex_xl:
             st.warning(f"No se pudo generar el Excel: {_ex_xl}")
+
+
+    st.info("➡️ Los pasos de Autoelevadores se encuentran en la sección **🏗️ Autoelevadores**.", icon="ℹ️")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB AUTOELEVADORES — Paso 3 (AE Pallets) + Paso 4 (Reposición AE)
+# Movido desde Proyección Picking (v5.1.1)
+# ════════════════════════════════════════════════════════════════════════════
+
+def render_tab_ae():
+    """Sección Autoelevadores: Paletas completas AE (Paso 3) + Reposición canchas (Paso 4)."""
+    import datetime as _dt_ae
+
+    st.caption(
+        "Fuente: CAR.xlsx + Frescura 3.0 (DDM) + ANR.xlsx. "
+        "Cargalos en **📁 Archivos** para activar los cálculos."
+    )
+
+    car_use = st.session_state.get("t1_car") or st.session_state.get("t4_car")
+    fr_use  = st.session_state.get("t1_fr")
+
+    if not (car_use and fr_use):
+        st.info("⬅️ Subí **CAR.xlsx** y **Frescura 3.0.xlsx** en la pestaña **📁 Archivos** para activar.")
+        return
+
+    # Fecha de picking (para nombres de archivo)
+    _fecha_ae_hoy = _dt_ae.date.today()
+    try:
+        _pdata_ae = _t4_load_car_proyeccion(
+            car_bytes=car_use.getvalue(),
+            fr_bytes=fr_use.getvalue(),
+        )
+        _fecha_ae_hoy = _pdata_ae.get("fecha", _fecha_ae_hoy)
+    except Exception:
+        pass
 
     # ── Paso 3 — Paletas completas AE por SKU × Camión ───────────────────────
     st.divider()
@@ -5496,7 +6006,11 @@ def render_tab_proyeccion():
         # Opciones con formato "101 — COL F." para el widget (solo camiones con paletas)
         _CAM_LABELS_P3_FULL = [f"{cid} — {lbl}" for cid, lbl in _CAM_ID_LABEL_P3_FILTERED]
         # Mantener compatibilidad con valores guardados en sesión (pueden ser label viejo o nuevo)
-        _p3_excl_default_raw = st.session_state.get("t4_p3_cams_excluir", [])
+        # v5.2.2 FIX: leer de "tae_p3_cams_excluir" (key del widget) con fallback legacy
+        _p3_excl_default_raw = (
+            st.session_state.get("tae_p3_cams_excluir", [])
+            or st.session_state.get("t4_p3_cams_excluir", [])
+        )
         # Normalizar: si el valor guardado no tiene " — ", agregar prefijo buscando por label
         _lbl_to_full = {lbl: f"{cid} — {lbl}" for cid, lbl in _CAM_ID_LABEL_P3_FILTERED}
         _p3_excl_default_norm = []
@@ -5512,7 +6026,7 @@ def render_tab_proyeccion():
             f"🚫 Excluir camiones del Excel AE Pallets ({_p3_n_con_pallet} con paletas completas)",
             options=_CAM_LABELS_P3_FULL,
             default=_p3_excl_default_norm,
-            key="t4_p3_cams_excluir",
+            key="tae_p3_cams_excluir",
             help="Solo se listan los camiones que tienen ≥1 paleta completa. "
                  "Los camiones con 0 paletas en todos los SKUs no aparecen. "
                  "Independiente de la exclusión de Proyección Picking.",
@@ -5655,7 +6169,11 @@ def render_tab_proyeccion():
                         # v4.78 FIX: las columnas NO se eliminan — siempre están todas.
                         # Los camiones excluidos se ponen en CERO en el pivot.
                         # v4.84: el widget ahora guarda "101 — COL F." — extraer ID directo
-                        _p3_excl_raw = set(st.session_state.get("t4_p3_cams_excluir", []))
+                        # v5.2.2 FIX: la key del widget es "tae_p3_cams_excluir"; leer de ahí.
+                        _p3_excl_raw = set(
+                            st.session_state.get("tae_p3_cams_excluir", [])   # key correcta del widget
+                            or st.session_state.get("t4_p3_cams_excluir", []) # fallback legacy
+                        )
                         _lbl_to_id3  = {lbl: cid for cid, lbl in _CAM_ORDER_ALL}
                         _full_to_id3 = {f"{cid} — {lbl}": cid for cid, lbl in _CAM_ORDER_ALL}
                         _p3_excl_ids = set()
@@ -5818,102 +6336,179 @@ def render_tab_proyeccion():
                             _buf3x = _io3.BytesIO()
                             _wb3x.save(_buf3x)
                             _buf3x.seek(0)
-                            _fecha_p3 = (pdata["fecha"].strftime("%d-%m-%Y")
-                                         if hasattr(pdata["fecha"], "strftime") else "hoy")
+                            _fecha_p3 = (_fecha_ae_hoy.strftime("%d-%m-%Y")
+                                         if hasattr(_fecha_ae_hoy, "strftime") else "hoy")
                             st.download_button(
                                 "⬇️ Descargar Excel AE Pallets",
                                 data=_buf3x.getvalue(),
                                 file_name=f"{_fecha_p3}_AE_pallets_bkcc.xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                 use_container_width=True,
-                                key="t4_paso3_dl",
+                                key="tae_paso3_dl",
                             )
                         except Exception as _ep3x:
                             st.warning(f"⚠️ No se pudo generar Excel: {_ep3x}")
 
-                        # ── 9. Botón Enviar a Sheets — Agregados AE ──────────────────────
-                        # URL del Google Apps Script publicado como Web App.
-                        # Reemplazar con la URL real luego del deploy en GAS.
+                        # ── 9. Botón unificado: Enviar todo a Sheets (v4.99) ─────────────
                         _GAS_URL_AE = st.secrets.get(
                             "GAS_AGREGADOS_AE_URL",
                             "https://script.google.com/macros/s/AKfycbyYlGl92yGUE2HznznsL4CrACgUR-R3juNQF0Fejra9gd0igz2_FLO30VAC1eKlMyd0/exec"
                         )
+                        _SPREADSHEET_ID_REPOS = "1OjIhtpzwV-MpnBWu09lKyguit2iKR-nCFG9g5MOd-mM"
+                        _SHEET_REPOSICION_NAME = "reposición ae"
+                        _SHEET_HISTORICO_NAME  = "Rep AE Histórico"
+
+                        def _ser3(v):
+                            if v is None or (isinstance(v, float) and v != v):
+                                return ""
+                            try:
+                                import numpy as _np3s
+                                if isinstance(v, (_np3s.integer,)):  return int(v)
+                                if isinstance(v, (_np3s.floating,)): return float(v)
+                            except ImportError: pass
+                            if hasattr(v, "item"): return v.item()
+                            return v
+
+                        def _sanitize_for_gspread_p3(v):
+                            if v is None: return ""
+                            try:
+                                import numpy as _np_g
+                                if isinstance(v, _np_g.integer): return int(v)
+                                if isinstance(v, _np_g.floating):
+                                    return "" if _np_g.isnan(v) else round(float(v), 4)
+                            except ImportError: pass
+                            if isinstance(v, float):
+                                import math as _m_g
+                                if _m_g.isnan(v) or _m_g.isinf(v): return ""
+                                return round(v, 4)
+                            if isinstance(v, int): return v
+                            if hasattr(v, "item"): return v.item()
+                            return str(v) if v != "" else ""
+
+                        def _build_matrix_repos_p3(df_in, col_order):
+                            df_loc = df_in.reset_index(drop=True).copy()
+                            matrix = []
+                            for i in range(len(df_loc)):
+                                row = []
+                                for cc in col_order:
+                                    try:
+                                        vv = df_loc.at[i, cc] if cc in df_loc.columns else ""
+                                        row.append(_sanitize_for_gspread_p3(vv))
+                                    except Exception: row.append("")
+                                matrix.append(row)
+                            return matrix
 
                         st.markdown("---")
+                        st.markdown("##### 📤 Enviar todo a Sheets")
+                        st.caption("Ejecuta los 3 envíos en una sola operación: Agregados AE (GAS) + Reposición AE (gspread) + Append Histórico (gspread).")
+
                         if st.button(
-                            "📤 Enviar a Sheets (Agregados AE)",
-                            key="t4_paso3_send_sheets",
+                            "📤 Enviar todo a Sheets  (Agregados AE + Reposición AE + Histórico)",
+                            key="tae_send_all_sheets",
                             use_container_width=True,
-                            help="Borra A2:AJ de la hoja 'agregados ae' y escribe los datos actuales. "
-                                 "Las columnas AK y AL (fórmulas) no se modifican.",
                             type="primary",
+                            help="1) GAS: Agregados AE → 2) gspread: Reposición AE → 3) gspread: Append Histórico"
                         ):
+                            _ok_ae = _ok_rep = _ok_hist = False
+
+                            # ── 1. Agregados AE (GAS) ─────────────────────────────────────
                             try:
                                 import requests as _rq3s, json as _js3s
-
-                                # Serializar _df_final3 → lista de listas (fila por fila)
-                                # Convertir valores no serializables (int64, NaT, etc.)
-                                def _ser3(v):
-                                    if v is None or (isinstance(v, float) and v != v):
-                                        return ""
-                                    try:
-                                        import numpy as _np3s
-                                        if isinstance(v, (_np3s.integer,)):
-                                            return int(v)
-                                        if isinstance(v, (_np3s.floating,)):
-                                            return float(v)
-                                    except ImportError:
-                                        pass
-                                    if hasattr(v, "item"):
-                                        return v.item()
-                                    return v
-
                                 _headers3s = list(_df_final3.columns)
-                                _rows3s = [
-                                    [_ser3(v) for v in row]
-                                    for row in _df_final3.itertuples(index=False, name=None)
-                                ]
-
-                                _payload3s = {
-                                    "action":  "limpiarYCargar",
-                                    "headers": _headers3s,
-                                    "rows":    _rows3s,
-                                }
-
-                                with st.spinner("Enviando a Google Sheets…"):
+                                _rows3s = [[_ser3(v) for v in row]
+                                           for row in _df_final3.itertuples(index=False, name=None)]
+                                _payload3s = {"action": "limpiarYCargar", "headers": _headers3s, "rows": _rows3s}
+                                with st.spinner("1/3 — Enviando Agregados AE…"):
                                     _resp3s = _rq3s.post(
                                         _GAS_URL_AE,
                                         data=_js3s.dumps(_payload3s),
                                         headers={"Content-Type": "application/json"},
                                         timeout=60,
                                     )
-
                                 if _resp3s.status_code == 200:
-                                    try:
-                                        _r3s_json = _resp3s.json()
-                                    except Exception:
-                                        _r3s_json = {"ok": True, "msg": _resp3s.text[:200]}
-
-                                    if _r3s_json.get("ok"):
-                                        st.success(
-                                            f"✅ Enviado correctamente — "
-                                            f"{len(_rows3s)} filas escritas en 'agregados ae'."
-                                        )
-                                    else:
-                                        st.error(
-                                            f"❌ El script respondió con error: "
-                                            f"{_r3s_json.get('msg', _resp3s.text[:300])}"
-                                        )
+                                    try: _r3s_json = _resp3s.json()
+                                    except Exception: _r3s_json = {"ok": True}
+                                    _ok_ae = bool(_r3s_json.get("ok"))
+                                    if not _ok_ae:
+                                        st.warning(f"⚠️ Agregados AE: {_r3s_json.get('msg','error desconocido')}")
                                 else:
-                                    st.error(
-                                        f"❌ HTTP {_resp3s.status_code}: {_resp3s.text[:300]}"
-                                    )
-
+                                    st.warning(f"⚠️ Agregados AE HTTP {_resp3s.status_code}")
                             except Exception as _esp3:
-                                st.error(f"❌ Error al enviar a Sheets: {_esp3}")
-                                with st.expander("Detalle del error"):
-                                    import traceback as _tb3s
-                                    st.code(_tb3s.format_exc())
+                                st.warning(f"⚠️ Agregados AE: {_esp3}")
+
+                            # ── 2 + 3. gspread (Reposición + Histórico) ───────────────────
+                            _col_order_rep = [
+                                "Fecha", "Almacén", "Descripción", "Cancha",
+                                "bxp", "Posiciones", "Stock", "En Cancha",
+                                "Carga", "AE Puras", "Reposición Pall",
+                            ]
+                            # Recuperar _df_repos_neg del session_state si existe
+                            _df_repos_neg_u = st.session_state.get("_df_repos_neg_cache")
+                            if _df_repos_neg_u is None or _df_repos_neg_u.empty:
+                                st.info("ℹ️ No hay datos de Reposición AE calculados aún (Paso 4 pendiente).")
+                            else:
+                                _matrix_rep = _build_matrix_repos_p3(_df_repos_neg_u, _col_order_rep)
+                                try:
+                                    import gspread as _gs_u
+                                    from google.oauth2.service_account import Credentials as _Cred_u
+                                    _scopes_u = ["https://www.googleapis.com/auth/spreadsheets"]
+                                    _creds_u = _Cred_u.from_service_account_info(
+                                        dict(st.secrets["gcp_service_account"]), scopes=_scopes_u)
+                                    _client_u = _gs_u.authorize(_creds_u)
+                                    _ss_u = _client_u.open_by_key(_SPREADSHEET_ID_REPOS)
+
+                                    # Buscar hojas case-insensitive
+                                    _ws_rep_u = _ws_hist_u = None
+                                    for _w_it in _ss_u.worksheets():
+                                        _wt = _w_it.title.strip().lower()
+                                        if _wt == _SHEET_REPOSICION_NAME.strip().lower():
+                                            _ws_rep_u = _w_it
+                                        if _wt == _SHEET_HISTORICO_NAME.strip().lower():
+                                            _ws_hist_u = _w_it
+
+                                    # 2. Reposición AE
+                                    if _ws_rep_u:
+                                        with st.spinner("2/3 — Reposición AE…"):
+                                            _lr = len(_ws_rep_u.col_values(1))
+                                            if _lr >= 2:
+                                                _ws_rep_u.batch_clear([f"A2:K{_lr}"])
+                                            if _matrix_rep:
+                                                _ws_rep_u.update(
+                                                    range_name=f"A2:K{1+len(_matrix_rep)}",
+                                                    values=_matrix_rep,
+                                                    value_input_option="USER_ENTERED",
+                                                )
+                                        _ok_rep = True
+                                    else:
+                                        st.warning(f"⚠️ Hoja '{_SHEET_REPOSICION_NAME}' no encontrada")
+
+                                    # 3. Append Histórico
+                                    if _ws_hist_u and _matrix_rep:
+                                        with st.spinner("3/3 — Append Histórico…"):
+                                            _ws_hist_u.append_rows(
+                                                _matrix_rep,
+                                                value_input_option="USER_ENTERED",
+                                                insert_data_option="INSERT_ROWS",
+                                                table_range="A1",
+                                            )
+                                        _ok_hist = True
+                                    elif not _ws_hist_u:
+                                        st.warning(f"⚠️ Hoja '{_SHEET_HISTORICO_NAME}' no encontrada")
+
+                                except Exception as _esp_u:
+                                    st.error(f"❌ Error gspread: {_esp_u}")
+                                    with st.expander("Detalle"):
+                                        import traceback as _tb_u
+                                        st.code(_tb_u.format_exc())
+
+                            # Resultado final
+                            _results = []
+                            if _ok_ae:   _results.append("✅ Agregados AE")
+                            if _ok_rep:  _results.append("✅ Reposición AE")
+                            if _ok_hist: _results.append("✅ Histórico")
+                            if _results:
+                                st.success("  |  ".join(_results))
+                                log_event("info", f"Envío Sheets unificado: {', '.join(_results)}")
 
         except Exception as _ep3:
             st.error(f"❌ Error en Paso 3: {_ep3}")
@@ -6145,205 +6740,17 @@ def render_tab_proyeccion():
                                     "application/vnd.openxmlformats-"
                                     "officedocument.spreadsheetml.sheet"),
                                 use_container_width=True,
-                                key="t4_paso4_dl",
+                                key="tae_paso4_dl",
                             )
                         except Exception as _er4x:
                             st.warning(f"⚠️ No se pudo generar Excel reposición: {_er4x}")
 
-                        # ── 6. Botón Enviar a Sheets — Reposición AE ──────────
-                        # ════════════════════════════════════════════════════════════
-                        # NUEVO ENFOQUE v4.93: gspread DIRECTO sin GAS
-                        # Escribe directo a Sheets usando la service account.
-                        # ════════════════════════════════════════════════════════════
-                        _SPREADSHEET_ID_REPOS = "1OjIhtpzwV-MpnBWu09lKyguit2iKR-nCFG9g5MOd-mM"
-                        _SHEET_REPOSICION_NAME = "reposición ae"
-                        _SHEET_HISTORICO_NAME  = "Rep AE Histórico"
-
-                        def _sanitize_for_gspread(v):
-                            """Convierte cualquier valor a tipo nativo serializable por gspread."""
-                            if v is None:
-                                return ""
-                            try:
-                                import numpy as _np_g
-                                if isinstance(v, _np_g.integer):
-                                    return int(v)
-                                if isinstance(v, _np_g.floating):
-                                    if _np_g.isnan(v):
-                                        return ""
-                                    return round(float(v), 4)
-                                if isinstance(v, _np_g.bool_):
-                                    return bool(v)
-                            except ImportError:
-                                pass
-                            if isinstance(v, float):
-                                import math as _m_g
-                                if _m_g.isnan(v) or _m_g.isinf(v):
-                                    return ""
-                                return round(v, 4)
-                            if isinstance(v, int):
-                                return v
-                            if hasattr(v, "item"):
-                                return v.item()
-                            return str(v) if v != "" else ""
-
-                        def _build_matrix_repos(df_in, col_order):
-                            """Arma matriz lista para gspread.update."""
-                            df_loc = df_in.reset_index(drop=True).copy()
-                            matrix = []
-                            for i in range(len(df_loc)):
-                                row = []
-                                for cc in col_order:
-                                    try:
-                                        vv = df_loc.at[i, cc] if cc in df_loc.columns else ""
-                                        row.append(_sanitize_for_gspread(vv))
-                                    except Exception:
-                                        row.append("")
-                                matrix.append(row)
-                            return matrix
-
-                        _col_order_rep = [
-                            "Fecha", "Almacén", "Descripción", "Cancha",
-                            "bxp", "Posiciones", "Stock", "En Cancha",
-                            "Carga", "AE Puras", "Reposición Pall",
-                        ]
-
-                        st.markdown("---")
-                        if st.button(
-                            "📤 Enviar a Sheets (Reposición AE)",
-                            key="t4_paso4_send_sheets",
-                            use_container_width=True,
-                            help="Borra A2:K de la hoja 'reposición ae' y escribe los datos actuales "
-                                 "directamente vía gspread (sin GAS).",
-                            type="primary",
-                        ):
-                            try:
-                                import gspread as _gs_r
-                                from google.oauth2.service_account import Credentials as _Cred_r
-
-                                _matrix_r = _build_matrix_repos(_df_repos_neg, _col_order_rep)
-
-                                # Debug visible
-                                if _matrix_r:
-                                    st.caption(
-                                        f"🔍 Debug: {len(_matrix_r)} filas | "
-                                        f"col K fila 0 = `{_matrix_r[0][10]}` "
-                                        f"(tipo={type(_matrix_r[0][10]).__name__})"
-                                    )
-
-                                _scopes_r = ["https://www.googleapis.com/auth/spreadsheets"]
-                                _creds_r = _Cred_r.from_service_account_info(
-                                    dict(st.secrets["gcp_service_account"]),
-                                    scopes=_scopes_r,
-                                )
-                                _client_r = _gs_r.authorize(_creds_r)
-                                _ss_r = _client_r.open_by_key(_SPREADSHEET_ID_REPOS)
-
-                                # Buscar hoja por nombre case-insensitive (tolera "Reposición AE", "reposición ae", etc.)
-                                _ws_r = None
-                                _available_names_r = [_w.title for _w in _ss_r.worksheets()]
-                                for _w_iter in _ss_r.worksheets():
-                                    if _w_iter.title.strip().lower() == _SHEET_REPOSICION_NAME.strip().lower():
-                                        _ws_r = _w_iter
-                                        break
-                                if _ws_r is None:
-                                    st.error(
-                                        f"❌ No se encontró la hoja '{_SHEET_REPOSICION_NAME}'. "
-                                        f"Hojas disponibles: {_available_names_r}"
-                                    )
-                                    st.stop()
-
-                                with st.spinner("Borrando datos existentes…"):
-                                    # Limpiar A2:K hasta la última fila con datos
-                                    _last_row_r = len(_ws_r.col_values(1))
-                                    if _last_row_r >= 2:
-                                        _ws_r.batch_clear([f"A2:K{_last_row_r}"])
-
-                                with st.spinner(f"Escribiendo {len(_matrix_r)} filas…"):
-                                    if _matrix_r:
-                                        _end_row_r = 1 + len(_matrix_r)
-                                        _ws_r.update(
-                                            range_name=f"A2:K{_end_row_r}",
-                                            values=_matrix_r,
-                                            value_input_option="USER_ENTERED",
-                                        )
-
-                                st.success(
-                                    f"✅ Enviado correctamente — {len(_matrix_r)} filas "
-                                    f"escritas en 'reposición ae' (vía gspread)."
-                                )
-                            except Exception as _esp4:
-                                st.error(f"❌ Error al enviar a Sheets: {_esp4}")
-                                with st.expander("Detalle del error"):
-                                    import traceback as _tb4s
-                                    st.code(_tb4s.format_exc())
-
-                        # ── Botón APPEND a Rep AE Histórico (gspread directo) ──
-                        st.markdown("---")
-                        st.markdown("##### 📚 Append a Rep AE Histórico")
+                        # v4.99: guardar _df_repos_neg en session_state para el botón unificado (Paso 3)
+                        st.session_state["_df_repos_neg_cache"] = _df_repos_neg.copy() if _df_repos_neg is not None else pd.DataFrame()
                         st.caption(
-                            "Agrega las filas actuales al final de la hoja "
-                            "'Rep AE Histórico' sin borrar datos existentes."
+                            f"ℹ️ {len(_df_repos_neg) if _df_repos_neg is not None else 0} filas calculadas. "
+                            "Usá el botón **📤 Enviar todo a Sheets** en el Paso 3 para enviar."
                         )
-                        if st.button(
-                            "📚 Append a Rep AE Histórico",
-                            key="t4_btn_send_hist",
-                            use_container_width=True,
-                            type="secondary",
-                        ):
-                            try:
-                                import gspread as _gs_h
-                                from google.oauth2.service_account import Credentials as _Cred_h
-
-                                _matrix_h = _build_matrix_repos(_df_repos_neg, _col_order_rep)
-
-                                if _matrix_h:
-                                    st.caption(
-                                        f"🔍 Debug append: {len(_matrix_h)} filas | "
-                                        f"col K fila 0 = `{_matrix_h[0][10]}` "
-                                        f"(tipo={type(_matrix_h[0][10]).__name__})"
-                                    )
-
-                                _scopes_h = ["https://www.googleapis.com/auth/spreadsheets"]
-                                _creds_h = _Cred_h.from_service_account_info(
-                                    dict(st.secrets["gcp_service_account"]),
-                                    scopes=_scopes_h,
-                                )
-                                _client_h = _gs_h.authorize(_creds_h)
-                                _ss_h = _client_h.open_by_key(_SPREADSHEET_ID_REPOS)
-
-                                # Buscar hoja Histórico por nombre case-insensitive
-                                _ws_h = None
-                                _available_names_h = [_w.title for _w in _ss_h.worksheets()]
-                                for _w_iter in _ss_h.worksheets():
-                                    if _w_iter.title.strip().lower() == _SHEET_HISTORICO_NAME.strip().lower():
-                                        _ws_h = _w_iter
-                                        break
-                                if _ws_h is None:
-                                    st.error(
-                                        f"❌ No se encontró la hoja '{_SHEET_HISTORICO_NAME}'. "
-                                        f"Hojas disponibles: {_available_names_h}"
-                                    )
-                                    st.stop()
-
-                                with st.spinner("Append en 'Rep AE Histórico'…"):
-                                    # Append usa append_rows (agrega al final, no sobreescribe)
-                                    if _matrix_h:
-                                        _ws_h.append_rows(
-                                            _matrix_h,
-                                            value_input_option="USER_ENTERED",
-                                            insert_data_option="INSERT_ROWS",
-                                            table_range="A1",
-                                        )
-
-                                st.success(
-                                    f"✅ Append OK — {len(_matrix_h)} filas "
-                                    f"agregadas en 'Rep AE Histórico' (vía gspread)."
-                                )
-                            except Exception as _esp4h:
-                                st.error(f"❌ Error append histórico: {_esp4h}")
-                                with st.expander("Detalle"):
-                                    import traceback as _tb4h
-                                    st.code(_tb4h.format_exc())
 
         except Exception as _ep4:
             st.error(f"❌ Error en Paso 4: {_ep4}")
@@ -7241,42 +7648,391 @@ def render_tab_extraibles():
         _download_trio(df_pick, "fx_Picking", "(fx) Picking", "t5_pick")
 
 
-# ── TAB 6 — Validación + Log (PLACEHOLDER, Sprint 2) ───────────────────────
+# ── TAB 6 — Validación + Log (v5.2.0) ──────────────────────────────────────
 
 def render_tab_validacion():
-    # título ya renderizado por main()
-    st.caption(
-        "Pre-checks + reglas de negocio + validación cruzada CAR↔MASTER. "
-        "**Sprint 2** — pendiente."
-    )
+    import datetime as _dtv
+    ss = st.session_state
 
-    st.info(
-        "🔧 En desarrollo (Sprint 2).\n\n"
-        "**Pre-checks previstos:**\n"
-        "- CAR.xlsx modificado hoy\n"
-        "- ANR (rechazos1.xlsx) modificado hoy (warning)\n"
-        "- MASTER → Matriz Pall.!A1 == hoy\n"
-        "- Suma TOTAL PALL > 0\n\n"
-        "**Reglas:**\n"
-        "- Camión TOTAL=0 → ocultar y loguear\n"
-        "- Camión Reparto=NO → tabla checkbox, default OFF (decisión #1)\n"
-        "- Cross-validate CAR↔MASTER (WARNING, no bloqueante — decisión #6)\n"
-        "- Sanity checks bloqueantes pre-publicación"
-    )
+    # ── RESUMEN OPERATIVO DEL DÍA ──────────────────────────────────────────
+    st.markdown("### 📊 Resumen Operativo del Día")
+
+    _tabla_rows_v = ss.get("tr_tabla_rows_cache", [])
+    _hoy_v = _dtv.date.today()
+
+    # Métricas clave desde tablero ruteador (si calculado)
+    if _tabla_rows_v:
+        _n_cams_v   = len([r for r in _tabla_rows_v if r.get("PDV", 0) > 0])
+        _n_pdv_v    = sum(r.get("PDV", 0) for r in _tabla_rows_v)
+        _bup_v      = round(sum(r.get("Bultos UP", 0) for r in _tabla_rows_v), 1)
+        _hl_v       = round(sum(r.get("HL", 0) for r in _tabla_rows_v), 2)
+        _kg_v       = round(sum(r.get("Peso(kg)", 0) for r in _tabla_rows_v), 0)
+        _rech_v     = round(sum(r.get("Rechazos", 0) for r in _tabla_rows_v), 1)
+        _drop_v     = round(_n_pdv_v / max(_n_cams_v, 1), 2)
+        _pal_v      = round(sum(r.get("Paletas", 0) for r in _tabla_rows_v), 1)
+
+        _ma, _mb, _mc, _md = st.columns(4)
+        _ma.metric("🚛 Camiones en reparto", _n_cams_v)
+        _mb.metric("📦 PDV ruteados", _n_pdv_v)
+        _mc.metric("💧 HL Totales", f"{_hl_v:.2f}")
+        _md.metric("📐 Drop Size", f"{_drop_v:.2f}")
+        _me, _mf, _mg, _mh = st.columns(4)
+        _me.metric("🏗️ Bultos UP", f"{_bup_v:.1f}")
+        _mf.metric("🗂️ Paletas", f"{_pal_v:.1f}")
+        _mg.metric("⚖️ Peso Total (kg)", f"{_kg_v:,.0f}")
+        _mh.metric("🔄 Rechazos UP", f"{_rech_v:.1f}")
+    else:
+        st.info("ℹ️ Calculá el Tablero Ruteador para ver métricas de reparto.")
 
     st.divider()
-    st.markdown("### 📜 Log de la corrida actual")
-    log_lines = st.session_state.get("log_buffer", [])
-    if not log_lines:
-        st.caption("(sin eventos aún)")
+
+    # ── ALERTAS DESTACADAS ──────────────────────────────────────────────────
+    st.markdown("### 🚨 Alertas del Día")
+    _alertas_v = []
+
+    # Licencias vencidas
+    _lic_v = ss.get("tr_licencias_data", [])
+    if _lic_v:
+        for _ld in _lic_v:
+            try:
+                _vd = pd.to_datetime(_ld.get("Venc. Licencia", ""), dayfirst=True, errors="coerce")
+                if not pd.isna(_vd) and _vd.date() <= _hoy_v:
+                    _alertas_v.append(("🚫", "LICENCIA VENCIDA",
+                        f"CAM {_ld.get('N° Cam','')} — {_ld.get('Chofer','')} "
+                        f"(venció: {_ld.get('Venc. Licencia','')})"))
+            except Exception:
+                pass
+
+    # Peso excedido
+    if _tabla_rows_v:
+        for _rt in _tabla_rows_v:
+            if _rt.get("_peso_ok") is False:
+                _alertas_v.append(("⚖️", "EXCESO DE PESO",
+                    f"CAM {_rt.get('N° Cam','')} — {_rt.get('Chofer','')} "
+                    f"({_rt.get('Peso(kg)',0):,.0f} kg)"))
+
+    # Rechazos
+    if _tabla_rows_v and sum(r.get("Rechazos", 0) for r in _tabla_rows_v) > 0:
+        _tot_rech = sum(r.get("Rechazos", 0) for r in _tabla_rows_v)
+        _alertas_v.append(("⚠️", "RECHAZOS",
+            f"{_tot_rech:.1f} bultos UP rechazados en total"))
+
+    if _alertas_v:
+        for _ico, _tipo, _desc in _alertas_v:
+            st.error(f"{_ico} **{_tipo}** — {_desc}")
     else:
-        st.code("\n".join(log_lines[-200:]), language="text")
+        st.success("✅ Sin alertas críticas registradas.")
+
+    st.divider()
+
+    # ── RESUMEN POR SECCIÓN ─────────────────────────────────────────────────
+    st.markdown("### 📋 Estado por Sección")
+
+    _secs = {
+        "📦 Planilla de Carga":    ss.get("last_planilla_pdf") is not None,
+        "🚚 Resumen Camiones":     ss.get("t2_agr_cache") is not None,
+        "🚌 Camiones T2":          ss.get("t3_pdf_bytes") is not None,
+        "📊 Proyección Picking":   ss.get("t4_pdf_pickeros_bytes") is not None,
+        "🏗️ Autoelevadores":       ss.get("t_ae_pdf_bytes") is not None,
+        "🗂️ Clasificación":        ss.get("t_clas_cache") is not None,
+        "🗺️ Tablero Ruteador":     bool(_tabla_rows_v),
+        "💰 Cierre Financiero":    ss.get("t_cf_pdf_bytes") is not None,
+    }
+    _sc1, _sc2 = st.columns(2)
+    _sec_items = list(_secs.items())
+    for _si, (_sn, _sd) in enumerate(_sec_items):
+        _col = _sc1 if _si < len(_sec_items) // 2 else _sc2
+        _col.markdown(f"{'✅' if _sd else '⬜'} {_sn}")
+
+    st.divider()
+
+    # ── AE PALETAS PURAS POR CANCHA ─────────────────────────────────────────
+    # ── AE PALETAS PURAS ─────────────────────────────────────────────────────
+    if _tabla_rows_v:
+        _ae_total_v    = sum(r.get("Paletas", 0) for r in _tabla_rows_v)
+        _ae_top_v      = sorted(_tabla_rows_v, key=lambda r: r.get("Paletas", 0), reverse=True)
+        _ae_con_pall_v = [r for r in _tabla_rows_v if r.get("Paletas", 0) > 0]
+        if _ae_con_pall_v:
+            st.markdown("### 🏗️ Autoelevadores — Paletas por Camión")
+            _aec1, _aec2, _aec3 = st.columns(3)
+            _aec1.metric("🗂️ Total Paletas AE", f"{_ae_total_v:.0f}")
+            _aec2.metric("🚛 Cams con AE", len(_ae_con_pall_v))
+            _aec3.metric("📊 Prom. Pal/cam AE",
+                         f"{_ae_total_v / max(len(_ae_con_pall_v), 1):.1f}")
+            with st.expander("Detalle AE por camión"):
+                for _aer in _ae_top_v[:15]:
+                    if _aer.get("Paletas", 0) > 0:
+                        st.write(f"🚛 CAM {_aer['N° Cam']} — {_aer.get('Chofer','?')}: "
+                                 f"**{_aer.get('Paletas',0):.0f} pal** AE")
+            st.divider()
+
+    # ── LOG DE LA SESIÓN ────────────────────────────────────────────────────
+    st.markdown("### 📜 Log de la corrida actual")
+    log_lines = ss.get("log_buffer", [])
+    if not log_lines:
+        st.caption("(sin eventos aún — generá las planillas para ver el log)")
+    else:
+        # Parsear eventos por sección
+        _log_errors  = [l for l in log_lines if "[ERROR]" in l.upper()]
+        _log_warns   = [l for l in log_lines if "[WARN" in l.upper()]
+        _log_info    = [l for l in log_lines if "[INFO]" in l.upper()]
+
+        _lc1, _lc2, _lc3 = st.columns(3)
+        _lc1.metric("❌ Errores", len(_log_errors))
+        _lc2.metric("⚠️ Advertencias", len(_log_warns))
+        _lc3.metric("ℹ️ Eventos info", len(_log_info))
+
+        if _log_errors:
+            with st.expander(f"❌ Errores ({len(_log_errors)})", expanded=True):
+                for _le in _log_errors[-20:]:
+                    st.code(_le, language="text")
+
+        with st.expander("📜 Log completo", expanded=False):
+            st.code("\n".join(log_lines[-300:]), language="text")
+
         st.download_button(
-            "⬇ Descargar log completo",
+            "⬇ Descargar log completo (.txt)",
             data="\n".join(log_lines).encode("utf-8"),
             file_name=_stamp("run_log", "txt"),
             mime="text/plain",
         )
+
+    # ── 🔒 CERRAR DÍA (v4.99) ─────────────────────────────────────────────────
+    st.divider()
+    with st.container(border=True):
+        st.markdown("### 🔒 Cerrar Día")
+        st.caption(
+            "Genera el **Informe Final del Día** en PDF: resume todo lo procesado en el Picking Orchestrator. "
+            "Incluye log completo, alertas, vencimientos de licencias, PDFs generados, "
+            "camiones con exceso de pallets y métricas del tablero ruteador."
+        )
+        st.warning(
+            "💡 **Tip:** generá primero el Excel Tablero (sección Tablero Ruteador) y los PDFs de picking "
+            "para que el informe final esté completo.",
+            icon="ℹ️",
+        )
+
+        if st.button(
+            "🔒 Cerrar Día — Generar Informe Final PDF",
+            type="primary", use_container_width=True, key="btn_cerrar_dia",
+        ):
+            import datetime as _dtcd
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.units import mm
+            from reportlab.pdfgen import canvas as _rl_cvs
+
+            ss = st.session_state
+            _today = _dtcd.date.today()
+            _now   = _dtcd.datetime.now()
+            _fname_cd = f"{_today.strftime('%d-%m-%Y')}_Informe_Final_BKCC.pdf"
+
+            try:
+                _buf_cd = io.BytesIO()
+                _cw, _ch = A4
+                _cvs = _rl_cvs.Canvas(_buf_cd, pagesize=A4)
+
+                NAVY = colors.HexColor("#1F3864")
+                GOLD = colors.HexColor("#C9A84C")
+                _M = 18 * mm
+
+                def _draw_page_header(c, page_num=1):
+                    """Header institucional de cada página."""
+                    c.setFillColor(NAVY)
+                    c.rect(0, _ch - 22*mm, _cw, 22*mm, fill=1, stroke=0)
+                    c.setFillColor(colors.white)
+                    c.setFont("Helvetica-Bold", 13)
+                    c.drawString(_M, _ch - 13*mm, "INFORME FINAL DEL DÍA — PICKING ORCHESTRATOR")
+                    c.setFont("Helvetica", 9)
+                    c.drawString(_M, _ch - 19*mm,
+                                 f"Beccacece Hnos SA  ·  DPO 2.1  ·  {_today.strftime('%d/%m/%Y')}  "
+                                 f"·  Generado: {_now.strftime('%H:%M')}  ·  v{APP_VERSION}")
+                    c.drawRightString(_cw - _M, _ch - 19*mm, f"Pág. {page_num}")
+                    # Línea dorada
+                    c.setStrokeColor(GOLD)
+                    c.setLineWidth(2)
+                    c.line(_M, _ch - 23*mm, _cw - _M, _ch - 23*mm)
+
+                def _draw_section_title(c, y, title):
+                    c.setFillColor(NAVY)
+                    c.rect(_M - 2, y - 1, _cw - 2*_M + 2, 7*mm, fill=1, stroke=0)
+                    c.setFillColor(colors.white)
+                    c.setFont("Helvetica-Bold", 10)
+                    c.drawString(_M + 2, y + 1.5*mm, title)
+                    return y - 8*mm
+
+                def _draw_kv(c, y, label, value, color=None):
+                    c.setFont("Helvetica-Bold", 9)
+                    c.setFillColor(NAVY)
+                    c.drawString(_M, y, f"{label}:")
+                    c.setFont("Helvetica", 9)
+                    c.setFillColor(color or colors.black)
+                    c.drawString(_M + 55*mm, y, str(value))
+                    return y - 5*mm
+
+                _page = 1
+                _y = _ch - 28*mm
+                _draw_page_header(_cvs, _page)
+
+                # ── RESUMEN EJECUTIVO ──────────────────────────────────────────
+                _y = _draw_section_title(_cvs, _y, "📊  RESUMEN EJECUTIVO")
+
+                # Métricas del tablero ruteador (si calculado)
+                _tabla_rows_cd = ss.get("tr_tabla_rows_cache", [])
+                _n_cams = len([r for r in _tabla_rows_cd if r.get("PDV", 0) > 0]) if _tabla_rows_cd else "—"
+                _n_pdv  = sum(r.get("PDV", 0) for r in _tabla_rows_cd) if _tabla_rows_cd else "—"
+                _blt_up = round(sum(r.get("Bultos UP", 0) for r in _tabla_rows_cd), 1) if _tabla_rows_cd else "—"
+                _hlr    = round(sum(r.get("HL", 0) for r in _tabla_rows_cd), 1) if _tabla_rows_cd else "—"
+                _y = _draw_kv(_cvs, _y, "Fecha de operación",     _today.strftime("%d/%m/%Y"))
+                _y = _draw_kv(_cvs, _y, "Camiones en reparto",    _n_cams)
+                _y = _draw_kv(_cvs, _y, "Pedidos (PDV) ruteados", _n_pdv)
+                _y = _draw_kv(_cvs, _y, "Bultos UP totales",       _blt_up)
+                _y = _draw_kv(_cvs, _y, "HL Ruteados",            _hlr)
+
+                # PDFs generados
+                _y -= 3*mm
+                _y = _draw_section_title(_cvs, _y, "📄  PDFs GENERADOS HOY")
+                _pdfs_gen = []
+                if ss.get("t4_pdf_pickeros_bytes"):   _pdfs_gen.append(ss.get("t4_pdf_pickeros_fname","PDF Pickeros"))
+                if ss.get("t4_pdf_ctrl_bytes"):       _pdfs_gen.append(ss.get("t4_pdf_ctrl_fname","PDF Controladores"))
+                if ss.get("t3_pdf_bytes"):            _pdfs_gen.append(ss.get("t3_pdf_filename","PDF T2 Camiones"))
+                if ss.get("tr_pdf_bytes"):            _pdfs_gen.append(ss.get("tr_pdf_fname","PDF Tablero Ruteador"))
+                if ss.get("tr_xl2_bytes"):            _pdfs_gen.append(ss.get("tr_xl2_fname","Excel Tablero Ruteador"))
+                if not _pdfs_gen:
+                    _pdfs_gen = ["(ningún PDF generado en esta sesión)"]
+                for _pg in _pdfs_gen:
+                    _cvs.setFont("Helvetica", 9)
+                    _cvs.setFillColor(colors.black)
+                    _cvs.drawString(_M + 4, _y, f"  ✓  {_pg}")
+                    _y -= 5*mm
+
+                # Alertas del tablero
+                _y -= 3*mm
+                if _y < 60*mm:
+                    _cvs.showPage(); _page += 1
+                    _draw_page_header(_cvs, _page); _y = _ch - 28*mm
+                _y = _draw_section_title(_cvs, _y, "🚨  ALERTAS")
+                _alertas_cd = []
+                # Licencias vencidas
+                _lic_data = ss.get("tr_licencias_data", [])
+                if _lic_data:
+                    for _ld in _lic_data:
+                        try:
+                            _vd = pd.to_datetime(_ld.get("Venc. Licencia",""), dayfirst=True, errors="coerce")
+                            if not pd.isna(_vd) and _vd.date() <= _today:
+                                _alertas_cd.append(f"🚫 LICENCIA VENCIDA: {_ld.get('Chofer','')} — {_ld.get('Venc. Licencia','')}")
+                        except Exception: pass
+                # Camiones sobre peso (si hay tablero calculado)
+                for _rt in _tabla_rows_cd:
+                    if _rt.get("_peso_ok") is False:
+                        _alertas_cd.append(f"⚖️ EXCESO PESO: CAM {_rt.get('N° Cam','')} — {_rt.get('Chofer','')} ({_rt.get('Peso(kg)',0):,.0f} kg)")
+                # Rechazos
+                _tot_rech_cd = sum(r.get("Rechazos", 0) for r in _tabla_rows_cd)
+                if _tot_rech_cd > 0:
+                    _alertas_cd.append(f"⚠️ RECHAZOS: {_tot_rech_cd:.1f} bultos UP rechazados")
+
+                if not _alertas_cd:
+                    _alertas_cd = ["✅ Sin alertas críticas registradas"]
+                for _al in _alertas_cd:
+                    _col_alerta = colors.red if _al.startswith(("🚫","⚖️","⚠️")) else colors.HexColor("#00AA44")
+                    _cvs.setFont("Helvetica", 9)
+                    _cvs.setFillColor(_col_alerta)
+                    _cvs.drawString(_M + 4, _y, f"  {_al}")
+                    _y -= 5*mm
+                    if _y < 35*mm:
+                        _cvs.showPage()
+                        _page += 1
+                        _draw_page_header(_cvs, _page)
+                        _y = _ch - 28*mm
+
+                # ── ANÁLISIS OPERATIVO ─────────────────────────────────────────
+                if _tabla_rows_cd:
+                    _y -= 3*mm
+                    if _y < 60*mm:
+                        _cvs.showPage(); _page += 1
+                        _draw_page_header(_cvs, _page); _y = _ch - 28*mm
+                    _y = _draw_section_title(_cvs, _y, "📈  ANÁLISIS OPERATIVO")
+                    _cams_act_cd = [r for r in _tabla_rows_cd if r.get("Bultos UP", 0) > 0]
+                    _prom_bup_cd = (sum(r.get("Bultos UP", 0) for r in _cams_act_cd)
+                                   / max(len(_cams_act_cd), 1))
+                    _mayor_cd = max(_tabla_rows_cd, key=lambda r: r.get("Bultos UP", 0), default=None)
+                    _menor_cd = min(_cams_act_cd, key=lambda r: r.get("Bultos UP", 999), default=None)
+                    _exceso_cd = [r for r in _tabla_rows_cd if r.get("_peso_ok") is False]
+                    _ae_total_cd = sum(r.get("Paletas", 0) for r in _tabla_rows_cd)
+                    _drop_cd = (_n_pdv / max(len([r for r in _tabla_rows_cd if r.get("PDV",0)>0]),1)
+                                if _n_pdv != "—" else "—")
+                    _ao_kv_cd = [
+                        ("Prom. Bultos UP/cam",   f"{_prom_bup_cd:.1f} UP"),
+                        ("Mayor carga",
+                         f"CAM {_mayor_cd['N° Cam']} — {_mayor_cd.get('Chofer','?')} · {_mayor_cd.get('Bultos UP',0):.1f} UP"
+                         if _mayor_cd else "—"),
+                        ("Menor carga",
+                         f"CAM {_menor_cd['N° Cam']} — {_menor_cd.get('Chofer','?')} · {_menor_cd.get('Bultos UP',0):.1f} UP"
+                         if _menor_cd else "—"),
+                        ("Drop Size",             f"{_drop_cd:.2f}" if isinstance(_drop_cd, float) else "—"),
+                        ("Total Paletas AE",      f"{_ae_total_cd:.0f}"),
+                        ("Alertas peso excedido", f"{len(_exceso_cd)} cam(s)"),
+                    ]
+                    for _aol_cd, _aov_cd in _ao_kv_cd:
+                        _ao_color = colors.red if "excedido" in _aol_cd.lower() and len(_exceso_cd) > 0 else colors.black
+                        _y = _draw_kv(_cvs, _y, _aol_cd, _aov_cd, _ao_color)
+                        if _y < 35*mm:
+                            _cvs.showPage(); _page += 1
+                            _draw_page_header(_cvs, _page); _y = _ch - 28*mm
+
+                # ── LOG COMPLETO ───────────────────────────────────────────────
+                _y -= 3*mm
+                if _y < 60*mm:
+                    _cvs.showPage(); _page += 1
+                    _draw_page_header(_cvs, _page); _y = _ch - 28*mm
+                _y = _draw_section_title(_cvs, _y, "📜  LOG DE LA SESIÓN")
+                _log_lines_cd = ss.get("log_buffer", [])
+                if not _log_lines_cd:
+                    _log_lines_cd = ["(sin eventos registrados)"]
+                _cvs.setFont("Courier", 7)
+                _cvs.setFillColor(colors.black)
+                for _ll in _log_lines_cd[-150:]:  # Últimas 150 líneas
+                    if _y < 25*mm:
+                        _cvs.showPage(); _page += 1
+                        _draw_page_header(_cvs, _page); _y = _ch - 28*mm
+                        _cvs.setFont("Courier", 7)
+                    _cvs.drawString(_M, _y, _ll[:110])
+                    _y -= 3.5*mm
+
+                # Footer final
+                _cvs.setFont("Helvetica", 8)
+                _cvs.setFillColor(colors.grey)
+                _cvs.drawCentredString(_cw / 2, 12*mm,
+                    f"Picking Orchestrator v{APP_VERSION}  ·  Beccacece Hnos SA  ·  DPO 2.1  ·  "
+                    f"Generado {_now.strftime('%d/%m/%Y %H:%M')}")
+                _cvs.setStrokeColor(GOLD)
+                _cvs.line(_M, 16*mm, _cw - _M, 16*mm)
+
+                _cvs.save()
+                _buf_cd.seek(0)
+                _pdf_cd_bytes = _buf_cd.getvalue()
+
+                st.session_state["cierre_dia_pdf_bytes"] = _pdf_cd_bytes
+                st.session_state["cierre_dia_pdf_fname"] = _fname_cd
+                log_event("info", f"Informe Final del Día generado: {_fname_cd} ({len(_pdf_cd_bytes)//1024} KB)")
+                st.success(f"✅ Informe Final generado: {_fname_cd}")
+
+            except Exception as _ecd:
+                st.error(f"❌ Error generando informe: {_ecd}")
+                with st.expander("Detalle"):
+                    import traceback
+                    st.code(traceback.format_exc())
+
+        # Botón de descarga (persiste en session_state)
+        if st.session_state.get("cierre_dia_pdf_bytes"):
+            st.download_button(
+                "⬇ Descargar Informe Final del Día (PDF)",
+                data=st.session_state["cierre_dia_pdf_bytes"],
+                file_name=st.session_state.get("cierre_dia_pdf_fname","informe_final.pdf"),
+                mime="application/pdf",
+                use_container_width=True,
+                key="dl_cierre_dia",
+                type="primary",
+            )
 
 
 # ── MAIN ────────────────────────────────────────────────────────────────────
@@ -8564,27 +9320,64 @@ def _build_top10_clientes_anr(anr_bytes: bytes, n: int = 10) -> pd.DataFrame:
     """Top N clientes por BULTOS desc desde hoja 'CLIENTES' (ya preagregada).
     Cols: A=Cliente, B=Bultos venta, E=Importe neto, H=Unidad medida (HL).
     Devuelve: CLIENTE, BULTOS, IMPORTE, HL.
+
+    FIX v5.2.2: lectura robusta — detecta nombre real de la hoja CLIENTES
+    (case-insensitive, acepta variaciones como "Clientes", "CLIENTES", etc.)
+    y prueba header=1 y header=0 como fallback si no hay datos con el primero.
     """
-    df = pd.read_excel(io.BytesIO(anr_bytes), sheet_name="CLIENTES", header=1)
-    if df.empty or df.shape[1] < 8:
-        return pd.DataFrame(columns=["CLIENTE", "BULTOS", "IMPORTE", "HL"])
+    _EMPTY = pd.DataFrame(columns=["CLIENTE", "BULTOS", "IMPORTE", "HL"])
 
-    sub = df.iloc[:, [0, 1, 4, 7]].copy()
-    sub.columns = ["CLIENTE", "BULTOS", "IMPORTE", "HL"]
+    # ── 1. Detectar nombre real de hoja ──────────────────────────────────────
+    try:
+        _xl = pd.ExcelFile(io.BytesIO(anr_bytes))
+        _sheet_names = _xl.sheet_names
+    except Exception:
+        return _EMPTY
 
-    # Filtrar filas válidas: cliente no nulo, no "-", no "Total general"
-    sub = sub[sub["CLIENTE"].notna()]
-    sub["CLIENTE"] = sub["CLIENTE"].astype(str).str.strip()
-    sub = sub[~sub["CLIENTE"].isin(["-", "Total general", "(en blanco)", ""])]
-    sub = sub[~sub["CLIENTE"].str.lower().str.startswith("total")]
+    _sheet_cli = None
+    for _s in _sheet_names:
+        if _s.strip().upper() == "CLIENTES":
+            _sheet_cli = _s
+            break
+    # Fallback: primera hoja cuyo nombre contenga "cliente"
+    if _sheet_cli is None:
+        for _s in _sheet_names:
+            if "cliente" in _s.strip().lower():
+                _sheet_cli = _s
+                break
 
-    sub["BULTOS"]  = pd.to_numeric(sub["BULTOS"],  errors="coerce").fillna(0)
-    sub["IMPORTE"] = pd.to_numeric(sub["IMPORTE"], errors="coerce").fillna(0)
-    sub["HL"]      = pd.to_numeric(sub["HL"],      errors="coerce").fillna(0)
-    sub = sub[sub["BULTOS"] > 0]
+    if _sheet_cli is None:
+        return _EMPTY  # Hoja no encontrada
 
-    sub = sub.sort_values("BULTOS", ascending=False).reset_index(drop=True)
-    return sub.head(n)
+    # ── 2. Leer con header=1; si falla o queda vacío, reintentar con header=0 ─
+    def _read_and_parse(header_row: int) -> pd.DataFrame:
+        try:
+            df = pd.read_excel(io.BytesIO(anr_bytes), sheet_name=_sheet_cli, header=header_row)
+        except Exception:
+            return pd.DataFrame()
+        if df.empty or df.shape[1] < 8:
+            return pd.DataFrame()
+        sub = df.iloc[:, [0, 1, 4, 7]].copy()
+        sub.columns = ["CLIENTE", "BULTOS", "IMPORTE", "HL"]
+        sub = sub[sub["CLIENTE"].notna()]
+        sub["CLIENTE"] = sub["CLIENTE"].astype(str).str.strip()
+        sub = sub[~sub["CLIENTE"].isin(["-", "Total general", "(en blanco)", ""])]
+        sub = sub[~sub["CLIENTE"].str.lower().str.startswith("total")]
+        sub["BULTOS"]  = pd.to_numeric(sub["BULTOS"],  errors="coerce").fillna(0)
+        sub["IMPORTE"] = pd.to_numeric(sub["IMPORTE"], errors="coerce").fillna(0)
+        sub["HL"]      = pd.to_numeric(sub["HL"],      errors="coerce").fillna(0)
+        sub = sub[sub["BULTOS"] > 0]
+        return sub
+
+    df_out = _read_and_parse(1)
+    if df_out.empty:
+        df_out = _read_and_parse(0)  # fallback header fila 0
+
+    if df_out.empty:
+        return _EMPTY
+
+    df_out = df_out.sort_values("BULTOS", ascending=False).reset_index(drop=True)
+    return df_out.head(n)
 
 
 def _fmt_money(v: float) -> str:
@@ -9977,7 +10770,7 @@ def _safe_float(v):
 
 def render_tab_tablero():
     import io
-    _tr_subtabs = st.tabs(["📊 Tablero del día", "📅 Histórico Mensual", "📆 Histórico Anual"])
+    _tr_subtabs = st.tabs(["📊 Tablero del día", "📅 Histórico Mensual", "📆 Histórico Anual", "📍 Distancias & Costos"])
 
     # ══════════════════════════════════════════════════════════════════
     # TAB 1 — TABLERO DEL DÍA
@@ -10033,18 +10826,68 @@ def render_tab_tablero():
                     step=0.5, format="%.1f", key="tr_cfg_fz")
             fz_target = fz_target_pct / 100
 
-            # Patentes y capacidades
+            # Patentes y capacidades — con persistencia Sheets (v5.1.1)
             st.markdown("**Patentes y capacidades de camiones**")
-            cam_data = [{"camion": k, "patente": v,
+
+            # Inicializar desde Sheets en el primer render (misma lógica que licencias)
+            if "tr_cam_config_data" not in ss:
+                _cam_from_sheets = None
+                if _SHEETS_ID_PERSISTENCIA:
+                    with st.spinner("Cargando config camiones desde Sheets…"):
+                        _cam_from_sheets = _cargar_cam_config_sheets()
+                if _cam_from_sheets:
+                    # Reconstruir con los tipos correctos (Sheets devuelve strings)
+                    _cam_default_fallback = [
+                        {"camion": k, "patente": v,
                          "capacidad_kg": _TR_CAPACIDADES_DEFAULT.get(v, 9480)}
-                        for k, v in _TR_CAMIONES_DEFAULT.items()]
-            df_cam_edit = st.data_editor(pd.DataFrame(cam_data),
-                use_container_width=True, hide_index=True, key="tr_cam_cfg",
-                column_config={
-                    "camion": st.column_config.NumberColumn("N° Camión", disabled=True),
-                    "patente": st.column_config.TextColumn("Patente"),
-                    "capacidad_kg": st.column_config.NumberColumn("Cap. máx (kg)", step=10),
-                })
+                        for k, v in _TR_CAMIONES_DEFAULT.items()
+                    ]
+                    try:
+                        _cam_from_sheets_typed = []
+                        for _cr in _cam_from_sheets:
+                            _cam_from_sheets_typed.append({
+                                "camion":       int(float(str(_cr.get("camion", 0)))),
+                                "patente":      str(_cr.get("patente", "")),
+                                "capacidad_kg": int(float(str(_cr.get("capacidad_kg", 9480)))),
+                            })
+                        ss["tr_cam_config_data"] = _cam_from_sheets_typed
+                    except Exception:
+                        ss["tr_cam_config_data"] = _cam_default_fallback
+                else:
+                    ss["tr_cam_config_data"] = [
+                        {"camion": k, "patente": v,
+                         "capacidad_kg": _TR_CAPACIDADES_DEFAULT.get(v, 9480)}
+                        for k, v in _TR_CAMIONES_DEFAULT.items()
+                    ]
+
+            _cam_col1, _cam_col2 = st.columns([6, 1])
+            with _cam_col1:
+                df_cam_edit = st.data_editor(
+                    pd.DataFrame(ss["tr_cam_config_data"]),
+                    use_container_width=True, hide_index=True, key="tr_cam_cfg",
+                    column_config={
+                        "camion":       st.column_config.NumberColumn("N° Camión", disabled=True),
+                        "patente":      st.column_config.TextColumn("Patente"),
+                        "capacidad_kg": st.column_config.NumberColumn("Cap. máx (kg)", step=10),
+                    })
+            with _cam_col2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("💾 Guardar", key="tr_cam_save", use_container_width=True, type="primary"):
+                    ss["tr_cam_config_data"] = df_cam_edit.to_dict("records")
+                    if _SHEETS_ID_PERSISTENCIA:
+                        with st.spinner("Guardando en Sheets…"):
+                            _cam_saved = _guardar_cam_config_sheets(ss["tr_cam_config_data"])
+                        if _cam_saved:
+                            st.success("✅ Guardado")
+                        else:
+                            st.warning("⚠️ Solo sesión")
+                    else:
+                        st.success("✅ Guardado (sesión)")
+                    st.rerun()
+                if st.button("↩️ Restaurar", key="tr_cam_reset", use_container_width=True):
+                    ss.pop("tr_cam_config_data", None)
+                    st.rerun()
+
             cam_patente = dict(zip(df_cam_edit["camion"], df_cam_edit["patente"]))
             cam_capkg   = dict(zip(df_cam_edit["patente"], df_cam_edit["capacidad_kg"]))
 
@@ -10121,9 +10964,14 @@ def render_tab_tablero():
 
         es_sabado = fecha_dia.weekday() == 5
 
-        # ── LICENCIAS — tabla editable persistente (v4.70) ────────────────────
+        # ── LICENCIAS — tabla editable persistente (v4.99: Sheets) ──────────
         st.markdown("### 🪪 Licencias conductores")
-        st.caption("Editá directamente la tabla. Los datos persisten durante la sesión (no se borran con F5 mientras no se recargue la página).")
+        st.caption(
+            "Editá directamente la tabla. "
+            + ("Los cambios se guardan en Google Sheets (persisten entre sesiones)." if _SHEETS_ID_PERSISTENCIA
+               else "⚠️ Sin Sheets de persistencia configurado — los datos se borran al recargar. "
+                    "Configura `SHEETS_PERSISTENCIA_ID` en los secrets de Streamlit.")
+        )
 
         # Inicializar tabla de licencias desde datos hardcoded si no existe
         _LICENCIAS_DEFAULT = [
@@ -10160,14 +11008,19 @@ def render_tab_tablero():
             {"Chofer": "COLQUE",      "N° Licencia": "26691373", "Venc. Licencia": "28/5/2026",  "Clases": "A.1.2 B.2 C.1"},
         ]
 
+        # v4.99: cargar desde Sheets en el primer render de la sesión
         if "tr_licencias_data" not in ss:
-            ss["tr_licencias_data"] = _LICENCIAS_DEFAULT.copy()
+            _lic_from_sheets = None
+            if _SHEETS_ID_PERSISTENCIA:
+                with st.spinner("Cargando licencias desde Sheets…"):
+                    _lic_from_sheets = _cargar_licencias_sheets()
+            ss["tr_licencias_data"] = _lic_from_sheets if _lic_from_sheets else _LICENCIAS_DEFAULT.copy()
 
         _df_lic_edit = pd.DataFrame(ss["tr_licencias_data"])
 
         _lc_exp = st.expander("🪪 Ver / editar licencias de conductores", expanded=False)
         with _lc_exp:
-            st.caption("Doble click en una celda para editar. Los cambios se mantienen durante la sesión.")
+            st.caption("Doble click en una celda para editar. Presioná 💾 Guardar para persistir en Sheets.")
             _lcol1, _lcol2 = st.columns([6, 1])
             with _lcol1:
                 _df_lic_edited = st.data_editor(
@@ -10186,7 +11039,15 @@ def render_tab_tablero():
             with _lcol2:
                 if st.button("💾 Guardar", key="tr_lic_save", use_container_width=True, type="primary"):
                     ss["tr_licencias_data"] = _df_lic_edited.to_dict("records")
-                    st.success("✅ Guardado")
+                    if _SHEETS_ID_PERSISTENCIA:
+                        with st.spinner("Guardando en Sheets…"):
+                            _saved = _guardar_licencias_sheets(ss["tr_licencias_data"])
+                        if _saved:
+                            st.success("✅ Guardado en Sheets")
+                        else:
+                            st.warning("⚠️ Guardado localmente (Sheets no disponible)")
+                    else:
+                        st.success("✅ Guardado (solo sesión)")
                     st.rerun()
                 if st.button("↩️ Restaurar", key="tr_lic_reset", use_container_width=True):
                     ss["tr_licencias_data"] = _LICENCIAS_DEFAULT.copy()
@@ -10392,69 +11253,95 @@ def render_tab_tablero():
         #
         # El CAR contiene TODAS las líneas: VE (bloque azul) + CHESS juntos.
 
-        bult_eq_por_cam = pd.Series(dtype=float)   # bultos equivalentes (informativo)
-        up_por_cam      = pd.Series(dtype=float)   # UP picking por camion (fracciones, v4.70)
-        paletas_por_cam = pd.Series(dtype=float)   # paletas reales = beq/BXP = UP/50
+        # ── Fix v5.2.1 — Fuentes corregidas para Bultos y Paletas ───────────────
+        #
+        # ANTES (bug): bultos y paletas venían de loop CAR+openpyxl con índices posicionales.
+        # AHORA:
+        #   bult_eq_por_cam  = ANR col K (bultos reales — fuente Chess)
+        #   paletas/ae_pall  = _t4_load_car_proyeccion (idéntico a Proyección Picking)
+        #   hl_por_cam/peso  = CAR+DDM (fallback si falla lo anterior)
+
+        bult_eq_por_cam = pd.Series(dtype=float)
+        up_por_cam      = pd.Series(dtype=float)
+        paletas_por_cam = pd.Series(dtype=float)
+        ae_pall_por_cam = pd.Series(dtype=float)
         hl_por_cam      = pd.Series(dtype=float)
         peso_por_cam    = pd.Series(dtype=float)
-
         _car_disponible = False
-        if car_file_tr is not None and _ddm_dict:
+
+        # 1. bult_eq_por_cam: ANR col K (bultos reales por camión)
+        if col_blt_anr is not None and not df_dia.empty:
+            try:
+                bult_eq_por_cam = (
+                    df_dia.groupby(col_camion)[col_blt_anr]
+                    .apply(lambda x: pd.to_numeric(x, errors="coerce").fillna(0).sum())
+                )
+            except Exception:
+                bult_eq_por_cam = pd.Series(dtype=float)
+
+        # 2. paletas + AE: _t4_load_car_proyeccion (= lógica de Proyección Picking)
+        _car_tr_f = ss.get("t1_car") or ss.get("t2_car") or ss.get("t4_car")
+        _fr_tr_f  = ss.get("t1_fr")
+        if _car_tr_f is not None and _fr_tr_f is not None:
+            try:
+                _car_tr_f.seek(0); _fr_tr_f.seek(0)
+                _pdt   = _t4_load_car_proyeccion(_car_tr_f.read(), _fr_tr_f.read())
+                _car_tr_f.seek(0); _fr_tr_f.seek(0)
+                _pdf_t = _pdt["df"].set_index("Camión")
+                # TOTAL_PALL = AE + picking fractions  (= Bultos UP en Proyeccion)
+                paletas_por_cam = _pdf_t["TOTAL_PALL"].astype(float)
+                ae_pall_por_cam = _pdf_t["AE_PALL"].astype(float)
+                # Picking UP (fraccion por camion)
+                _up_c = [f"_up_{c}" for c in _T4_CANCHAS if f"_up_{c}" in _pdf_t.columns]
+                if _up_c:
+                    up_por_cam = _pdf_t[_up_c].sum(axis=1).astype(float)
+                # HL y Peso desde _t4_load_car_proyeccion (DDM x beq del CAR)
+                _hl_c = [f"_hl_{c}" for c in _T4_CANCHAS if f"_hl_{c}" in _pdf_t.columns]
+                _kg_c = "kg"
+                if _hl_c:
+                    _hl_pick = _pdf_t[_hl_c].sum(axis=1)
+                    _hl_ae   = _pdf_t.get("hl_ae", pd.Series(0.0, index=_pdf_t.index))
+                    hl_por_cam = (_hl_pick + _hl_ae).astype(float)
+                if _kg_c in _pdf_t.columns:
+                    peso_por_cam = _pdf_t[_kg_c].astype(float)
+                _car_disponible = True
+            except Exception as _car_err69:
+                st.warning(f"\u26a0\ufe0f Error sincronizando con Proyecci\u00f3n Picking: {_car_err69}")
+
+        # 3. Fallback HL/Peso via CAR+DDM si la llamada anterior fall\u00f3
+        _car_tr_f2 = ss.get("t1_car") or ss.get("t2_car") or ss.get("t4_car")
+        if _car_tr_f2 is not None and _ddm_dict and (hl_por_cam.empty or peso_por_cam.empty):
             try:
                 import openpyxl as _ox69
-                car_file_tr.seek(0)
-                _wb69 = _ox69.load_workbook(car_file_tr, read_only=True, data_only=True)
-                car_file_tr.seek(0)
+                _car_tr_f2.seek(0)
+                _wb69 = _ox69.load_workbook(_car_tr_f2, read_only=True, data_only=True)
+                _car_tr_f2.seek(0)
                 _ws69 = _wb69.worksheets[0]
                 _car_rows69 = list(_ws69.iter_rows(min_row=2, values_only=True))
                 _wb69.close()
-
-                from collections import defaultdict as _dd69
-                import math as _math_tr
-                _beq69 = _dd69(float)
-                _up69  = _dd69(float)   # UP picking (fracciones)
-                _ae69  = _dd69(float)   # paletas AE (enteras)
-                _pal69 = _dd69(float)   # TOT PALL = AE + pick_up
-                _hl69  = _dd69(float)
-                _kg69  = _dd69(float)
-
+                from collections import defaultdict as _dd69fb
+                _hl69 = _dd69fb(float); _kg69 = _dd69fb(float)
                 for _r69 in _car_rows69:
                     try:
                         _cam69 = _r69[10]; _sku69 = _r69[17]
                         if _cam69 is None or _sku69 is None: continue
-                        _blt69 = float(_r69[19] or 0)
-                        _uni69 = float(_r69[21] or 0)
-                        _sid69 = int(float(str(_sku69)))
-                        _d69   = _ddm_dict.get(_sid69, {})
-                        _bxp69 = _d69.get("bxp", 50) or 50
+                        _blt69 = float(_r69[19] or 0); _uni69 = float(_r69[21] or 0)
+                        _sid69 = int(float(str(_sku69))); _d69 = _ddm_dict.get(_sid69, {})
                         _unb69 = _d69.get("un_bulto", 0)
-                        _hl_u  = _d69.get("hl_unit",  0)
-                        _kg_u  = _d69.get("kg_unit",  0)
-                        # bultos equivalentes (enteros + fracción de sueltas)
+                        _hl_u  = _d69.get("hl_unit",  0); _kg_u = _d69.get("kg_unit", 0)
                         _be69  = _blt69 + (_uni69 / _unb69 if _unb69 > 0 and _uni69 > 0 else 0)
                         _cam_i = int(float(str(_cam69)))
-                        # UP = bultos_eq / BXP  (paletas reales, igual que Proyección Picking)
-                        _up_sku = _be69 / _bxp69 if _bxp69 > 0 else 0.0
-                        _ae_sku = float(_math_tr.floor(_up_sku))   # paletas AE completas
-                        _pk_sku = _up_sku - _ae_sku                # fracción picking
-                        _beq69[_cam_i] += _be69
-                        _up69[_cam_i]  += _pk_sku    # UP picking (fracción)
-                        _ae69[_cam_i]  += _ae_sku    # paletas AE (enteras)
-                        _pal69[_cam_i] += _up_sku    # TOT PALL = AE + pick_up
-                        _hl69[_cam_i]  += _hl_u * _be69
-                        _kg69[_cam_i]  += _kg_u * _be69
+                        _hl69[_cam_i] += _hl_u * _be69; _kg69[_cam_i] += _kg_u * _be69
                     except Exception:
                         pass
-
-                bult_eq_por_cam = pd.Series(dict(_beq69), dtype=float)
-                up_por_cam      = pd.Series(dict(_up69),  dtype=float)   # picking UP (fracción)
-                ae_pall_por_cam = pd.Series(dict(_ae69),  dtype=float)   # paletas AE
-                paletas_por_cam = pd.Series(dict(_pal69), dtype=float)   # TOT PALL
-                hl_por_cam      = pd.Series(dict(_hl69),  dtype=float)
-                peso_por_cam    = pd.Series(dict(_kg69),  dtype=float)
+                if hl_por_cam.empty:
+                    hl_por_cam   = pd.Series(dict(_hl69), dtype=float)
+                if peso_por_cam.empty:
+                    peso_por_cam = pd.Series(dict(_kg69), dtype=float)
                 _car_disponible = True
-            except Exception as _car_err69:
-                st.warning(f"⚠️ Error calculando UP desde CAR: {_car_err69}")
+            except Exception:
+                pass
+
 
         if not _car_disponible:
             # Fallback: columna UNIDAD PAQUETE del ANR
@@ -10715,6 +11602,8 @@ def render_tab_tablero():
             })
 
         if tabla_rows:
+            # v4.99: cachear para Cerrar Día
+            ss["tr_tabla_rows_cache"] = tabla_rows
             df_tab = pd.DataFrame(tabla_rows)
 
             def _style_tabla(row):
@@ -10799,341 +11688,301 @@ def render_tab_tablero():
                     from openpyxl import Workbook
                     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
                     from openpyxl.utils import get_column_letter
-                    from openpyxl.chart import BarChart, Reference
+                    from openpyxl.chart import BarChart, LineChart, Reference
                     from openpyxl.worksheet.page import PageMargins
 
                     _wb2 = Workbook()
                     _ws2 = _wb2.active
                     _ws2.title = "Tablero Ruteador"
+                    _ws2.page_setup.orientation = "landscape"
+                    _ws2.page_setup.paperSize   = 9
+                    _ws2.page_setup.fitToPage   = True
+                    _ws2.page_setup.fitToWidth  = 1
+                    _ws2.page_setup.fitToHeight = 0
+                    _ws2.page_margins = PageMargins(left=0.30, right=0.30, top=0.30, bottom=0.30)
 
-                    # ── Configurar página A4 landscape ──────────────────────────
-                    _ws2.page_setup.orientation    = "landscape"
-                    _ws2.page_setup.paperSize      = 9   # A4
-                    _ws2.page_setup.fitToPage      = True
-                    _ws2.page_setup.fitToWidth     = 1
-                    _ws2.page_setup.fitToHeight    = 0
-                    _ws2.sheet_properties.pageSetUpPr.fitToPage = True
-                    _ws2.page_margins = PageMargins(
-                        left=0.35, right=0.35, top=0.35, bottom=0.35,
-                        header=0.2, footer=0.2
-                    )
+                    # ── Paleta colores (= PDF) ──────────────────────────────
+                    _NX  = "1F3864"; _GD  = "C9A84C"
+                    _GR  = "00C853"; _RX  = "FF4B4B"; _AM  = "FFF3CD"; _AMT = "856404"
+                    _LGX = "F2F2F2"; _BL2 = "2E5FA3"; _WH  = "FFFFFF"
 
-                    # ── Helpers ──────────────────────────────────────────────────
-                    _NX  = "1F3864"; _GRX = "00C853"; _RX = "FF4B4B"
-                    _LGX = "F2F2F2"; _BLX = "E8EAF6"; _AX = "FFF3CD"
-                    def _fx(h): return PatternFill("solid", fgColor=h)
-                    def _fo(bold=False, color="000000", sz=9):
-                        return Font(bold=bold, color=color, size=sz, name="Arial")
-                    def _al(h="center", v="center", w=False):
-                        return Alignment(horizontal=h, vertical=v, wrap_text=w)
-                    def _bd():
-                        s = Side(style="thin", color="DDDDDD")
-                        return Border(left=s, right=s, top=s, bottom=s)
-                    def _cell(r, c, val, bold=False, color="000000", sz=9,
-                              bg=None, halign="center", wrap=False, border=True):
-                        _c = _ws2.cell(r, c, val)
-                        _c.font = _fo(bold, color, sz)
-                        _c.alignment = _al(halign, "center", wrap)
-                        if bg: _c.fill = _fx(bg)
-                        if border: _c.border = _bd()
+                    # Anchos de columna A:Q (17 cols)
+                    for _cl2, _cw2 in zip(
+                        "ABCDEFGHIJKLMNOPQ",
+                        [5,14,6,9,9,7,9,7,9,8,7,12,8,5,5,5,5]
+                    ):
+                        _ws2.column_dimensions[_cl2].width = _cw2
+
+                    def _fx2(h): return PatternFill("solid", fgColor=h)
+                    def _fo2(b=False,c="000000",s=9): return Font(bold=b,color=c,size=s,name="Arial")
+                    def _al2(h="center",v="center",w=False): return Alignment(horizontal=h,vertical=v,wrap_text=w)
+                    def _bd2():
+                        t=Side(style="thin",color="CCCCCC")
+                        return Border(left=t,right=t,top=t,bottom=t)
+                    def _C2(r,c,v,bold=False,fg="000000",sz=9,bg=None,hal="center",wrap=False,brd=True):
+                        _c=_ws2.cell(r,c,v); _c.font=_fo2(bold,fg,sz); _c.alignment=_al2(hal,"center",wrap)
+                        if bg: _c.fill=_fx2(bg)
+                        if brd: _c.border=_bd2()
                         return _c
+                    def _M2(r1,c1,r2,c2):
+                        _ws2.merge_cells(start_row=r1,start_column=c1,end_row=r2,end_column=c2)
 
-                    row = 1
+                    _N2 = 17  # columnas A:Q
+                    _row2 = 1
 
-                    # ════════════════════════════════════════════════════════
-                    # HOJA 1 — RESUMEN (KPIs · Targets · Totales · Gráfico · Análisis)
-                    # ════════════════════════════════════════════════════════
+                    # ── 1. TÍTULO PRINCIPAL ─────────────────────────────────
+                    _M2(_row2,1,_row2,_N2)
+                    _C2(_row2,1,
+                        f"TABLERO RUTEADOR — {fecha_dia.strftime('%A').upper()} {fecha_dia.strftime('%d/%m/%Y')}"
+                        f"   ·   Beccacece Hnos SA  ·  DPO 2.1  ·  v{APP_VERSION}"
+                        f"   ·   Prod. Ruteo: {prod_ruteo:.0%}",
+                        bold=True, fg=_WH, sz=11, bg=_NX, hal="left")
+                    _ws2.row_dimensions[_row2].height = 22; _row2 += 1
 
-                    # ── FILA 1: Header título completo ──────────────────────────
-                    _ws2.merge_cells(f"A{row}:N{row}")
-                    _cell(row, 1,
-                        f"TABLERO RUTEADOR — {fecha_dia.strftime('%A %d/%m/%Y').upper()}"
-                        f"   |   Prod. Ruteo: {prod_ruteo:.0%}"
-                        f"   |   Beccacece Hnos SA · DPO 2.1 · v{APP_VERSION}",
-                        bold=True, color="FFFFFF", sz=11, bg=_NX)
-                    _ws2.row_dimensions[row].height = 22; row += 1
-
-                    # ── FILA 2: KPI cards (6 KPIs en 6 columnas, 2 columnas cada una) ──
-                    _kh = ["SLA Entrega", "T. Ruteo", "Ocup. Bodega",
-                           "Fuera Zona", "Util. Veh.", "Eficiencia"]
-                    _kr = [hora_real_str or "—", ruteo_real_str or "—",
-                           f"{ocup_bodega:.1f} UP",
-                           f"{fuera_zona_real} ({fuera_zona_pct:.1%})",
-                           f"{util_vehiculos:.0%}", f"{eficiencia:.1%}"]
-                    _kt = [sla_str, ruteo_str, f"≥{ocup_target}",
-                           f"≤{fz_target:.0%}", f"≥{_TR_TARGET_UTIL_VEH:.0%}",
-                           f"≥{_TR_TARGET_EFICIENCIA:.0%}"]
-                    _ko = [sla_ok, ruteo_ok, ocup_ok, fz_ok, util_ok, efic_ok]
-                    for _ki, (kh2, kr2, kt2, ko2) in enumerate(zip(_kh,_kr,_kt,_ko)):
-                        _bgk = _GRX if ko2 is True else (_RX if ko2 is False else "FFC107")
-                        _c2s = _ki * 2 + 1
-                        _ws2.merge_cells(f"{get_column_letter(_c2s)}{row}:{get_column_letter(_c2s+1)}{row}")
-                        _cell(row, _c2s,
-                              f"{kh2}\n{kr2}\nTarget: {kt2}",
-                              bold=True, color="FFFFFF" if ko2 is not None else "000000",
-                              sz=8, bg=_bgk, wrap=True)
-                    _ws2.row_dimensions[row].height = 40; row += 1
-
-                    # ── TABLA TARGET / AVANCE / STATUS (espejo del PDF) ──────
-                    _ws2.merge_cells(f"A{row}:N{row}")
-                    _cell(row, 1, "OBJETIVOS DEL DÍA", bold=True, color="FFFFFF", sz=9, bg=_NX)
-                    _ws2.row_dimensions[row].height = 15; row += 1
-
-                    _tgt_hdr_xl = ["KPI", "TARGET", "AVANCE", "STATUS"]
-                    _tgt_hdr_widths = [7, 3, 3, 4]  # col spans (total 17 cols = A:Q, but we use A:N=14)
-                    # Header row: cols A-G / H-J / K-M / N
-                    _tgt_col_spans = [(1,7), (8,10), (11,13), (14,14)]  # (start, end) 1-indexed
-                    for (_cs, _ce), _ht in zip(_tgt_col_spans, _tgt_hdr_xl):
-                        if _cs == _ce:
-                            _cell(row, _cs, _ht, bold=True, color="FFFFFF", sz=8, bg="2e5fa3")
-                        else:
-                            _ws2.merge_cells(f"{get_column_letter(_cs)}{row}:{get_column_letter(_ce)}{row}")
-                            _cell(row, _cs, _ht, bold=True, color="FFFFFF", sz=8, bg="2e5fa3")
-                    _ws2.row_dimensions[row].height = 14; row += 1
-
-                    _tgt_data_xl = [
-                        ("Hora entrega ventas (SLA)", sla_str, hora_real_str or "—", sla_ok),
-                        ("Tiempo de ruteo",           ruteo_str, ruteo_real_str or "—", ruteo_ok),
-                        ("Ocupación bodega bultos UP", f"≥{ocup_target}", f"{ocup_bodega:.1f}", ocup_ok),
-                        ("Fuera de zona",             f"≤{fz_target:.0%}", f"{fuera_zona_pct:.1%}", fz_ok),
+                    # ── 2. 6 KPI CARDS (3 per row, 2 rows = 6 filas) ──────
+                    _cards2 = [
+                        ("SLA Entrega",     hora_real_str or "— Sin dato",  f"Target: {sla_str}",   sla_ok),
+                        ("T. Ruteo",        ruteo_real_str or "— Sin dato", f"Target: {ruteo_str}", ruteo_ok),
+                        (f"Ocup. Bodega",   f"{'✗' if not ocup_ok else '✓'} {ocup_bodega:.1f} UP", f"Target: ≥{ocup_target} UP", ocup_ok),
+                        ("Fuera de Zona",   f"{'✓' if fz_ok else '✗'} {fuera_zona_real} ({fuera_zona_pct:.1%})", f"Target: ≤{fz_target:.0%}", fz_ok),
+                        ("Util. Vehículos", f"{'✓' if util_ok else '✗'} {util_vehiculos:.0%}",    f"Target: ≥{_TR_TARGET_UTIL_VEH:.0%}", util_ok),
+                        ("Eficiencia",      f"{'✓' if efic_ok else '✗'} {eficiencia:.1%}",        f"Target: ≥{_TR_TARGET_EFICIENCIA:.0%}", efic_ok),
                     ]
-                    for _ti6, (_tk, _tt, _ta, _tok) in enumerate(_tgt_data_xl):
-                        _bg6 = _LGX if _ti6 % 2 else "FFFFFF"
-                        _ws2.merge_cells(f"A{row}:G{row}")
-                        _cell(row, 1, _tk, sz=8, bg=_bg6, halign="left")
-                        _ws2.merge_cells(f"H{row}:J{row}")
-                        _cell(row, 8, _tt, sz=8, bg=_bg6)
-                        _ws2.merge_cells(f"K{row}:M{row}")
-                        _cell(row, 11, _ta, bold=True, sz=8, bg=_bg6)
-                        _ok_bg = _GRX if _tok is True else (_RX if _tok is False else "888888")
-                        _ok_txt = "OK" if _tok is True else ("NO OK" if _tok is False else "—")
-                        _cell(row, 14, _ok_txt, bold=True, color="FFFFFF", sz=8, bg=_ok_bg)
-                        _ws2.row_dimensions[row].height = 13; row += 1
+                    _spans2 = [(1,6),(7,11),(12,17)]
+                    for _roff in range(2):
+                        for _ci2b in range(3):
+                            _kn2,_kv2,_kt2,_ko2 = _cards2[_roff*3+_ci2b]
+                            _cs2,_ce2 = _spans2[_ci2b]
+                            _bg_k2 = _GR if _ko2 is True else (_RX if _ko2 is False else _AM)
+                            _fg_k2 = _WH if _ko2 is not None else _AMT
+                            _M2(_row2+_roff*3,   _cs2, _row2+_roff*3,   _ce2)
+                            _C2(_row2+_roff*3,   _cs2, _kn2, bold=True, fg=_WH,  sz=8,  bg=_NX)
+                            _M2(_row2+_roff*3+1, _cs2, _row2+_roff*3+1, _ce2)
+                            _C2(_row2+_roff*3+1, _cs2, _kv2, bold=True, fg=_fg_k2, sz=12, bg=_bg_k2)
+                            _M2(_row2+_roff*3+2, _cs2, _row2+_roff*3+2, _ce2)
+                            _C2(_row2+_roff*3+2, _cs2, _kt2, bold=False, fg=_fg_k2, sz=7,  bg=_bg_k2)
+                    for _ri2b in range(6):
+                        _ws2.row_dimensions[_row2+_ri2b].height = 13 if _ri2b%3!=1 else 20
+                    _row2 += 7
 
-                    row += 1  # espacio
+                    # ── 3. OBJETIVOS DEL DÍA ───────────────────────────────
+                    _M2(_row2,1,_row2,_N2)
+                    _C2(_row2,1,"OBJETIVOS DEL DÍA",bold=True,fg=_WH,sz=9,bg=_NX)
+                    _ws2.row_dimensions[_row2].height=15; _row2+=1
+                    for (_cs3,_ce3),_ht3 in zip([(1,9),(10,12),(13,15),(16,17)],
+                                                  ["KPI","TARGET","AVANCE","STATUS"]):
+                        _M2(_row2,_cs3,_row2,_ce3)
+                        _C2(_row2,_cs3,_ht3,bold=True,fg=_WH,sz=8,bg=_BL2)
+                    _ws2.row_dimensions[_row2].height=13; _row2+=1
+                    _tgt_xl = [
+                        ("Hora entrega ventas (SLA)", sla_str,            hora_real_str or "—",   sla_ok),
+                        ("Tiempo de ruteo",           ruteo_str,           ruteo_real_str or "—",  ruteo_ok),
+                        ("Ocupación bodega UP",        f"≥{ocup_target}",  f"{ocup_bodega:.1f}",   ocup_ok),
+                        ("Fuera de zona",              f"≤{fz_target:.0%}",f"{fuera_zona_pct:.1%}", fz_ok),
+                    ]
+                    for _ti3,(_tk3,_tt3,_ta3,_tok3) in enumerate(_tgt_xl):
+                        _bgr3=_LGX if _ti3%2==0 else "FFFFFF"
+                        _ok3_bg=_GR if _tok3 is True else (_RX if _tok3 is False else "888888")
+                        _ok3_t="OK" if _tok3 is True else ("NO OK" if _tok3 is False else "—")
+                        _M2(_row2,1,_row2,9);  _C2(_row2,1,_tk3,sz=8,bg=_bgr3,hal="left")
+                        _M2(_row2,10,_row2,12); _C2(_row2,10,_tt3,sz=8,bg=_bgr3)
+                        _M2(_row2,13,_row2,15); _C2(_row2,13,_ta3,bold=True,sz=8,bg=_bgr3)
+                        _M2(_row2,16,_row2,17); _C2(_row2,16,_ok3_t,bold=True,fg=_WH,sz=8,bg=_ok3_bg)
+                        _ws2.row_dimensions[_row2].height=13; _row2+=1
+                    _row2+=1
 
-                    # ── TOTALES GLOBALES en franja bicolor ──────────────────
-                    _ws2.merge_cells(f"A{row}:N{row}")
-                    _cell(row, 1, "TOTALES GLOBALES", bold=True, color="FFFFFF", sz=9, bg=_NX)
-                    _ws2.row_dimensions[row].height = 15; row += 1
+                    # ── 4. TOTALES GLOBALES ────────────────────────────────
+                    _M2(_row2,1,_row2,_N2)
+                    _C2(_row2,1,"TOTALES GLOBALES",bold=True,fg=_WH,sz=9,bg=_NX)
+                    _ws2.row_dimensions[_row2].height=15; _row2+=1
+                    _th4=["Cams","PDV","Bultos","Blt.UP","Paletas","HL","Peso(kg)","Drop Size","Rechazos","FZ PDV","FZ%","Prod.Ruteo"]
+                    _tv4=[f"{camiones_en_reparto}/{total_camiones_flota}",str(total_pedidos),
+                          f"{total_bup:,.0f}",f"{total_up:.2f}",f"{paletas_total:.2f}",
+                          f"{total_hl:.2f}",f"{total_peso_kg:,.0f}",f"{drop_size:.2f}",
+                          f"{total_rechazos_up:.1f}",str(fuera_zona_real),
+                          f"{fuera_zona_pct:.1%}",f"{prod_ruteo:.0%}"]
+                    for _i4,(_th4i,_tv4i) in enumerate(zip(_th4,_tv4),1):
+                        _C2(_row2,  _i4,_th4i,bold=True,fg=_NX,sz=7,bg="E3F2FD")
+                        _C2(_row2+1,_i4,_tv4i,bold=True,sz=10)
+                    _ws2.row_dimensions[_row2].height=13
+                    _ws2.row_dimensions[_row2+1].height=18
+                    _row2+=3
 
-                    _tl = ["Camiones","PDV","Bultos","Bultos UP","Paletas","HL","Peso(kg)","Drop Size","Rechazos","SV","FZ PDV","FZ %","Prod.Ruteo"]
-                    _tv = [f"{camiones_en_reparto}/{total_camiones_flota}",
-                           str(total_pedidos), f"{total_bup:.0f}", f"{total_up:.2f}", f"{paletas_total:.2f}",
-                           f"{total_hl:.2f}", f"{total_peso_kg:,.0f}",
-                           f"{drop_size:.2f}", f"{total_rechazos_up:.1f}",
-                           str(segundas_vueltas), str(fuera_zona_real),
-                           f"{fuera_zona_pct:.1%}", f"{prod_ruteo:.0%}"]
-                    for _ti, (_tl2, _tv2) in enumerate(zip(_tl, _tv), 1):
-                        _cell(row,   _ti, _tl2, bold=True, color=_NX, sz=8, bg=_BLX)
-                        _cell(row+1, _ti, _tv2, bold=True, sz=10)
-                    _ws2.row_dimensions[row].height   = 14
-                    _ws2.row_dimensions[row+1].height = 18
-                    row += 3
-
-                    # ── GRÁFICO COMBINADO (barras Bultos UP + línea PDV — igual que PDF) ─
+                    # ── 5. GRÁFICO Bultos UP por Camión ────────────────────
                     if tabla_rows:
-                        try:
-                            from openpyxl.chart import BarChart, LineChart, Reference
+                        _gc2=18
+                        ws.cell(_gc2,1,"Camión") if False else None
+                        for _ghi2,_ghn2 in enumerate(["Camión","Bultos UP","PDV"],1):
+                            _ws2.cell(1,_gc2+_ghi2-1,_ghn2)
+                        for _gi2,_gr2b in enumerate(tabla_rows,1):
+                            _ws2.cell(1+_gi2,_gc2,  str(_gr2b["N° Cam"]))
+                            _ws2.cell(1+_gi2,_gc2+1,round(_gr2b.get("Bultos UP",0),1))
+                            _ws2.cell(1+_gi2,_gc2+2,_gr2b.get("PDV",0))
+                        _gd2=1+len(tabla_rows)
+                        for _hc2 in ["R","S","T"]: _ws2.column_dimensions[_hc2].hidden=True
+                        _bc2=BarChart(); _bc2.type="col"; _bc2.grouping="clustered"; _bc2.style=2
+                        _bc2.title=f"Bultos UP por Camión / PDV — {fecha_dia.strftime('%d/%m/%Y')}"
+                        _bc2.y_axis.title="Bultos UP"; _bc2.width=22; _bc2.height=9
+                        _ref_bup2=Reference(_ws2,min_col=_gc2+1,min_row=1,max_row=_gd2)
+                        _ref_cat2=Reference(_ws2,min_col=_gc2,min_row=2,max_row=_gd2)
+                        _bc2.add_data(_ref_bup2,titles_from_data=True)
+                        _bc2.set_categories(_ref_cat2)
+                        _bc2.series[0].graphicalProperties.solidFill=_NX
+                        _lc2=LineChart(); _lc2.y_axis.axId=200; _lc2.y_axis.title="PDV"
+                        _lc2.y_axis.crosses="max"
+                        _ref_pdv2=Reference(_ws2,min_col=_gc2+2,min_row=1,max_row=_gd2)
+                        _lc2.add_data(_ref_pdv2,titles_from_data=True)
+                        _lc2.series[0].graphicalProperties.line.solidFill="FF6600"
+                        _lc2.series[0].graphicalProperties.line.width=20000
+                        _lc2.series[0].marker.symbol="circle"; _lc2.series[0].marker.size=4
+                        _bc2+=_lc2; _bc2.anchor=f"A{_row2}"
+                        _ws2.add_chart(_bc2)
+                        _row2+=18
 
-                            # Datos auxiliares en columnas ocultas (col R=18, fila 1+)
-                            _gd_col = 18  # col R
-                            _gdr = 1
-                            for _ghi, _ghn in enumerate(["Camión", "Bultos UP", "PDV"], 1):
-                                _ws2.cell(_gdr, _gd_col + _ghi - 1, _ghn)
-                            for _gi2, _gr2 in enumerate(tabla_rows, 1):
-                                _ws2.cell(_gdr + _gi2, _gd_col,     str(_gr2["N° Cam"]))
-                                _ws2.cell(_gdr + _gi2, _gd_col + 1, round(_gr2["Bultos UP"], 1))
-                                _ws2.cell(_gdr + _gi2, _gd_col + 2, _gr2["PDV"])
-                            _gd_end = _gdr + len(tabla_rows)
-
-                            # Ocultar columnas auxiliares R, S, T
-                            for _hc in ["R", "S", "T"]:
-                                _ws2.column_dimensions[_hc].hidden = True
-
-                            # Barras — Bultos UP
-                            _bc = BarChart()
-                            _bc.type = "col"; _bc.grouping = "clustered"
-                            _bc.title = f"Bultos UP y PDV por Camión — {fecha_dia.strftime('%d/%m/%Y')}"
-                            _bc.style = 2
-                            _bc.y_axis.title = "Bultos UP"
-                            _bc.width  = 22   # cm
-                            _bc.height = 10   # cm
-                            _ref_bup = Reference(_ws2, min_col=_gd_col + 1, min_row=_gdr, max_row=_gd_end)
-                            _ref_cat = Reference(_ws2, min_col=_gd_col, min_row=_gdr + 1, max_row=_gd_end)
-                            _bc.add_data(_ref_bup, titles_from_data=True)
-                            _bc.set_categories(_ref_cat)
-                            _bc.series[0].graphicalProperties.solidFill = "1F3864"
-
-                            # Línea — PDV (eje secundario)
-                            _lc = LineChart()
-                            _lc.y_axis.axId = 200
-                            _lc.y_axis.title = "PDV"
-                            _lc.y_axis.crosses = "max"
-                            _ref_pdv = Reference(_ws2, min_col=_gd_col + 2, min_row=_gdr, max_row=_gd_end)
-                            _lc.add_data(_ref_pdv, titles_from_data=True)
-                            _lc.series[0].graphicalProperties.line.solidFill = "FF6600"
-                            _lc.series[0].graphicalProperties.line.width = 20000
-                            _lc.series[0].marker.symbol = "circle"
-                            _lc.series[0].marker.size = 5
-
-                            _bc += _lc
-
-                            # Anchor estándar: celda string "A{row}" — método más robusto en openpyxl
-                            _bc.anchor = f"A{row}"
-                            _ws2.add_chart(_bc)
-                            row += 20  # avanzar el cursor de filas debajo del gráfico
-                        except Exception as _ge_xl:
-                            _ws2.cell(row, 1, f"[Gráfico no disponible: {_ge_xl}]")
-                            row += 1
-
-                    # ════════════════════════════════════════════════════════
-                    # TABLA DETALLE POR CAMIÓN — continúa en la misma hoja
-                    # (espejo exacto del PDF, hoja única)
-                    # ════════════════════════════════════════════════════════
+                    # ── 6. ANÁLISIS OPERATIVO (gold) ────────────────────────
                     if tabla_rows:
-                        row += 1  # espacio antes de tabla
-                        _ws2.merge_cells(f"A{row}:N{row}")
-                        _cell(row, 1, "DETALLE POR CAMIÓN", bold=True, color="FFFFFF", sz=9, bg=_NX)
-                        _ws2.row_dimensions[row].height = 16; row += 1
+                        _cams_ao=[r for r in tabla_rows if r.get("Bultos UP",0)>0]
+                        _prom_ao=sum(r.get("Bultos UP",0) for r in _cams_ao)/max(len(_cams_ao),1)
+                        _may_ao =max(tabla_rows,key=lambda r:r.get("Bultos UP",0),default=None)
+                        _men_ao =min(_cams_ao, key=lambda r:r.get("Bultos UP",999),default=None)
+                        _exc_ao =[r for r in tabla_rows if r.get("_peso_ok") is False]
+                        _M2(_row2,1,_row2,_N2)
+                        _C2(_row2,1,"ANÁLISIS OPERATIVO",bold=True,fg=_WH,sz=9,bg=_GD)
+                        _ws2.row_dimensions[_row2].height=15; _row2+=1
+                        _ao_rows=[
+                            ("Prom. Bultos UP/cam",f"{_prom_ao:.1f} UP",
+                             "Mayor carga",
+                             f"Cam {_may_ao['N° Cam']} — {_may_ao.get('Chofer','?')}: {_may_ao.get('Bultos UP',0):.1f} UP" if _may_ao else "—"),
+                            ("HL Total",f"{total_hl:.2f}",
+                             "Menor carga",
+                             f"Cam {_men_ao['N° Cam']} — {_men_ao.get('Chofer','?')}: {_men_ao.get('Bultos UP',0):.1f} UP" if _men_ao else "—"),
+                            ("Drop Size",f"{drop_size:.2f}",
+                             "Alertas peso excedido",f"{len(_exc_ao)} cam(s)"),
+                        ]
+                        for _ai2,(_lbl1,_v1,_lbl2,_v2) in enumerate(_ao_rows):
+                            _bga="FFF8E1" if _ai2%2==0 else "FFFFFF"
+                            _M2(_row2,1,_row2,3);   _C2(_row2,1, _lbl1,bold=True,fg=_NX,sz=8,bg=_bga,hal="left")
+                            _M2(_row2,4,_row2,7);   _C2(_row2,4, _v1,  bold=True,       sz=9,bg=_bga)
+                            _M2(_row2,8,_row2,12);  _C2(_row2,8, _lbl2,bold=True,fg=_NX,sz=8,bg=_bga,hal="left")
+                            _M2(_row2,13,_row2,_N2)
+                            _v2fg=_RX if "excedido" in _lbl2.lower() and len(_exc_ao)>0 else "000000"
+                            _C2(_row2,13,_v2,bold=len(_exc_ao)>0 and "excedido" in _lbl2.lower(),fg=_v2fg,sz=9,bg=_bga)
+                            _ws2.row_dimensions[_row2].height=14; _row2+=1
+                        _row2+=1
 
-                        _cols_det = ["N°","Chofer","PDV","Bultos\n(eq.)","Bultos\nUP","Pal.\nAE",
-                                     "Patente","HL","Peso\n(kg)","Peso\nOK","Rech.","Venc.\nLic.","Lic."]
-                        # usar 13 cols en A:M
-                        for _ci5, _ch5 in enumerate(_cols_det, 1):
-                            _ws2.cell(row, _ci5, _ch5).font = _fo(True, "FFFFFF", 8)
-                            _ws2.cell(row, _ci5).fill = _fx(_NX)
-                            _ws2.cell(row, _ci5).alignment = _al("center","center", True)
-                            _ws2.cell(row, _ci5).border = _bd()
-                        _ws2.row_dimensions[row].height = 28; row += 1
+                    # ── 7. DETALLE POR CAMIÓN ───────────────────────────────
+                    _M2(_row2,1,_row2,_N2)
+                    _C2(_row2,1,"DETALLE POR CAMIÓN",bold=True,fg=_WH,sz=9,bg=_NX)
+                    _ws2.row_dimensions[_row2].height=16; _row2+=1
+                    _col_h5=["N°","Chofer","PDV","Bultos","Blt.UP","Pal.AE","Patente","HL","Peso(kg)","Peso","Rech.","Venc.Lic.","Lic."]
+                    for _ci5b,_ch5 in enumerate(_col_h5,1):
+                        _c5=_ws2.cell(_row2,_ci5b,_ch5)
+                        _c5.font=_fo2(True,_WH,8); _c5.fill=_fx2(_NX)
+                        _c5.alignment=_al2("center","center",True); _c5.border=_bd2()
+                    _ws2.row_dimensions[_row2].height=22; _row2+=1
 
-                        for _ri2, _rr2 in enumerate(tabla_rows):
-                            _bg2 = _LGX if _ri2 % 2 else "FFFFFF"
-                            _lic_txt2 = _rr2.get("Lic.", "—") or "—"
-                            _lic_xl2  = "BLOQUEADO" if str(_lic_txt2).startswith("🚫") else ("OK" if str(_lic_txt2).startswith("✅") else "—")
-                            _venc_xl2 = _rr2.get("Venc. Lic.", "") or "—"
-                            _peso_ok_xl2 = _rr2.get("_peso_ok", None)
-                            _peso_semaf2 = "OK" if _peso_ok_xl2 is True else ("EXCEDE" if _peso_ok_xl2 is False else "—")
-                            _vv2 = [str(_rr2["N° Cam"]), _rr2["Chofer"] or "—",
-                                    _rr2["PDV"], round(_rr2.get("Bultos", 0), 2),
-                                    round(_rr2.get("Bultos UP", 0), 2), round(_rr2.get("Paletas", 0), 0),
-                                    _rr2["Patente"], round(_rr2.get("HL", 0), 2),
-                                    round(_rr2.get("Peso(kg)", 0), 0), _peso_semaf2,
-                                    _rr2["Rechazos"], _venc_xl2, _lic_xl2]
-                            for _ci6, _vv6 in enumerate(_vv2, 1):
-                                _c6 = _ws2.cell(row, _ci6, _vv6)
-                                _c6.font = _fo(False, "000000", 8)
-                                _c6.alignment = _al("left" if _ci6 == 2 else "center", "center")
-                                _c6.fill = _fx(_bg2)
-                                _c6.border = _bd()
-                            # semáforo peso
-                            if _peso_ok_xl2 is False:
-                                _ws2.cell(row, 10).fill = _fx(_RX); _ws2.cell(row, 10).font = _fo(True,"FFFFFF",8)
-                            elif _peso_ok_xl2 is True:
-                                _ws2.cell(row, 10).fill = _fx(_GRX); _ws2.cell(row, 10).font = _fo(True,"FFFFFF",8)
-                            # semáforo licencia
-                            if _lic_xl2 == "BLOQUEADO":
-                                _ws2.cell(row, 13).fill = _fx(_RX); _ws2.cell(row, 13).font = _fo(True,"FFFFFF",8)
-                                for _ci_bl in range(1, 14):
-                                    if _ci_bl not in (10, 13):
-                                        _ws2.cell(row, _ci_bl).fill = _fx("FFE8E8")
-                            elif _lic_xl2 == "OK":
-                                _ws2.cell(row, 13).fill = _fx(_GRX); _ws2.cell(row, 13).font = _fo(True,"FFFFFF",8)
-                            _ws2.row_dimensions[row].height = 14; row += 1
+                    if tabla_rows:
+                        for _ri5,_rr5 in enumerate(tabla_rows):
+                            _bgr5=_LGX if _ri5%2==0 else "FFFFFF"
+                            _lic5=str(_rr5.get("Lic.","—")) or "—"
+                            _lic_xl2="BLOQUEADO" if "BLOQ" in _lic5.upper() else ("OK" if "OK" in _lic5.upper() else "—")
+                            _venc5=_rr5.get("Venc. Lic.","—") or "—"
+                            _pok5=_rr5.get("_peso_ok",None)
+                            _ps5="OK" if _pok5 is True else ("EXCEDE" if _pok5 is False else "—")
+                            _vv5=[str(_rr5["N° Cam"]),_rr5.get("Chofer","—"),_rr5.get("PDV",0),
+                                  round(_rr5.get("Bultos",0),0),round(_rr5.get("Bultos UP",0),2),
+                                  round(_rr5.get("Paletas",0),0),_rr5.get("Patente","—"),
+                                  round(_rr5.get("HL",0),2),round(_rr5.get("Peso(kg)",0),0),
+                                  _ps5,round(_rr5.get("Rechazos",0),1),_venc5,_lic_xl2]
+                            for _ci6,_vv6 in enumerate(_vv5,1):
+                                _c6=_ws2.cell(_row2,_ci6,_vv6)
+                                _c6.font=_fo2(False,"000000",8)
+                                _c6.alignment=_al2("left" if _ci6==2 else "center","center")
+                                _c6.fill=_fx2(_bgr5); _c6.border=_bd2()
+                            if _pok5 is False:
+                                _ws2.cell(_row2,10).fill=_fx2(_RX); _ws2.cell(_row2,10).font=_fo2(True,_WH,8)
+                            elif _pok5 is True:
+                                _ws2.cell(_row2,10).fill=_fx2(_GR); _ws2.cell(_row2,10).font=_fo2(True,_WH,8)
+                            if _lic_xl2=="BLOQUEADO":
+                                _ws2.cell(_row2,13).fill=_fx2(_RX); _ws2.cell(_row2,13).font=_fo2(True,_WH,8)
+                                for _ci_bl2 in range(1,13): _ws2.cell(_row2,_ci_bl2).fill=_fx2("FFE8E8")
+                            elif _lic_xl2=="OK":
+                                _ws2.cell(_row2,13).fill=_fx2(_GR); _ws2.cell(_row2,13).font=_fo2(True,_WH,8)
+                            _ws2.row_dimensions[_row2].height=14; _row2+=1
 
-                        # Fila TOTAL
-                        _totv_d = ["TOTAL", "",
-                                   sum(r["PDV"] for r in tabla_rows),
-                                   round(sum(r.get("Bultos",0) for r in tabla_rows), 0),
-                                   round(sum(r.get("Bultos UP",0) for r in tabla_rows), 2),
-                                   round(sum(r.get("Paletas",0) for r in tabla_rows), 0),
-                                   "", "", round(sum(r.get("Peso(kg)",0) for r in tabla_rows), 0),
-                                   "", round(sum(r.get("Rechazos",0) for r in tabla_rows), 1), "",""]
-                        for _ci7, _tv7 in enumerate(_totv_d, 1):
-                            _ct = _ws2.cell(row, _ci7, _tv7)
-                            _ct.font = _fo(True, _NX, 9); _ct.fill = _fx(_BLX)
-                            _ct.alignment = _al("center","center"); _ct.border = _bd()
-                        _ws2.row_dimensions[row].height = 16; row += 2
+                        _tot5=["TOTAL","",sum(r.get("PDV",0) for r in tabla_rows),
+                               round(sum(r.get("Bultos",0) for r in tabla_rows),0),
+                               round(sum(r.get("Bultos UP",0) for r in tabla_rows),2),
+                               round(sum(r.get("Paletas",0) for r in tabla_rows),0),
+                               "","",round(sum(r.get("Peso(kg)",0) for r in tabla_rows),0),
+                               "","","",""]
+                        for _ci7,_tv7 in enumerate(_tot5,1):
+                            _ct=_ws2.cell(_row2,_ci7,_tv7)
+                            _ct.font=_fo2(True,_WH,9); _ct.fill=_fx2(_NX)
+                            _ct.alignment=_al2("center","center"); _ct.border=_bd2()
+                        _ws2.row_dimensions[_row2].height=16; _row2+=2
 
-                        # Alertas licencias
-                        _lic_alerts2 = [r for r in tabla_rows if str(r.get("Lic.", "")).startswith("🚫")]
-                        if _lic_alerts2:
-                            _ws2.merge_cells(f"A{row}:N{row}")
-                            _cell(row, 1, "ALERTAS — LICENCIAS VENCIDAS", bold=True, color="FFFFFF", sz=9, bg=_RX)
-                            _ws2.row_dimensions[row].height = 16; row += 1
-                            for _la in _lic_alerts2:
-                                _ws2.merge_cells(f"A{row}:N{row}")
-                                _cell(row, 1,
-                                      f"CAM {_la['N° Cam']} — {_la['Chofer'] or 'S/N'}: "
-                                      f"LICENCIA VENCIDA ({_la['Venc. Lic.']}) — NO PUEDE SALIR A REPARTO",
-                                      bold=True, color=_RX, sz=9, bg="FFE8E8")
-                                _ws2.row_dimensions[row].height = 14; row += 1
-                            row += 1
+                    # ── 8. ALERTAS licencias vencidas ───────────────────────
+                    _bloq5=[r for r in tabla_rows if r.get("_bloqueado",False)]
+                    if _bloq5:
+                        _M2(_row2,1,_row2,_N2)
+                        _C2(_row2,1,"ALERTAS — LICENCIAS VENCIDAS",bold=True,fg=_WH,sz=9,bg=_RX)
+                        _ws2.row_dimensions[_row2].height=15; _row2+=1
+                        for _la5 in _bloq5:
+                            _M2(_row2,1,_row2,_N2)
+                            _C2(_row2,1,
+                                f"CAM {_la5['N° Cam']} — {_la5.get('Chofer','?')} — "
+                                f"LICENCIA VENCIDA ({_la5.get('Venc. Lic.','')}) — NO PUEDE SALIR A REPARTO",
+                                bold=True,fg=_RX,sz=8,bg="FFE8E8",hal="left")
+                            _ws2.row_dimensions[_row2].height=13; _row2+=1
+                        _row2+=1
 
-                    # ── FOOTER (única hoja) ───────────────────────────────────
-                    _ws2.merge_cells(f"A{row}:N{row}")
-                    _ws2.cell(row, 1,
+                    # ── 9. FOOTER ──────────────────────────────────────────
+                    _M2(_row2,1,_row2,_N2)
+                    _ws2.cell(_row2,1,
                         f"Generado: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')} · "
                         f"Picking Orchestrator v{APP_VERSION} · Beccacece Hnos SA — DPO 2.1"
-                        + (f" · Causa demora: {causa_demora}" if causa_demora else "")
-                    ).font = _fo(False, "888888", 7)
-                    _ws2.row_dimensions[row].height = 12
+                        + (f" · {causa_demora}" if causa_demora else "")
+                    ).font = _fo2(False,"888888",7)
+                    _ws2.row_dimensions[_row2].height=12
 
-                    # ── HOJA 2: KPIs (para Histórico Mensual) ────────────────
-                    _ws_kpi = _wb2.create_sheet(title="KPIs")
-                    _kpi_rows_data = [
-                        ("Fecha",               fecha_dia.strftime("%d/%m/%Y")),
-                        ("Camiones reparto",    camiones_en_reparto),
-                        ("Total PDV",           total_pedidos),
-                        ("Bultos UP",           round(total_up, 2)),
-                        ("Paletas",             round(paletas_total, 2)),
-                        ("HL",                  round(total_hl, 2)),
-                        ("Peso(kg)",            round(total_peso_kg, 0)),
-                        ("Drop Size",           round(drop_size, 2)),
-                        ("Eficiencia",          round(eficiencia, 4)),
-                        ("Util. Vehículos",     round(util_vehiculos, 4)),
-                        ("Fuera de zona (%)",   round(fuera_zona_pct, 4)),
-                        ("Ocup. bodega",        round(ocup_bodega, 2)),
-                        ("Productividad ruteo", round(prod_ruteo, 4)),
-                        ("Causa demora",        causa_demora or ""),
+                    # ── HOJA 2: KPIs ──────────────────────────────────────
+                    _ws_kpi5 = _wb2.create_sheet(title="KPIs")
+                    _kpi5_data = [
+                        ("Fecha",              fecha_dia.strftime("%d/%m/%Y")),
+                        ("Camiones reparto",   camiones_en_reparto),
+                        ("Total PDV",          total_pedidos),
+                        ("Bultos UP",          round(total_up,2)),
+                        ("Paletas",            round(paletas_total,2)),
+                        ("HL",                 round(total_hl,2)),
+                        ("Peso(kg)",           round(total_peso_kg,0)),
+                        ("Drop Size",          round(drop_size,2)),
+                        ("Eficiencia",         round(eficiencia,4)),
+                        ("Util. Vehículos",    round(util_vehiculos,4)),
+                        ("Fuera de zona (%)",  round(fuera_zona_pct,4)),
+                        ("Ocup. bodega",       round(ocup_bodega,2)),
+                        ("Prod. Ruteo",        round(prod_ruteo,4)),
+                        ("Causa demora",       causa_demora or ""),
                     ]
-                    _ws_kpi.cell(1, 1, "KPI").font = _fo(True, "FFFFFF", 9)
-                    _ws_kpi.cell(1, 1).fill = _fx(_NX)
-                    _ws_kpi.cell(1, 2, "Valor").font = _fo(True, "FFFFFF", 9)
-                    _ws_kpi.cell(1, 2).fill = _fx(_NX)
-                    for _ki_r, (_kn, _kv) in enumerate(_kpi_rows_data, 2):
-                        _ws_kpi.cell(_ki_r, 1, _kn).font = _fo(False, "000000", 9)
-                        _ws_kpi.cell(_ki_r, 2, _kv).font = _fo(False, "000000", 9)
-                    _ws_kpi.column_dimensions["A"].width = 26
-                    _ws_kpi.column_dimensions["B"].width = 20
-
-                    # Anchos hoja única (A:M detalle + N overflow)
-                    _col_widths_h1 = {
-                        "A": 5,   # N° Cam
-                        "B": 16,  # Chofer
-                        "C": 5,   # PDV
-                        "D": 9,   # Bultos eq.
-                        "E": 9,   # Bultos UP
-                        "F": 7,   # Pal. AE
-                        "G": 9,   # Patente
-                        "H": 7,   # HL
-                        "I": 9,   # Peso kg
-                        "J": 7,   # Peso OK
-                        "K": 6,   # Rechazos
-                        "L": 12,  # Venc. Lic
-                        "M": 10,  # Lic.
-                        "N": 7,
-                    }
-                    for _cl, _cw in _col_widths_h1.items():
-                        _ws2.column_dimensions[_cl].width = _cw
+                    for _ki5, (_kn5, _kv5) in enumerate(_kpi5_data, 2):
+                        _ws_kpi5.cell(1,1,"KPI").font  = Font(bold=True,color="FFFFFF",size=9,name="Arial")
+                        _ws_kpi5.cell(1,1).fill = _fx2(_NX)
+                        _ws_kpi5.cell(1,2,"Valor").font = Font(bold=True,color="FFFFFF",size=9,name="Arial")
+                        _ws_kpi5.cell(1,2).fill = _fx2(_NX)
+                        _ws_kpi5.cell(_ki5,1,_kn5).font = Font(size=9,name="Arial")
+                        _ws_kpi5.cell(_ki5,2,_kv5).font = Font(size=9,name="Arial")
+                    _ws_kpi5.column_dimensions["A"].width=26
+                    _ws_kpi5.column_dimensions["B"].width=22
 
                     _buf_xl2 = io.BytesIO(); _wb2.save(_buf_xl2); _buf_xl2.seek(0)
                     ss["tr_xl2_bytes"] = _buf_xl2.getvalue()
                     ss["tr_xl2_fname"] = f"{fecha_dia.strftime('%d-%m-%Y')}_Tablero-Ruteador_BKCC.xlsx"
-                    st.success("✅ Excel Tablero generado — tabla única espejo del PDF + hoja KPIs para Histórico")
+                    st.success("✅ Excel Tablero generado — diseño espejo del PDF + hoja KPIs")
+
+                    # v4.99: auto-guardar KPIs del día en Sheets de persistencia
                 except Exception as _xe2:
                     import traceback
-                    st.error(f"Error: {_xe2}")
+                    st.error(f"Error generando Excel: {_xe2}")
                     with st.expander("Detalle"): st.code(traceback.format_exc())
             if ss.get("tr_xl2_bytes"):
                 st.download_button("⬇️ Descargar Excel Tablero", data=ss["tr_xl2_bytes"],
@@ -11563,47 +12412,84 @@ def render_tab_tablero():
             ss["hist_data"] = []
 
         st.markdown("## 📅 Histórico Mensual — Dashboard")
-        st.caption("Subí los Excel diarios generados desde el Tablero Ruteador. Cada archivo agrega un día.")
+        st.caption("El tablero se alimenta automáticamente al generar el Excel Tablero. También podés importar el Excel mensual DPO (Tablero Ruteador Mensual) o los Excel diarios anteriores.")
 
-        # Upload
+        # v4.99: cargar desde Sheets al primer render de la sesión
+        if _SHEETS_ID_PERSISTENCIA and not ss.get("hist_data_loaded_from_sheets"):
+            with st.spinner("Cargando histórico desde Sheets…"):
+                _hist_from_sheets = _cargar_kpis_diarios_sheets()
+            if _hist_from_sheets:
+                # Merge: no duplicar fechas existentes
+                _fechas_existentes = {r["fecha"] for r in ss["hist_data"]}
+                for _r in _hist_from_sheets:
+                    if _r["fecha"] not in _fechas_existentes:
+                        ss["hist_data"].append(_r)
+                ss["hist_data"].sort(key=lambda x: x["fecha"])
+                st.toast(f"✅ {len(_hist_from_sheets)} días cargados desde Sheets")
+            ss["hist_data_loaded_from_sheets"] = True
+
+        # Upload — acepta Excel diarios (hoja KPIs) Y tablero mensual DPO
         _hu1, _hu2 = st.columns([3, 1])
         with _hu1:
-            uploaded = st.file_uploader("📁 Excel(s) diarios del Tablero Ruteador",
-                type=["xlsx"], accept_multiple_files=True, key="hist_uploader")
+            uploaded = st.file_uploader(
+                "📁 Importar Excel(s) — diarios (hoja KPIs) o Tablero Mensual DPO",
+                type=["xlsx"], accept_multiple_files=True, key="hist_uploader",
+                help="Acepta: (1) Excel diario generado por esta app (hoja 'KPIs') o "
+                     "(2) Tablero Ruteador Mensual formato DPO (filas=KPIs, columnas=fechas)"
+            )
         with _hu2:
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("🗑️ Limpiar histórico", key="hist_clear", use_container_width=True):
                 ss["hist_data"] = []
+                ss.pop("hist_data_loaded_from_sheets", None)
                 st.rerun()
 
         if uploaded:
             nuevos = 0
             for f in uploaded:
                 try:
-                    df_kpi = pd.read_excel(f, sheet_name="KPIs", header=0)
-                    kv = dict(zip(df_kpi["KPI"].astype(str), df_kpi["Valor"].astype(str)))
-                    fecha_str = kv.get("Fecha","")
-                    if not fecha_str: continue
-                    fecha = pd.to_datetime(fecha_str, dayfirst=True, errors="coerce")
-                    if pd.isna(fecha): continue
-                    if fecha in [r["fecha"] for r in ss["hist_data"]]: continue
-                    ss["hist_data"].append({
-                        "fecha": fecha,
-                        "camiones":      _safe_int(kv.get("Camiones reparto",0)),
-                        "pedidos":       _safe_int(kv.get("Total PDV",0)),
-                        "bultos_up":     _safe_float(kv.get("Bultos UP",0)),
-                        "paletas":       _safe_float(kv.get("Paletas",0)),
-                        "hl":            _safe_float(kv.get("HL",0)),
-                        "peso_kg":       _safe_float(kv.get("Peso(kg)",0)),
-                        "drop_size":     _safe_float(kv.get("Drop Size",0)),
-                        "eficiencia":    _safe_float(kv.get("Eficiencia",0)),
-                        "util_vehiculos":_safe_float(kv.get("Util. Vehículos",0)),
-                        "fuera_zona_pct":_safe_float(kv.get("Fuera de zona (%)",0)),
-                        "ocup_bodega":   _safe_float(kv.get("Ocup. bodega",0)),
-                        "prod_ruteo":    _safe_float(kv.get("Productividad ruteo",0)),
-                        "causa_demora":  kv.get("Causa demora",""),
-                    })
-                    nuevos += 1
+                    _xl_test = pd.ExcelFile(f)
+                    f.seek(0)
+                    # Detectar formato: hoja KPIs = diario, sin hoja KPIs = DPO mensual
+                    if "KPIs" in _xl_test.sheet_names:
+                        # Formato diario (generado por esta app)
+                        df_kpi = pd.read_excel(f, sheet_name="KPIs", header=0)
+                        kv = dict(zip(df_kpi["KPI"].astype(str), df_kpi["Valor"].astype(str)))
+                        fecha_str = kv.get("Fecha","")
+                        if not fecha_str: continue
+                        fecha = pd.to_datetime(fecha_str, dayfirst=True, errors="coerce")
+                        if pd.isna(fecha): continue
+                        if fecha in [r["fecha"] for r in ss["hist_data"]]: continue
+                        ss["hist_data"].append({
+                            "fecha": fecha,
+                            "camiones":      _safe_int(kv.get("Camiones reparto",0)),
+                            "pedidos":       _safe_int(kv.get("Total PDV",0)),
+                            "bultos_up":     _safe_float(kv.get("Bultos UP",0)),
+                            "paletas":       _safe_float(kv.get("Paletas",0)),
+                            "hl":            _safe_float(kv.get("HL",0)),
+                            "peso_kg":       _safe_float(kv.get("Peso(kg)",0)),
+                            "drop_size":     _safe_float(kv.get("Drop Size",0)),
+                            "eficiencia":    _safe_float(kv.get("Eficiencia",0)),
+                            "util_vehiculos":_safe_float(kv.get("Util. Vehículos",0)),
+                            "fuera_zona_pct":_safe_float(kv.get("Fuera de zona (%)",0)),
+                            "ocup_bodega":   _safe_float(kv.get("Ocup. bodega",0)),
+                            "prod_ruteo":    _safe_float(kv.get("Productividad ruteo",0)),
+                            "causa_demora":  kv.get("Causa demora",""),
+                        })
+                        nuevos += 1
+                    else:
+                        # Formato DPO mensual (Tablero Ruteador Mensual)
+                        f.seek(0)
+                        _parsed = _parse_tablero_mensual_dpo(f.read())
+                        _fechas_existentes = {r["fecha"] for r in ss["hist_data"]}
+                        added = 0
+                        for _pr in _parsed:
+                            if _pr["fecha"] not in _fechas_existentes:
+                                ss["hist_data"].append(_pr)
+                                added += 1
+                        nuevos += added
+                        if added:
+                            st.info(f"📊 Tablero DPO: {added} días importados de '{f.name}'")
                 except Exception:
                     pass
             if nuevos > 0:
@@ -12348,6 +13234,152 @@ def render_tab_tablero():
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key="hist_anual_dl_xl", use_container_width=True)
 
+    # ══════════════════════════════════════════════════════════════════
+    # TAB 4 — DISTANCIAS & COSTOS (v4.99)
+    # ══════════════════════════════════════════════════════════════════
+    with _tr_subtabs[3]:
+        import datetime as _dt_dist
+        ss = st.session_state
+
+        st.markdown("## 📍 Distancias & Costos de Reparto")
+        st.caption(f"Fuente: Google Sheets ID `{_SHEETS_ID_DISTANCIAS}` — distancia km a cada cliente.")
+
+        # ── Cargar datos de distancias ─────────────────────────────────────────
+        _COSTO_COMBUSTIBLE_LT = 1500.0   # $/litro GNC (editable)
+        _RENDIMIENTO_KML      = 8.0      # km/litro promedio flota
+        _COSTO_X_KM           = _COSTO_COMBUSTIBLE_LT / _RENDIMIENTO_KML
+
+        _dist_cfg_c1, _dist_cfg_c2 = st.columns(2)
+        with _dist_cfg_c1:
+            _costo_comb = st.number_input("Precio combustible ($/lt o GNC equiv.)",
+                value=ss.get("dist_costo_comb", _COSTO_COMBUSTIBLE_LT),
+                step=50.0, format="%.0f", key="dist_costo_comb")
+        with _dist_cfg_c2:
+            _rend_km = st.number_input("Rendimiento (km/litro)",
+                value=ss.get("dist_rend_km", _RENDIMIENTO_KML),
+                step=0.5, format="%.1f", key="dist_rend_km")
+        _costo_km = _costo_comb / max(_rend_km, 0.1)
+
+        # Cargar desde Sheets
+        if st.button("🔄 Cargar distancias desde Sheets", key="dist_cargar_btn", type="primary"):
+            ss.pop("dist_df", None)
+            ss.pop("dist_loaded", None)
+
+        if not ss.get("dist_loaded"):
+            with st.spinner("Cargando distancias…"):
+                try:
+                    import gspread as _gs_d
+                    from google.oauth2.service_account import Credentials as _C_d
+                    _creds_d = _C_d.from_service_account_info(
+                        dict(st.secrets["gcp_service_account"]),
+                        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+                    )
+                    _client_d = _gs_d.authorize(_creds_d)
+                    _ss_d = _client_d.open_by_key(_SHEETS_ID_DISTANCIAS)
+                    _ws_d  = _ss_d.get_worksheet(0)
+                    _records_d = _ws_d.get_all_records()
+                    if _records_d:
+                        _df_dist = pd.DataFrame(_records_d)
+                        ss["dist_df"]     = _df_dist
+                        ss["dist_loaded"] = True
+                except Exception as _ed:
+                    st.warning(f"⚠️ No se pudieron cargar las distancias: {_ed}")
+                    ss["dist_loaded"] = False
+
+        _df_dist = ss.get("dist_df")
+
+        if _df_dist is None or _df_dist.empty:
+            st.info(
+                "Sin datos de distancias cargados. Presioná **Cargar distancias desde Sheets** "
+                "o verificá que la service account tenga acceso al Sheets de distancias."
+            )
+        else:
+            # Detectar columnas automáticamente
+            _cols_dist = [str(c).strip() for c in _df_dist.columns]
+            _col_cliente = next((c for c in _cols_dist if any(k in c.upper() for k in ["CLIENTE","PDV","NOMBRE"])), _cols_dist[0])
+            _col_km      = next((c for c in _cols_dist if any(k in c.upper() for k in ["KM","DIST","KILOM"])), _cols_dist[-1])
+            _col_camion  = next((c for c in _cols_dist if any(k in c.upper() for k in ["CAMION","CHOFER","TRUCK","RUTA"])), None)
+
+            try:
+                _df_dist[_col_km] = pd.to_numeric(_df_dist[_col_km], errors="coerce").fillna(0)
+            except Exception:
+                pass
+
+            st.success(f"✅ {len(_df_dist)} clientes cargados")
+
+            # ── KPIs globales ──────────────────────────────────────────────────
+            _km_total  = _df_dist[_col_km].sum()
+            _costo_tot = _km_total * _costo_km
+            _km_prom   = _df_dist[_col_km].mean()
+
+            _kc = st.columns(4)
+            _kc[0].metric("📏 Km totales",    f"{_km_total:,.1f} km")
+            _kc[1].metric("💰 Costo total",   f"${_costo_tot:,.0f}")
+            _kc[2].metric("📊 Km promedio",   f"{_km_prom:.1f} km/cliente")
+            _kc[3].metric("💵 Costo/km",      f"${_costo_km:.1f}/km")
+
+            # ── Análisis por camión si hay columna ────────────────────────────
+            if _col_camion:
+                st.markdown("#### 🚛 Análisis por camión")
+                _by_cam = (
+                    _df_dist.groupby(_col_camion)[_col_km]
+                    .agg(["sum","count","mean"])
+                    .rename(columns={"sum":"Km Total","count":"N° Clientes","mean":"Km Prom"})
+                    .sort_values("Km Total", ascending=False)
+                    .reset_index()
+                )
+                _by_cam["Costo Est."] = (_by_cam["Km Total"] * _costo_km).apply(lambda x: f"${x:,.0f}")
+                _by_cam["Km Total"]   = _by_cam["Km Total"].round(1)
+                _by_cam["Km Prom"]    = _by_cam["Km Prom"].round(1)
+                st.dataframe(_by_cam, use_container_width=True, hide_index=True)
+
+            # ── Top y Bottom clientes por distancia ───────────────────────────
+            _t_dc1, _t_dc2 = st.columns(2)
+            with _t_dc1:
+                st.markdown("#### 📌 Top 10 — Mayor distancia")
+                _top10_d = _df_dist.nlargest(10, _col_km)[[_col_cliente, _col_km]].copy()
+                _top10_d["Costo Est."] = (_top10_d[_col_km] * _costo_km).apply(lambda x: f"${x:,.0f}")
+                st.dataframe(_top10_d, use_container_width=True, hide_index=True)
+            with _t_dc2:
+                st.markdown("#### 📌 Top 10 — Menor distancia")
+                _bot10_d = _df_dist.nsmallest(10, _col_km)[[_col_cliente, _col_km]].copy()
+                _bot10_d["Costo Est."] = (_bot10_d[_col_km] * _costo_km).apply(lambda x: f"${x:,.0f}")
+                st.dataframe(_bot10_d, use_container_width=True, hide_index=True)
+
+            # ── Gráfico distribución km ───────────────────────────────────────
+            try:
+                import plotly.express as _px_d
+                _fig_d = _px_d.histogram(
+                    _df_dist, x=_col_km, nbins=20,
+                    title="Distribución de distancias (km)",
+                    labels={_col_km: "Distancia (km)", "count": "N° Clientes"},
+                    color_discrete_sequence=["#1F3864"],
+                )
+                _fig_d.update_layout(
+                    plot_bgcolor="#FAFAFA", paper_bgcolor="white",
+                    font=dict(family="Arial", size=12),
+                    margin=dict(l=40, r=20, t=40, b=40),
+                )
+                st.plotly_chart(_fig_d, use_container_width=True)
+            except ImportError:
+                pass
+
+            # ── Oportunidades de ahorro ───────────────────────────────────────
+            st.markdown("#### 💡 Oportunidades de ahorro")
+            _km_p75  = _df_dist[_col_km].quantile(0.75)
+            _clientes_lejanos = _df_dist[_df_dist[_col_km] > _km_p75]
+            _ahorro_potencial = _clientes_lejanos[_col_km].sum() * _costo_km * 0.15  # 15% optimización
+            _sc1, _sc2 = st.columns(2)
+            _sc1.metric(f"Clientes sobre P75 ({_km_p75:.0f} km)",
+                        f"{len(_clientes_lejanos)}",
+                        f"${_clientes_lejanos[_col_km].sum() * _costo_km:,.0f} costo")
+            _sc2.metric("Ahorro potencial (opt. rutas +15%)",
+                        f"${_ahorro_potencial:,.0f}/día",
+                        f"${_ahorro_potencial * 22:,.0f}/mes estimado")
+
+            with st.expander("📋 Tabla completa de distancias"):
+                st.dataframe(_df_dist, use_container_width=True, hide_index=True)
+
 
 def main():
     st.set_page_config(
@@ -12428,14 +13460,15 @@ def main():
         0:  render_tab_archivos,
         1:  render_tab_planilla,
         2:  render_tab_resumen,
-        3:  render_tab_proyeccion,
-        4:  render_tab_t2,
-        5:  render_tab_clasificacion,
-        6:  render_tab_top_skus,
-        7:  render_tab_tablero,
-        8:  render_tab_boletas,
+        3:  render_tab_t2,
+        4:  render_tab_proyeccion,
+        5:  render_tab_ae,           # ← nuevo v5.1.1
+        6:  render_tab_clasificacion,
+        7:  render_tab_top_skus,
+        8:  render_tab_tablero,
         9:  render_tab_cierre,
-        10: render_tab_validacion,
+        10: render_tab_boletas,
+        11: render_tab_validacion,
     }
 
     _ico, _nombre = _SECCIONES[_sec]
