@@ -463,7 +463,38 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "4.97.0"
+APP_VERSION = "4.99.0"
+# ── CHANGELOG v4.99.0 ─────────────────────────────────────────────────────
+# 1. Secciones reordenadas: Camiones T2 → antes de Proyección Picking.
+#    Boletas → antes de Validación + Log. Paso 1 en T2.
+# 2. PDF Pickeros + Controladores: botón unificado (genera ambos de una vez).
+# 3. Paso 3 + Paso 4: 3 botones de Sheets unificados en uno.
+# 4. Frase del día: autor separado y visible en la UI.
+# 5. fx Picking: fecha = siempre today() (no D+1 del CAR).
+# 6. Tablero mensual: auto-guardado de KPIs del día en Sheets dedicado
+#    al generar Excel Tablero. Histórico lee del Sheets + acepta
+#    tablero.xlsx mensual (formato DPO) para semilla histórica.
+# 7. Licencias conductores: persistencia real vía Sheets dedicado.
+# 8. Distancias clientes: nueva subsección en Tablero Ruteador.
+# 9. Performance picking: debounce aplicado, pdata cacheado.
+# 10. Sección Validación + Log: botón "🔒 Cerrar Día" genera PDF final
+#     completo con log, alertas, vencimientos, resumen de operación.
+# ─────────────────────────────────────────────────────────────────────────
+
+# ── SHEETS DEDICADO — PERSISTENCIA (v4.99) ──────────────────────────────
+# Crear un Google Sheets nuevo, compartirlo con la service account y agregar
+# en Streamlit Secrets: SHEETS_PERSISTENCIA_ID = "ID_DEL_SHEETS"
+# Hojas necesarias (se crean automáticamente si no existen):
+#   "Licencias"        → tabla de vencimientos de conductores
+#   "Tablero Diario"   → una fila por día con todos los KPIs del tablero
+try:
+    _SHEETS_ID_PERSISTENCIA = st.secrets.get("SHEETS_PERSISTENCIA_ID", "")
+except Exception:
+    _SHEETS_ID_PERSISTENCIA = ""
+
+# ── SHEETS DISTANCIAS CLIENTES (v4.99) ────────────────────────────────────
+# Sheets con distancias por cliente (ID extraído de la URL compartida)
+_SHEETS_ID_DISTANCIAS = "1swax74XwPhKPsSLvAmeR4uQFs4r1Fuh70ByYgh7hRzU"
 SNAPSHOT_DIR = Path("./snapshots")
 
 # Colores T2 (Sprint 3)
@@ -649,7 +680,261 @@ def get_ensenanza_dia() -> str:
     day_of_year = _dte.date.today().timetuple().tm_yday
     return ENSEÑANZAS_DIA[day_of_year % len(ENSEÑANZAS_DIA)]
 
-# ─── UTILIDADES ─────────────────────────────────────────────────────────────
+def get_ensenanza_dia_full() -> dict:
+    """
+    Retorna dict con frase, autor y tip del día.
+    Parsea el formato: '{emoji} «{frase}» — {autor} | {tip opcional}'
+    """
+    import re, datetime as _dte
+    day_of_year = _dte.date.today().timetuple().tm_yday
+    raw = ENSEÑANZAS_DIA[day_of_year % len(ENSEÑANZAS_DIA)]
+    # Intentar parsear: emoji «frase» — autor | tip
+    m = re.match(
+        r'^([\S]+)\s+«(.+?)»(?:\s+[—–-]+\s*([^|]+?))?(?:\s+\|\s+(.+))?$',
+        raw.strip()
+    )
+    if m:
+        emoji, frase, autor, tip = m.groups()
+        return {
+            "emoji": emoji or "💡",
+            "frase": frase.strip() if frase else raw,
+            "autor": (autor or "").strip(),
+            "tip":   (tip or "").strip(),
+            "texto_completo": raw,
+        }
+    return {"emoji": "💡", "frase": raw, "autor": "", "tip": "", "texto_completo": raw}
+
+# ─── PERSISTENCIA SHEETS (v4.99) ────────────────────────────────────────────
+
+def _persistencia_get_client():
+    """Retorna cliente gspread usando service account de secrets. None si no disponible."""
+    if not _SHEETS_ID_PERSISTENCIA:
+        return None
+    try:
+        import gspread as _gs
+        from google.oauth2.service_account import Credentials as _C
+        _creds = _C.from_service_account_info(
+            dict(st.secrets["gcp_service_account"]),
+            scopes=["https://www.googleapis.com/auth/spreadsheets"],
+        )
+        return _gs.authorize(_creds)
+    except Exception:
+        return None
+
+def _persistencia_get_or_create_sheet(client, title: str):
+    """Obtiene o crea una hoja dentro del Sheets de persistencia."""
+    try:
+        ss = client.open_by_key(_SHEETS_ID_PERSISTENCIA)
+        for ws in ss.worksheets():
+            if ws.title.strip().lower() == title.strip().lower():
+                return ws
+        return ss.add_worksheet(title=title, rows=500, cols=30)
+    except Exception:
+        return None
+
+def _guardar_licencias_sheets(licencias_data: list) -> bool:
+    """Guarda la tabla de licencias en la hoja 'Licencias' del Sheets de persistencia."""
+    client = _persistencia_get_client()
+    if not client:
+        return False
+    try:
+        ws = _persistencia_get_or_create_sheet(client, "Licencias")
+        if not ws:
+            return False
+        if not licencias_data:
+            return True
+        cols = list(licencias_data[0].keys())
+        matrix = [cols] + [[str(row.get(c, "")) for c in cols] for row in licencias_data]
+        ws.clear()
+        ws.update(range_name="A1", values=matrix)
+        return True
+    except Exception:
+        return False
+
+def _cargar_licencias_sheets() -> list | None:
+    """Carga tabla de licencias desde Sheets. None si no disponible."""
+    client = _persistencia_get_client()
+    if not client:
+        return None
+    try:
+        ws = _persistencia_get_or_create_sheet(client, "Licencias")
+        if not ws:
+            return None
+        data = ws.get_all_records()
+        return data if data else None
+    except Exception:
+        return None
+
+def _guardar_kpis_diarios_sheets(fecha, kpis_dict: dict) -> bool:
+    """
+    Agrega (append) una fila de KPIs del día a la hoja 'Tablero Diario' del Sheets.
+    Si ya existe la fecha, la actualiza en lugar de duplicar.
+    """
+    client = _persistencia_get_client()
+    if not client:
+        return False
+    try:
+        ws = _persistencia_get_or_create_sheet(client, "Tablero Diario")
+        if not ws:
+            return False
+        fecha_str = str(fecha)
+        all_vals = ws.get_all_values()
+        if not all_vals:
+            # Crear encabezado
+            headers = ["Fecha"] + list(kpis_dict.keys())
+            ws.append_row(headers)
+        else:
+            headers = all_vals[0]
+            # Chequear si la fecha ya existe
+            for idx, row in enumerate(all_vals[1:], start=2):
+                if row and row[0] == fecha_str:
+                    # Actualizar fila existente
+                    new_row = [fecha_str] + [str(kpis_dict.get(h, "")) for h in headers[1:]]
+                    ws.update(range_name=f"A{idx}", values=[new_row])
+                    return True
+        # Append nueva fila
+        ws.append_row([fecha_str] + [str(kpis_dict.get(h, "")) for h in (
+            ws.row_values(1)[1:] if ws.row_count > 0 and ws.row_values(1) else list(kpis_dict.keys())
+        )])
+        return True
+    except Exception:
+        return False
+
+def _cargar_kpis_diarios_sheets() -> list:
+    """
+    Carga todos los registros diarios de KPIs del Sheets.
+    Retorna lista de dicts compatible con hist_data.
+    """
+    client = _persistencia_get_client()
+    if not client:
+        return []
+    try:
+        ws = _persistencia_get_or_create_sheet(client, "Tablero Diario")
+        if not ws:
+            return []
+        records = ws.get_all_records()
+        result = []
+        for r in records:
+            try:
+                fecha = pd.to_datetime(str(r.get("Fecha", "")), dayfirst=True, errors="coerce")
+                if pd.isna(fecha):
+                    continue
+                result.append({
+                    "fecha":          fecha,
+                    "camiones":       int(float(r.get("Camiones reparto", 0) or 0)),
+                    "pedidos":        int(float(r.get("Total PDV", 0) or 0)),
+                    "bultos_up":      float(r.get("Bultos UP", 0) or 0),
+                    "paletas":        float(r.get("Paletas", 0) or 0),
+                    "hl":             float(r.get("HL", 0) or 0),
+                    "peso_kg":        float(r.get("Peso(kg)", 0) or 0),
+                    "drop_size":      float(r.get("Drop Size", 0) or 0),
+                    "eficiencia":     float(r.get("Eficiencia", 0) or 0),
+                    "util_vehiculos": float(r.get("Util. Vehículos", 0) or 0),
+                    "fuera_zona_pct": float(r.get("Fuera de zona (%)", 0) or 0),
+                    "ocup_bodega":    float(r.get("Ocup. bodega", 0) or 0),
+                    "prod_ruteo":     float(r.get("Productividad ruteo", 0) or 0),
+                    "causa_demora":   str(r.get("Causa demora", "")),
+                })
+            except Exception:
+                pass
+        result.sort(key=lambda x: x["fecha"])
+        return result
+    except Exception:
+        return []
+
+def _parse_tablero_mensual_dpo(xlsx_bytes: bytes) -> list:
+    """
+    Parsea el Excel 'Tablero Ruteador Mensual' en formato DPO.
+    Layout: filas = KPIs (col A), col B = Target, col C = Avance,
+            cols D... = valores diarios con seriales Excel como cabecera.
+    Retorna lista de dicts compatible con hist_data.
+    """
+    try:
+        import openpyxl as _opx
+        from datetime import datetime as _dtt, timedelta as _tdt
+        wb = _opx.load_workbook(io.BytesIO(xlsx_bytes), read_only=True, data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        wb.close()
+
+        # Encontrar fila cabecera (tiene seriales de fecha numéricos)
+        hdr_row_idx = None
+        for i, row in enumerate(rows):
+            date_count = sum(1 for v in row[3:] if isinstance(v, (int, float)) and 40000 < v < 55000)
+            if date_count >= 5:
+                hdr_row_idx = i
+                break
+        if hdr_row_idx is None:
+            return []
+
+        hdr = rows[hdr_row_idx]
+        # Convertir seriales de fecha a datetime
+        date_cols = {}  # col_index → date
+        for ci, val in enumerate(hdr):
+            if isinstance(val, (int, float)) and 40000 < val < 55000:
+                try:
+                    dt = _dtt(1899, 12, 30) + _tdt(int(val))
+                    date_cols[ci] = dt.date()
+                except Exception:
+                    pass
+
+        if not date_cols:
+            return []
+
+        # Construir dict KPI→{date→value}
+        kpi_data = {}
+        for row in rows[hdr_row_idx + 1:]:
+            if not row or row[0] is None:
+                continue
+            kpi_name = str(row[0]).strip()
+            if not kpi_name or kpi_name.startswith("MAIN"):
+                continue
+            for ci, date in date_cols.items():
+                if ci < len(row):
+                    val = row[ci]
+                    if val is not None and val != "" and val is not False:
+                        kpi_data.setdefault(kpi_name, {})[date] = val
+
+        # Construir hist_data por fecha
+        all_dates = sorted(set(d for v in kpi_data.values() for d in v.keys()))
+        result = []
+        for date in all_dates:
+            def _gv(kpi, default=0):
+                v = kpi_data.get(kpi, {}).get(date, default)
+                try:
+                    fv = float(v)
+                    return fv if fv == fv else default  # NaN check
+                except (TypeError, ValueError):
+                    return default
+
+            # Detectar si el día tiene datos (al menos una métrica no nula)
+            if all(_gv(k) == 0 for k in ["Bultos up ruteados", "Total camiones necesarios",
+                                           "Camiones en reparto", "Pedidos ruteados"]):
+                continue
+
+            n_cams = int(_gv("Camiones en reparto") or _gv("Total camiones necesarios"))
+            result.append({
+                "fecha":          pd.Timestamp(date),
+                "camiones":       n_cams,
+                "pedidos":        int(_gv("Pedidos ruteados")),
+                "bultos_up":      _gv("Bultos up ruteados"),
+                "paletas":        _gv("Promedio de paletas") * n_cams if n_cams else 0,
+                "hl":             _gv("HL Ruteados"),
+                "peso_kg":        0.0,
+                "drop_size":      _gv("Drop Size"),
+                "eficiencia":     _gv("Eficiencia"),
+                "util_vehiculos": _gv("Utilizacion de vehiculos"),
+                "fuera_zona_pct": _gv("Fuera de zona"),
+                "ocup_bodega":    _gv("Ocupacion bodega bultos UP"),
+                "prod_ruteo":     _gv("Productividad de Ruteo (new PI)"),
+                "causa_demora":   "",
+            })
+        result.sort(key=lambda x: x["fecha"])
+        return result
+    except Exception as _pe:
+        return []
+
+
 
 def _norm(s):
     """Normaliza string: sin tildes, sin espacios extra, lowercase."""
@@ -2011,13 +2296,13 @@ _SECCIONES = [
     ("📁", "Archivos"),
     ("📦", "Planilla Carga"),
     ("📋", "Resumen Camiones"),
+    ("🚛", "Camiones T2"),          # ← movido antes de Proyección (v4.99)
     ("📊", "Proyección Picking"),
-    ("🚛", "Camiones T2"),
     ("🏷️", "Clasificación"),
     ("🏆", "Top SKUs"),
     ("🚚", "Tablero Ruteador"),
-    ("🖨️", "Boletas"),
     ("💰", "Cierre"),
+    ("🖨️", "Boletas"),              # ← movido antes de Validación (v4.99)
     ("✅", "Validación + Log"),
 ]
 
@@ -2734,6 +3019,23 @@ def render_tab_t2():
         "(1 hoja por camión, tamaño Carta) listo para imprimir."
     )
 
+    # ── PASO 1 — Generar planillas de carga (v4.99) ───────────────────────────
+    with st.container(border=True):
+        _p1_c1, _p1_c2 = st.columns([4, 1])
+        with _p1_c1:
+            st.markdown("#### 📋 Paso 1 — Generar planillas de carga T2")
+            st.caption(
+                "Generá el PDF con las planillas de cada camión antes de iniciar la carga. "
+                "Una hoja por camión detectado automáticamente desde el Sheet T2 Status Carga."
+            )
+        with _p1_c2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("🖨️ Generar PDF", type="primary", use_container_width=True, key="t3_paso1_quick"):
+                st.session_state["t3_trigger_gen"] = True
+                st.rerun()
+
+    st.divider()
+
     with st.expander("ℹ️ Cómo funciona", expanded=False):
         st.markdown(
             """
@@ -2781,6 +3083,10 @@ def render_tab_t2():
             width="stretch",
             key="t3_btn_clear",
         )
+
+    # v4.99: trigger desde Paso 1
+    if st.session_state.pop("t3_trigger_gen", False):
+        gen_clicked = True
 
     if clear_clicked:
         for k in ("t3_pdf_bytes", "t3_pdf_filename", "t3_pdf_trucks"):
@@ -4977,7 +5283,20 @@ def render_tab_proyeccion():
 
     # ── v4.71: Enseñanza/frase del día ──────────────────────────────────────
     _ensenanza = get_ensenanza_dia()
-    st.info(f"💡 **Enseñanza del día** — {_ensenanza}")
+    _ensenanza_full = get_ensenanza_dia_full()
+    # v4.99: mostrar con autor separado
+    _frase_txt = _ensenanza_full["frase"]
+    _frase_aut = _ensenanza_full["autor"]
+    _frase_tip = _ensenanza_full["tip"]
+    _frase_ico = _ensenanza_full["emoji"]
+    _frase_html = (
+        f"<div style='padding:2px 0'>"
+        f"{_frase_ico} <strong>«{_frase_txt}»</strong>"
+        + (f"<br><small style='color:#888;margin-left:8px'>— {_frase_aut}</small>" if _frase_aut else "")
+        + (f"<br><small style='color:#1F3864;margin-left:8px'>🎯 {_frase_tip}</small>" if _frase_tip else "")
+        + "</div>"
+    )
+    st.info(_frase_html, icon="💡")
 
     # ── v4.84: fecha de picking = siempre hoy (el picking se hace hoy aunque
     #           la carga se entregue mañana). Se usa en todos los PDFs/XLSX
@@ -4986,56 +5305,112 @@ def render_tab_proyeccion():
     _fecha_picking_hoy = _dt_pick.date.today()
 
     # ─────────────────────────────────────────────────────────────────────────
-    # SECCIÓN A: PDF PICKEROS
+    # SECCIÓN A: PDF PICKEROS + CONTROLADORES (botón unificado — v4.99)
     # ─────────────────────────────────────────────────────────────────────────
     with st.container(border=True):
-        st.markdown("#### 📄 PDF Pickeros — Resumen por cancha (C1/C2/C3/C4/MKPL+Merch)")
-        if st.button("📄 Resumen Pickeros — C1/C2/C3/C4/MKPL+Merch (sin paletas completas)", type="primary",
-                     use_container_width=True, key="t4_pdf_btn"):
-            with st.spinner("Generando PDF…"):
-                try:
-                    pdf_bytes = _t4_generar_pdf_x4(
-                        df=df_display,
-                        totales_bult=totales_bult,
-                        totales_pall=totales_pall_c,
-                        totales_hl=totales_hl,
-                        totales_kg=totales_kg,
-                        productividad=vel_custom,
-                        personas=pers_custom,
-                        inicio=hora_inicio_global,
-                        fecha=_fecha_picking_hoy,
-                        mix_picking=pdata["mix_picking"],
-                        fin_calc=fin_calc_dict,
-                        asign_detail=totales_calc.get("asign_detail", {}),
-                        ctrl_params=None,   # v4.70: hoja controlador se genera por separado
-                        ensenanza=_ensenanza,
-                    )
-                    fname = f"proyeccion_picking_{_fecha_picking_hoy.strftime('%d-%m-%Y')}.pdf"
-                    st.download_button(
-                        "⬇ Descargar PDF Pickeros (C1/C2/C3/C4/MKPL+Merch — LANDSCAPE)",
-                        data=pdf_bytes, file_name=fname,
-                        mime="application/pdf", use_container_width=True,
-                        key="t4_pdf_dl",
-                    )
-                    st.success(f"✓ PDF generado: {fname}")
-                    log_event("info", f"PDF Proyección v4.41 generado: {fname}")
-                except Exception as e:
-                    st.error(f"❌ Error generando PDF: {e}")
-                    with st.expander("Stack trace"):
-                        import traceback
-                        st.code(traceback.format_exc())
+        st.markdown("#### 📄 Generar PDFs de Picking")
+        st.caption("Un solo botón genera el PDF de pickeros (×4 canchas) Y el PDF del controlador.")
+
+        _gcol1, _gcol2 = st.columns([3, 1])
+        with _gcol1:
+            _btn_generar_pdfs = st.button(
+                "📄 Generar PDF Pickeros + PDF Controladores",
+                type="primary", use_container_width=True, key="t4_pdf_ambos_btn",
+                help="Genera ambos PDFs en una sola operación. Descargás cada uno por separado.",
+            )
+        with _gcol2:
+            _btn_solo_ctrl = st.button(
+                "🎛️ Solo Controlador",
+                use_container_width=True, key="t4_pdf_solo_ctrl",
+                help="Regenera solo el PDF controlador (más rápido si ya tenés el de pickeros)",
+            )
+
+        if _btn_generar_pdfs or _btn_solo_ctrl:
+            _gen_pickeros = bool(_btn_generar_pdfs)
+            _gen_ctrl     = True   # siempre se genera el de controladores
+
+            with st.spinner("Generando PDFs…"):
+                # — PDF Pickeros —
+                if _gen_pickeros:
+                    try:
+                        pdf_bytes = _t4_generar_pdf_x4(
+                            df=df_display,
+                            totales_bult=totales_bult,
+                            totales_pall=totales_pall_c,
+                            totales_hl=totales_hl,
+                            totales_kg=totales_kg,
+                            productividad=vel_custom,
+                            personas=pers_custom,
+                            inicio=hora_inicio_global,
+                            fecha=_fecha_picking_hoy,
+                            mix_picking=pdata["mix_picking"],
+                            fin_calc=fin_calc_dict,
+                            asign_detail=totales_calc.get("asign_detail", {}),
+                            ctrl_params=None,
+                            ensenanza=_ensenanza,
+                        )
+                        fname = f"proyeccion_picking_{_fecha_picking_hoy.strftime('%d-%m-%Y')}.pdf"
+                        st.session_state["t4_pdf_pickeros_bytes"] = pdf_bytes
+                        st.session_state["t4_pdf_pickeros_fname"] = fname
+                        log_event("info", f"PDF Pickeros generado: {fname}")
+                    except Exception as _ep:
+                        st.error(f"❌ Error PDF Pickeros: {_ep}")
+
+                # — PDF Controladores —
+                if _gen_ctrl:
+                    try:
+                        _pdf_ctrl = _t4_generar_pdf_controlador(
+                            fecha=_fecha_picking_hoy,
+                            fin_por_cancha=fin_por_cancha,
+                            fin_global_dt=fin_global_dt,
+                            totales_bult=totales_bult,
+                            totales_hl=totales_hl,
+                            totales_kg=totales_kg,
+                            totales_pall_c=totales_pall_c,
+                            mix_picking=pdata["mix_picking"],
+                            n_camiones=len(df_display[df_display["TOTAL_PICK"] > 0]),
+                            tot_pick=pdata["tot_pick"],
+                            top_skus_lines=_top_skus_lines,
+                            alertas=_alertas,
+                            ensenanza=_ensenanza,
+                        )
+                        _fname_ctrl = f"{_fecha_picking_hoy.strftime('%d-%m-%Y')}_resumen_controlador_picking.pdf"
+                        st.session_state["t4_pdf_ctrl_bytes"] = _pdf_ctrl
+                        st.session_state["t4_pdf_ctrl_fname"] = _fname_ctrl
+                        log_event("info", f"PDF Controlador generado: {_fname_ctrl}")
+                    except Exception as _ec:
+                        st.error(f"❌ Error PDF Controladores: {_ec}")
+
+        # — Botones de descarga (persisten en session_state) —
+        _dl_c1, _dl_c2 = st.columns(2)
+        with _dl_c1:
+            if st.session_state.get("t4_pdf_pickeros_bytes"):
+                st.download_button(
+                    "⬇ Descargar PDF Pickeros",
+                    data=st.session_state["t4_pdf_pickeros_bytes"],
+                    file_name=st.session_state.get("t4_pdf_pickeros_fname","picking.pdf"),
+                    mime="application/pdf", use_container_width=True,
+                    key="t4_pdf_dl",
+                )
+        with _dl_c2:
+            if st.session_state.get("t4_pdf_ctrl_bytes"):
+                st.download_button(
+                    "⬇ Descargar PDF Controladores",
+                    data=st.session_state["t4_pdf_ctrl_bytes"],
+                    file_name=st.session_state.get("t4_pdf_ctrl_fname","controlador.pdf"),
+                    mime="application/pdf", use_container_width=True,
+                    key="t4_pdf_ctrl_dl",
+                )
 
         # ── Botón XLSX proyección ──────────────────────────────────────────────
         st.markdown("---")
         try:
             import datetime as _dt_xlsx
-            # Construir DataFrame exportable de proyección
             _export_rows = []
             for _, _row in df_display.iterrows():
                 _exp = {"Camión": int(_row["Camión"])}
                 for _cn in _T4_CANCHAS:
-                    _short = _cn.replace("CANCHA ", "C")
-                    _disp  = _cn_short(_cn)       # v4.64: label natural
+                    _disp  = _cn_short(_cn)
                     _exp[f"UP {_disp}"]   = round(float(_row.get(f"_up_{_cn}", 0.0)), 3)
                     _exp[f"Bult {_disp}"] = round(float(_row.get(_cn, 0.0)), 1)
                 _exp["AE Pall"]    = round(float(_row.get("AE_PALL", 0.0)), 2)
@@ -5043,36 +5418,30 @@ def render_tab_proyeccion():
                 _exp["Bult Pick"]  = round(float(_row.get("TOTAL_PICK", 0.0)), 1)
                 _export_rows.append(_exp)
             df_xlsx_exp = pd.DataFrame(_export_rows)
-            # Fila totales
             _tot_row = {"Camión": "TOTAL"}
             for _cn in _T4_CANCHAS:
-                _disp = _cn_short(_cn)            # v4.64: label natural
+                _disp = _cn_short(_cn)
                 _tot_row[f"UP {_disp}"]   = round(totales_pall_c.get(_cn, 0), 3)
                 _tot_row[f"Bult {_disp}"] = round(totales_bult.get(_cn, 0), 1)
             _tot_row["AE Pall"]   = ""
             _tot_row["TOT PALL"]  = round(sum(totales_pall_c.values()), 2)
             _tot_row["Bult Pick"] = round(pdata["tot_pick"], 1)
             df_xlsx_exp = pd.concat([df_xlsx_exp, pd.DataFrame([_tot_row])], ignore_index=True)
-
             xlsx_bytes = df_to_xlsx(df_xlsx_exp, sheet_name="Proyección")
             fname_xlsx = f"proyeccion_picking_{_fecha_picking_hoy.strftime('%d-%m-%Y')}.xlsx"
             st.download_button(
                 "📊 Descargar Excel (XLSX)",
                 data=xlsx_bytes, file_name=fname_xlsx,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key="t4_xlsx_dl",
+                use_container_width=True, key="t4_xlsx_dl",
             )
         except Exception as _ex_xlsx:
             st.warning(f"⚠️ XLSX no disponible: {_ex_xlsx}")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # SECCIÓN B: RESUMEN CONTROLADOR + PDF CONTROLADORES
+    # SECCIÓN B: RESUMEN CONTROLADOR (solo info — PDFs arriba)
     # ─────────────────────────────────────────────────────────────────────────
     with st.container(border=True):
-        # ── v4.37: Resumen para el Controlador ───────────────────────────────
-        # v4.41: _top_skus_lines y _alertas ya computados antes del bloque columns
-
         # Construir horarios por cancha
         _horas_lines = []
         for _cn in _T4_CANCHAS:
@@ -5086,7 +5455,7 @@ def render_tab_proyeccion():
 
         _fecha_str_res = _fecha_picking_hoy.strftime("%d/%m/%Y")
 
-        # ── v4.71: Top 3 por CANCHA ──────────────────────────────────────────
+        # Top 3 por cancha
         _top3_por_cancha_lines = []
         try:
             _car_b71 = st.session_state.get("t1_car") or st.session_state.get("t4_car")
@@ -5098,8 +5467,7 @@ def render_tab_proyeccion():
                         _cn71_short = _cn71.replace("CANCHA ", "C")
                         _df_cn = _df_top71[_df_top71["CANCHA"].str.upper().str.contains(
                             _cn71.upper().replace("CANCHA ", "").strip(), na=False)]
-                        if _df_cn.empty:
-                            continue
+                        if _df_cn.empty: continue
                         _t3 = _df_cn.nlargest(3, "BULTOS")
                         _items = []
                         for _, _sk71 in _t3.iterrows():
@@ -5112,7 +5480,7 @@ def render_tab_proyeccion():
         except Exception:
             pass
 
-        # ── v4.71: Info de Frescura (FEFO críticos por cancha) ──────────────
+        # FEFO críticos
         _frescura_lines = []
         try:
             _fr_b71f = st.session_state.get("t1_fr")
@@ -5196,45 +5564,6 @@ def render_tab_proyeccion():
         _resumen_md += f"\n---\n💡 *{_ensenanza}*"
 
         st.info(_resumen_md)
-
-        st.divider()
-        st.markdown("#### 📋 PDF Controladores — Resumen operativo enriquecido")
-        st.caption("Incluye: Top 5 SKUs por cancha, análisis de carga, horarios, recomendaciones SOPs, FEFO y enseñanza del día.")
-
-        if st.button("📄 PDF Controladores", type="secondary",
-                     use_container_width=True, key="t4_pdf_ctrl_btn",
-                     help="Genera PDF landscape con el resumen completo para imprimir junto a las copias de canchas"):
-            with st.spinner("Generando PDF Controlador…"):
-                try:
-                    _pdf_ctrl = _t4_generar_pdf_controlador(
-                        fecha=_fecha_picking_hoy,
-                        fin_por_cancha=fin_por_cancha,
-                        fin_global_dt=fin_global_dt,
-                        totales_bult=totales_bult,
-                        totales_hl=totales_hl,
-                        totales_kg=totales_kg,
-                        totales_pall_c=totales_pall_c,
-                        mix_picking=pdata["mix_picking"],
-                        n_camiones=len(df_display[df_display["TOTAL_PICK"] > 0]),
-                        tot_pick=pdata["tot_pick"],
-                        top_skus_lines=_top_skus_lines,
-                        alertas=_alertas,
-                        ensenanza=_ensenanza,
-                    )
-                    _fecha_ctrl = _fecha_picking_hoy.strftime("%d-%m-%Y")
-                    _fname_ctrl = f"{_fecha_ctrl}_resumen_controlador_picking.pdf"
-                    st.download_button(
-                        "⬇ Descargar PDF Controlador",
-                        data=_pdf_ctrl, file_name=_fname_ctrl,
-                        mime="application/pdf", use_container_width=True,
-                        key="t4_pdf_ctrl_dl",
-                    )
-                    st.success(f"✓ PDF Controlador: {_fname_ctrl}")
-                except Exception as _e_ctrl:
-                    st.error(f"❌ Error generando PDF Controlador: {_e_ctrl}")
-                    with st.expander("Stack trace"):
-                        import traceback
-                        st.code(traceback.format_exc())
 
     # ── Paso 2 — Enviar resumen (fx) Picking a Google Sheets ─────────────────
     # v4.65: Se ubica al FINAL de la sección, después de generar los PDFs,
@@ -5376,12 +5705,10 @@ def render_tab_proyeccion():
         except Exception:
             pass
 
-        _fecha_xl = pdata["fecha"]
-        _fname_xl = (
-            f"fx_Picking_{_fecha_xl.strftime('%d-%m-%Y')}.xlsx"
-            if hasattr(_fecha_xl, "strftime")
-            else "fx_Picking.xlsx"
-        )
+        # v4.99: siempre today() — el picking se hace hoy aunque la entrega sea D+1
+        import datetime as _dt_fx
+        _fecha_xl = _dt_fx.date.today()
+        _fname_xl = f"fx_Picking_{_fecha_xl.strftime('%d-%m-%Y')}.xlsx"
         try:
             _xlsx_bytes = _build_fx_picking_xlsx(
                 totales_bult        = totales_bult,
@@ -5831,89 +6158,166 @@ def render_tab_proyeccion():
                         except Exception as _ep3x:
                             st.warning(f"⚠️ No se pudo generar Excel: {_ep3x}")
 
-                        # ── 9. Botón Enviar a Sheets — Agregados AE ──────────────────────
-                        # URL del Google Apps Script publicado como Web App.
-                        # Reemplazar con la URL real luego del deploy en GAS.
+                        # ── 9. Botón unificado: Enviar todo a Sheets (v4.99) ─────────────
                         _GAS_URL_AE = st.secrets.get(
                             "GAS_AGREGADOS_AE_URL",
                             "https://script.google.com/macros/s/AKfycbyYlGl92yGUE2HznznsL4CrACgUR-R3juNQF0Fejra9gd0igz2_FLO30VAC1eKlMyd0/exec"
                         )
+                        _SPREADSHEET_ID_REPOS = "1OjIhtpzwV-MpnBWu09lKyguit2iKR-nCFG9g5MOd-mM"
+                        _SHEET_REPOSICION_NAME = "reposición ae"
+                        _SHEET_HISTORICO_NAME  = "Rep AE Histórico"
+
+                        def _ser3(v):
+                            if v is None or (isinstance(v, float) and v != v):
+                                return ""
+                            try:
+                                import numpy as _np3s
+                                if isinstance(v, (_np3s.integer,)):  return int(v)
+                                if isinstance(v, (_np3s.floating,)): return float(v)
+                            except ImportError: pass
+                            if hasattr(v, "item"): return v.item()
+                            return v
+
+                        def _sanitize_for_gspread_p3(v):
+                            if v is None: return ""
+                            try:
+                                import numpy as _np_g
+                                if isinstance(v, _np_g.integer): return int(v)
+                                if isinstance(v, _np_g.floating):
+                                    return "" if _np_g.isnan(v) else round(float(v), 4)
+                            except ImportError: pass
+                            if isinstance(v, float):
+                                import math as _m_g
+                                if _m_g.isnan(v) or _m_g.isinf(v): return ""
+                                return round(v, 4)
+                            if isinstance(v, int): return v
+                            if hasattr(v, "item"): return v.item()
+                            return str(v) if v != "" else ""
+
+                        def _build_matrix_repos_p3(df_in, col_order):
+                            df_loc = df_in.reset_index(drop=True).copy()
+                            matrix = []
+                            for i in range(len(df_loc)):
+                                row = []
+                                for cc in col_order:
+                                    try:
+                                        vv = df_loc.at[i, cc] if cc in df_loc.columns else ""
+                                        row.append(_sanitize_for_gspread_p3(vv))
+                                    except Exception: row.append("")
+                                matrix.append(row)
+                            return matrix
 
                         st.markdown("---")
+                        st.markdown("##### 📤 Enviar todo a Sheets")
+                        st.caption("Ejecuta los 3 envíos en una sola operación: Agregados AE (GAS) + Reposición AE (gspread) + Append Histórico (gspread).")
+
                         if st.button(
-                            "📤 Enviar a Sheets (Agregados AE)",
-                            key="t4_paso3_send_sheets",
+                            "📤 Enviar todo a Sheets  (Agregados AE + Reposición AE + Histórico)",
+                            key="t4_send_all_sheets",
                             use_container_width=True,
-                            help="Borra A2:AJ de la hoja 'agregados ae' y escribe los datos actuales. "
-                                 "Las columnas AK y AL (fórmulas) no se modifican.",
                             type="primary",
+                            help="1) GAS: Agregados AE → 2) gspread: Reposición AE → 3) gspread: Append Histórico"
                         ):
+                            _ok_ae = _ok_rep = _ok_hist = False
+
+                            # ── 1. Agregados AE (GAS) ─────────────────────────────────────
                             try:
                                 import requests as _rq3s, json as _js3s
-
-                                # Serializar _df_final3 → lista de listas (fila por fila)
-                                # Convertir valores no serializables (int64, NaT, etc.)
-                                def _ser3(v):
-                                    if v is None or (isinstance(v, float) and v != v):
-                                        return ""
-                                    try:
-                                        import numpy as _np3s
-                                        if isinstance(v, (_np3s.integer,)):
-                                            return int(v)
-                                        if isinstance(v, (_np3s.floating,)):
-                                            return float(v)
-                                    except ImportError:
-                                        pass
-                                    if hasattr(v, "item"):
-                                        return v.item()
-                                    return v
-
                                 _headers3s = list(_df_final3.columns)
-                                _rows3s = [
-                                    [_ser3(v) for v in row]
-                                    for row in _df_final3.itertuples(index=False, name=None)
-                                ]
-
-                                _payload3s = {
-                                    "action":  "limpiarYCargar",
-                                    "headers": _headers3s,
-                                    "rows":    _rows3s,
-                                }
-
-                                with st.spinner("Enviando a Google Sheets…"):
+                                _rows3s = [[_ser3(v) for v in row]
+                                           for row in _df_final3.itertuples(index=False, name=None)]
+                                _payload3s = {"action": "limpiarYCargar", "headers": _headers3s, "rows": _rows3s}
+                                with st.spinner("1/3 — Enviando Agregados AE…"):
                                     _resp3s = _rq3s.post(
                                         _GAS_URL_AE,
                                         data=_js3s.dumps(_payload3s),
                                         headers={"Content-Type": "application/json"},
                                         timeout=60,
                                     )
-
                                 if _resp3s.status_code == 200:
-                                    try:
-                                        _r3s_json = _resp3s.json()
-                                    except Exception:
-                                        _r3s_json = {"ok": True, "msg": _resp3s.text[:200]}
-
-                                    if _r3s_json.get("ok"):
-                                        st.success(
-                                            f"✅ Enviado correctamente — "
-                                            f"{len(_rows3s)} filas escritas en 'agregados ae'."
-                                        )
-                                    else:
-                                        st.error(
-                                            f"❌ El script respondió con error: "
-                                            f"{_r3s_json.get('msg', _resp3s.text[:300])}"
-                                        )
+                                    try: _r3s_json = _resp3s.json()
+                                    except Exception: _r3s_json = {"ok": True}
+                                    _ok_ae = bool(_r3s_json.get("ok"))
+                                    if not _ok_ae:
+                                        st.warning(f"⚠️ Agregados AE: {_r3s_json.get('msg','error desconocido')}")
                                 else:
-                                    st.error(
-                                        f"❌ HTTP {_resp3s.status_code}: {_resp3s.text[:300]}"
-                                    )
-
+                                    st.warning(f"⚠️ Agregados AE HTTP {_resp3s.status_code}")
                             except Exception as _esp3:
-                                st.error(f"❌ Error al enviar a Sheets: {_esp3}")
-                                with st.expander("Detalle del error"):
-                                    import traceback as _tb3s
-                                    st.code(_tb3s.format_exc())
+                                st.warning(f"⚠️ Agregados AE: {_esp3}")
+
+                            # ── 2 + 3. gspread (Reposición + Histórico) ───────────────────
+                            _col_order_rep = [
+                                "Fecha", "Almacén", "Descripción", "Cancha",
+                                "bxp", "Posiciones", "Stock", "En Cancha",
+                                "Carga", "AE Puras", "Reposición Pall",
+                            ]
+                            # Recuperar _df_repos_neg del session_state si existe
+                            _df_repos_neg_u = st.session_state.get("_df_repos_neg_cache")
+                            if _df_repos_neg_u is None or _df_repos_neg_u.empty:
+                                st.info("ℹ️ No hay datos de Reposición AE calculados aún (Paso 4 pendiente).")
+                            else:
+                                _matrix_rep = _build_matrix_repos_p3(_df_repos_neg_u, _col_order_rep)
+                                try:
+                                    import gspread as _gs_u
+                                    from google.oauth2.service_account import Credentials as _Cred_u
+                                    _scopes_u = ["https://www.googleapis.com/auth/spreadsheets"]
+                                    _creds_u = _Cred_u.from_service_account_info(
+                                        dict(st.secrets["gcp_service_account"]), scopes=_scopes_u)
+                                    _client_u = _gs_u.authorize(_creds_u)
+                                    _ss_u = _client_u.open_by_key(_SPREADSHEET_ID_REPOS)
+
+                                    # Buscar hojas case-insensitive
+                                    _ws_rep_u = _ws_hist_u = None
+                                    for _w_it in _ss_u.worksheets():
+                                        _wt = _w_it.title.strip().lower()
+                                        if _wt == _SHEET_REPOSICION_NAME.strip().lower():
+                                            _ws_rep_u = _w_it
+                                        if _wt == _SHEET_HISTORICO_NAME.strip().lower():
+                                            _ws_hist_u = _w_it
+
+                                    # 2. Reposición AE
+                                    if _ws_rep_u:
+                                        with st.spinner("2/3 — Reposición AE…"):
+                                            _lr = len(_ws_rep_u.col_values(1))
+                                            if _lr >= 2:
+                                                _ws_rep_u.batch_clear([f"A2:K{_lr}"])
+                                            if _matrix_rep:
+                                                _ws_rep_u.update(
+                                                    range_name=f"A2:K{1+len(_matrix_rep)}",
+                                                    values=_matrix_rep,
+                                                    value_input_option="USER_ENTERED",
+                                                )
+                                        _ok_rep = True
+                                    else:
+                                        st.warning(f"⚠️ Hoja '{_SHEET_REPOSICION_NAME}' no encontrada")
+
+                                    # 3. Append Histórico
+                                    if _ws_hist_u and _matrix_rep:
+                                        with st.spinner("3/3 — Append Histórico…"):
+                                            _ws_hist_u.append_rows(
+                                                _matrix_rep,
+                                                value_input_option="USER_ENTERED",
+                                                insert_data_option="INSERT_ROWS",
+                                                table_range="A1",
+                                            )
+                                        _ok_hist = True
+                                    elif not _ws_hist_u:
+                                        st.warning(f"⚠️ Hoja '{_SHEET_HISTORICO_NAME}' no encontrada")
+
+                                except Exception as _esp_u:
+                                    st.error(f"❌ Error gspread: {_esp_u}")
+                                    with st.expander("Detalle"):
+                                        import traceback as _tb_u
+                                        st.code(_tb_u.format_exc())
+
+                            # Resultado final
+                            _results = []
+                            if _ok_ae:   _results.append("✅ Agregados AE")
+                            if _ok_rep:  _results.append("✅ Reposición AE")
+                            if _ok_hist: _results.append("✅ Histórico")
+                            if _results:
+                                st.success("  |  ".join(_results))
+                                log_event("info", f"Envío Sheets unificado: {', '.join(_results)}")
 
         except Exception as _ep3:
             st.error(f"❌ Error en Paso 3: {_ep3}")
@@ -6150,200 +6554,12 @@ def render_tab_proyeccion():
                         except Exception as _er4x:
                             st.warning(f"⚠️ No se pudo generar Excel reposición: {_er4x}")
 
-                        # ── 6. Botón Enviar a Sheets — Reposición AE ──────────
-                        # ════════════════════════════════════════════════════════════
-                        # NUEVO ENFOQUE v4.93: gspread DIRECTO sin GAS
-                        # Escribe directo a Sheets usando la service account.
-                        # ════════════════════════════════════════════════════════════
-                        _SPREADSHEET_ID_REPOS = "1OjIhtpzwV-MpnBWu09lKyguit2iKR-nCFG9g5MOd-mM"
-                        _SHEET_REPOSICION_NAME = "reposición ae"
-                        _SHEET_HISTORICO_NAME  = "Rep AE Histórico"
-
-                        def _sanitize_for_gspread(v):
-                            """Convierte cualquier valor a tipo nativo serializable por gspread."""
-                            if v is None:
-                                return ""
-                            try:
-                                import numpy as _np_g
-                                if isinstance(v, _np_g.integer):
-                                    return int(v)
-                                if isinstance(v, _np_g.floating):
-                                    if _np_g.isnan(v):
-                                        return ""
-                                    return round(float(v), 4)
-                                if isinstance(v, _np_g.bool_):
-                                    return bool(v)
-                            except ImportError:
-                                pass
-                            if isinstance(v, float):
-                                import math as _m_g
-                                if _m_g.isnan(v) or _m_g.isinf(v):
-                                    return ""
-                                return round(v, 4)
-                            if isinstance(v, int):
-                                return v
-                            if hasattr(v, "item"):
-                                return v.item()
-                            return str(v) if v != "" else ""
-
-                        def _build_matrix_repos(df_in, col_order):
-                            """Arma matriz lista para gspread.update."""
-                            df_loc = df_in.reset_index(drop=True).copy()
-                            matrix = []
-                            for i in range(len(df_loc)):
-                                row = []
-                                for cc in col_order:
-                                    try:
-                                        vv = df_loc.at[i, cc] if cc in df_loc.columns else ""
-                                        row.append(_sanitize_for_gspread(vv))
-                                    except Exception:
-                                        row.append("")
-                                matrix.append(row)
-                            return matrix
-
-                        _col_order_rep = [
-                            "Fecha", "Almacén", "Descripción", "Cancha",
-                            "bxp", "Posiciones", "Stock", "En Cancha",
-                            "Carga", "AE Puras", "Reposición Pall",
-                        ]
-
-                        st.markdown("---")
-                        if st.button(
-                            "📤 Enviar a Sheets (Reposición AE)",
-                            key="t4_paso4_send_sheets",
-                            use_container_width=True,
-                            help="Borra A2:K de la hoja 'reposición ae' y escribe los datos actuales "
-                                 "directamente vía gspread (sin GAS).",
-                            type="primary",
-                        ):
-                            try:
-                                import gspread as _gs_r
-                                from google.oauth2.service_account import Credentials as _Cred_r
-
-                                _matrix_r = _build_matrix_repos(_df_repos_neg, _col_order_rep)
-
-                                # Debug visible
-                                if _matrix_r:
-                                    st.caption(
-                                        f"🔍 Debug: {len(_matrix_r)} filas | "
-                                        f"col K fila 0 = `{_matrix_r[0][10]}` "
-                                        f"(tipo={type(_matrix_r[0][10]).__name__})"
-                                    )
-
-                                _scopes_r = ["https://www.googleapis.com/auth/spreadsheets"]
-                                _creds_r = _Cred_r.from_service_account_info(
-                                    dict(st.secrets["gcp_service_account"]),
-                                    scopes=_scopes_r,
-                                )
-                                _client_r = _gs_r.authorize(_creds_r)
-                                _ss_r = _client_r.open_by_key(_SPREADSHEET_ID_REPOS)
-
-                                # Buscar hoja por nombre case-insensitive (tolera "Reposición AE", "reposición ae", etc.)
-                                _ws_r = None
-                                _available_names_r = [_w.title for _w in _ss_r.worksheets()]
-                                for _w_iter in _ss_r.worksheets():
-                                    if _w_iter.title.strip().lower() == _SHEET_REPOSICION_NAME.strip().lower():
-                                        _ws_r = _w_iter
-                                        break
-                                if _ws_r is None:
-                                    st.error(
-                                        f"❌ No se encontró la hoja '{_SHEET_REPOSICION_NAME}'. "
-                                        f"Hojas disponibles: {_available_names_r}"
-                                    )
-                                    st.stop()
-
-                                with st.spinner("Borrando datos existentes…"):
-                                    # Limpiar A2:K hasta la última fila con datos
-                                    _last_row_r = len(_ws_r.col_values(1))
-                                    if _last_row_r >= 2:
-                                        _ws_r.batch_clear([f"A2:K{_last_row_r}"])
-
-                                with st.spinner(f"Escribiendo {len(_matrix_r)} filas…"):
-                                    if _matrix_r:
-                                        _end_row_r = 1 + len(_matrix_r)
-                                        _ws_r.update(
-                                            range_name=f"A2:K{_end_row_r}",
-                                            values=_matrix_r,
-                                            value_input_option="USER_ENTERED",
-                                        )
-
-                                st.success(
-                                    f"✅ Enviado correctamente — {len(_matrix_r)} filas "
-                                    f"escritas en 'reposición ae' (vía gspread)."
-                                )
-                            except Exception as _esp4:
-                                st.error(f"❌ Error al enviar a Sheets: {_esp4}")
-                                with st.expander("Detalle del error"):
-                                    import traceback as _tb4s
-                                    st.code(_tb4s.format_exc())
-
-                        # ── Botón APPEND a Rep AE Histórico (gspread directo) ──
-                        st.markdown("---")
-                        st.markdown("##### 📚 Append a Rep AE Histórico")
+                        # v4.99: guardar _df_repos_neg en session_state para el botón unificado (Paso 3)
+                        st.session_state["_df_repos_neg_cache"] = _df_repos_neg.copy() if _df_repos_neg is not None else pd.DataFrame()
                         st.caption(
-                            "Agrega las filas actuales al final de la hoja "
-                            "'Rep AE Histórico' sin borrar datos existentes."
+                            f"ℹ️ {len(_df_repos_neg) if _df_repos_neg is not None else 0} filas calculadas. "
+                            "Usá el botón **📤 Enviar todo a Sheets** en el Paso 3 para enviar."
                         )
-                        if st.button(
-                            "📚 Append a Rep AE Histórico",
-                            key="t4_btn_send_hist",
-                            use_container_width=True,
-                            type="secondary",
-                        ):
-                            try:
-                                import gspread as _gs_h
-                                from google.oauth2.service_account import Credentials as _Cred_h
-
-                                _matrix_h = _build_matrix_repos(_df_repos_neg, _col_order_rep)
-
-                                if _matrix_h:
-                                    st.caption(
-                                        f"🔍 Debug append: {len(_matrix_h)} filas | "
-                                        f"col K fila 0 = `{_matrix_h[0][10]}` "
-                                        f"(tipo={type(_matrix_h[0][10]).__name__})"
-                                    )
-
-                                _scopes_h = ["https://www.googleapis.com/auth/spreadsheets"]
-                                _creds_h = _Cred_h.from_service_account_info(
-                                    dict(st.secrets["gcp_service_account"]),
-                                    scopes=_scopes_h,
-                                )
-                                _client_h = _gs_h.authorize(_creds_h)
-                                _ss_h = _client_h.open_by_key(_SPREADSHEET_ID_REPOS)
-
-                                # Buscar hoja Histórico por nombre case-insensitive
-                                _ws_h = None
-                                _available_names_h = [_w.title for _w in _ss_h.worksheets()]
-                                for _w_iter in _ss_h.worksheets():
-                                    if _w_iter.title.strip().lower() == _SHEET_HISTORICO_NAME.strip().lower():
-                                        _ws_h = _w_iter
-                                        break
-                                if _ws_h is None:
-                                    st.error(
-                                        f"❌ No se encontró la hoja '{_SHEET_HISTORICO_NAME}'. "
-                                        f"Hojas disponibles: {_available_names_h}"
-                                    )
-                                    st.stop()
-
-                                with st.spinner("Append en 'Rep AE Histórico'…"):
-                                    # Append usa append_rows (agrega al final, no sobreescribe)
-                                    if _matrix_h:
-                                        _ws_h.append_rows(
-                                            _matrix_h,
-                                            value_input_option="USER_ENTERED",
-                                            insert_data_option="INSERT_ROWS",
-                                            table_range="A1",
-                                        )
-
-                                st.success(
-                                    f"✅ Append OK — {len(_matrix_h)} filas "
-                                    f"agregadas en 'Rep AE Histórico' (vía gspread)."
-                                )
-                            except Exception as _esp4h:
-                                st.error(f"❌ Error append histórico: {_esp4h}")
-                                with st.expander("Detalle"):
-                                    import traceback as _tb4h
-                                    st.code(_tb4h.format_exc())
 
         except Exception as _ep4:
             st.error(f"❌ Error en Paso 4: {_ep4}")
@@ -7277,6 +7493,201 @@ def render_tab_validacion():
             file_name=_stamp("run_log", "txt"),
             mime="text/plain",
         )
+
+    # ── 🔒 CERRAR DÍA (v4.99) ─────────────────────────────────────────────────
+    st.divider()
+    with st.container(border=True):
+        st.markdown("### 🔒 Cerrar Día")
+        st.caption(
+            "Genera el **Informe Final del Día** en PDF: resume todo lo procesado en el Picking Orchestrator. "
+            "Incluye log completo, alertas, vencimientos de licencias, PDFs generados, "
+            "camiones con exceso de pallets y métricas del tablero ruteador."
+        )
+        st.warning(
+            "💡 **Tip:** generá primero el Excel Tablero (sección Tablero Ruteador) y los PDFs de picking "
+            "para que el informe final esté completo.",
+            icon="ℹ️",
+        )
+
+        if st.button(
+            "🔒 Cerrar Día — Generar Informe Final PDF",
+            type="primary", use_container_width=True, key="btn_cerrar_dia",
+        ):
+            import datetime as _dtcd
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.units import mm
+            from reportlab.pdfgen import canvas as _rl_cvs
+
+            ss = st.session_state
+            _today = _dtcd.date.today()
+            _now   = _dtcd.datetime.now()
+            _fname_cd = f"{_today.strftime('%d-%m-%Y')}_Informe_Final_BKCC.pdf"
+
+            try:
+                _buf_cd = io.BytesIO()
+                _cw, _ch = A4
+                _cvs = _rl_cvs.Canvas(_buf_cd, pagesize=A4)
+
+                NAVY = colors.HexColor("#1F3864")
+                GOLD = colors.HexColor("#C9A84C")
+                _M = 18 * mm
+
+                def _draw_page_header(c, page_num=1):
+                    """Header institucional de cada página."""
+                    c.setFillColor(NAVY)
+                    c.rect(0, _ch - 22*mm, _cw, 22*mm, fill=1, stroke=0)
+                    c.setFillColor(colors.white)
+                    c.setFont("Helvetica-Bold", 13)
+                    c.drawString(_M, _ch - 13*mm, "INFORME FINAL DEL DÍA — PICKING ORCHESTRATOR")
+                    c.setFont("Helvetica", 9)
+                    c.drawString(_M, _ch - 19*mm,
+                                 f"Beccacece Hnos SA  ·  DPO 2.1  ·  {_today.strftime('%d/%m/%Y')}  "
+                                 f"·  Generado: {_now.strftime('%H:%M')}  ·  v{APP_VERSION}")
+                    c.drawRightString(_cw - _M, _ch - 19*mm, f"Pág. {page_num}")
+                    # Línea dorada
+                    c.setStrokeColor(GOLD)
+                    c.setLineWidth(2)
+                    c.line(_M, _ch - 23*mm, _cw - _M, _ch - 23*mm)
+
+                def _draw_section_title(c, y, title):
+                    c.setFillColor(NAVY)
+                    c.rect(_M - 2, y - 1, _cw - 2*_M + 2, 7*mm, fill=1, stroke=0)
+                    c.setFillColor(colors.white)
+                    c.setFont("Helvetica-Bold", 10)
+                    c.drawString(_M + 2, y + 1.5*mm, title)
+                    return y - 8*mm
+
+                def _draw_kv(c, y, label, value, color=None):
+                    c.setFont("Helvetica-Bold", 9)
+                    c.setFillColor(NAVY)
+                    c.drawString(_M, y, f"{label}:")
+                    c.setFont("Helvetica", 9)
+                    c.setFillColor(color or colors.black)
+                    c.drawString(_M + 55*mm, y, str(value))
+                    return y - 5*mm
+
+                _page = 1
+                _y = _ch - 28*mm
+                _draw_page_header(_cvs, _page)
+
+                # ── RESUMEN EJECUTIVO ──────────────────────────────────────────
+                _y = _draw_section_title(_cvs, _y, "📊  RESUMEN EJECUTIVO")
+
+                # Métricas del tablero ruteador (si calculado)
+                _tabla_rows_cd = ss.get("tr_tabla_rows_cache", [])
+                _n_cams = len([r for r in _tabla_rows_cd if r.get("PDV", 0) > 0]) if _tabla_rows_cd else "—"
+                _n_pdv  = sum(r.get("PDV", 0) for r in _tabla_rows_cd) if _tabla_rows_cd else "—"
+                _blt_up = round(sum(r.get("Bultos UP", 0) for r in _tabla_rows_cd), 1) if _tabla_rows_cd else "—"
+                _hlr    = round(sum(r.get("HL", 0) for r in _tabla_rows_cd), 1) if _tabla_rows_cd else "—"
+                _y = _draw_kv(_cvs, _y, "Fecha de operación",     _today.strftime("%d/%m/%Y"))
+                _y = _draw_kv(_cvs, _y, "Camiones en reparto",    _n_cams)
+                _y = _draw_kv(_cvs, _y, "Pedidos (PDV) ruteados", _n_pdv)
+                _y = _draw_kv(_cvs, _y, "Bultos UP totales",       _blt_up)
+                _y = _draw_kv(_cvs, _y, "HL Ruteados",            _hlr)
+
+                # PDFs generados
+                _y -= 3*mm
+                _y = _draw_section_title(_cvs, _y, "📄  PDFs GENERADOS HOY")
+                _pdfs_gen = []
+                if ss.get("t4_pdf_pickeros_bytes"):   _pdfs_gen.append(ss.get("t4_pdf_pickeros_fname","PDF Pickeros"))
+                if ss.get("t4_pdf_ctrl_bytes"):       _pdfs_gen.append(ss.get("t4_pdf_ctrl_fname","PDF Controladores"))
+                if ss.get("t3_pdf_bytes"):            _pdfs_gen.append(ss.get("t3_pdf_filename","PDF T2 Camiones"))
+                if ss.get("tr_pdf_bytes"):            _pdfs_gen.append(ss.get("tr_pdf_fname","PDF Tablero Ruteador"))
+                if ss.get("tr_xl2_bytes"):            _pdfs_gen.append(ss.get("tr_xl2_fname","Excel Tablero Ruteador"))
+                if not _pdfs_gen:
+                    _pdfs_gen = ["(ningún PDF generado en esta sesión)"]
+                for _pg in _pdfs_gen:
+                    _cvs.setFont("Helvetica", 9)
+                    _cvs.setFillColor(colors.black)
+                    _cvs.drawString(_M + 4, _y, f"  ✓  {_pg}")
+                    _y -= 5*mm
+
+                # Alertas del tablero
+                _y -= 3*mm
+                _y = _draw_section_title(_cvs, _y, "🚨  ALERTAS")
+                _alertas_cd = []
+                # Licencias vencidas
+                _lic_data = ss.get("tr_licencias_data", [])
+                if _lic_data:
+                    for _ld in _lic_data:
+                        try:
+                            _vd = pd.to_datetime(_ld.get("Venc. Licencia",""), dayfirst=True, errors="coerce")
+                            if not pd.isna(_vd) and _vd.date() <= _today:
+                                _alertas_cd.append(f"🚫 LICENCIA VENCIDA: {_ld.get('Chofer','')} — {_ld.get('Venc. Licencia','')}")
+                        except Exception: pass
+                # Camiones sobre pallets (si hay tablero calculado)
+                for _rt in _tabla_rows_cd:
+                    if _rt.get("_peso_ok") is False:
+                        _alertas_cd.append(f"⚖️ EXCESO PESO: CAM {_rt.get('N° Cam','')} — {_rt.get('Chofer','')}")
+
+                if not _alertas_cd:
+                    _alertas_cd = ["✅ Sin alertas críticas registradas"]
+                for _al in _alertas_cd:
+                    _col_alerta = colors.red if _al.startswith(("🚫","⚖️")) else colors.HexColor("#00AA44")
+                    _cvs.setFont("Helvetica", 9)
+                    _cvs.setFillColor(_col_alerta)
+                    _cvs.drawString(_M + 4, _y, f"  {_al}")
+                    _y -= 5*mm
+                    if _y < 35*mm:
+                        _cvs.showPage()
+                        _page += 1
+                        _draw_page_header(_cvs, _page)
+                        _y = _ch - 28*mm
+
+                # ── LOG COMPLETO ───────────────────────────────────────────────
+                _y -= 3*mm
+                if _y < 60*mm:
+                    _cvs.showPage(); _page += 1
+                    _draw_page_header(_cvs, _page); _y = _ch - 28*mm
+                _y = _draw_section_title(_cvs, _y, "📜  LOG DE LA SESIÓN")
+                _log_lines_cd = ss.get("log_buffer", [])
+                if not _log_lines_cd:
+                    _log_lines_cd = ["(sin eventos registrados)"]
+                _cvs.setFont("Courier", 7)
+                _cvs.setFillColor(colors.black)
+                for _ll in _log_lines_cd[-150:]:  # Últimas 150 líneas
+                    if _y < 25*mm:
+                        _cvs.showPage(); _page += 1
+                        _draw_page_header(_cvs, _page); _y = _ch - 28*mm
+                        _cvs.setFont("Courier", 7)
+                    _cvs.drawString(_M, _y, _ll[:110])
+                    _y -= 3.5*mm
+
+                # Footer final
+                _cvs.setFont("Helvetica", 8)
+                _cvs.setFillColor(colors.grey)
+                _cvs.drawCentredString(_cw / 2, 12*mm,
+                    f"Picking Orchestrator v{APP_VERSION}  ·  Beccacece Hnos SA  ·  DPO 2.1  ·  "
+                    f"Generado {_now.strftime('%d/%m/%Y %H:%M')}")
+                _cvs.setStrokeColor(GOLD)
+                _cvs.line(_M, 16*mm, _cw - _M, 16*mm)
+
+                _cvs.save()
+                _buf_cd.seek(0)
+                _pdf_cd_bytes = _buf_cd.getvalue()
+
+                st.session_state["cierre_dia_pdf_bytes"] = _pdf_cd_bytes
+                st.session_state["cierre_dia_pdf_fname"] = _fname_cd
+                log_event("info", f"Informe Final del Día generado: {_fname_cd} ({len(_pdf_cd_bytes)//1024} KB)")
+                st.success(f"✅ Informe Final generado: {_fname_cd}")
+
+            except Exception as _ecd:
+                st.error(f"❌ Error generando informe: {_ecd}")
+                with st.expander("Detalle"):
+                    import traceback
+                    st.code(traceback.format_exc())
+
+        # Botón de descarga (persiste en session_state)
+        if st.session_state.get("cierre_dia_pdf_bytes"):
+            st.download_button(
+                "⬇ Descargar Informe Final del Día (PDF)",
+                data=st.session_state["cierre_dia_pdf_bytes"],
+                file_name=st.session_state.get("cierre_dia_pdf_fname","informe_final.pdf"),
+                mime="application/pdf",
+                use_container_width=True,
+                key="dl_cierre_dia",
+                type="primary",
+            )
 
 
 # ── MAIN ────────────────────────────────────────────────────────────────────
@@ -9977,7 +10388,7 @@ def _safe_float(v):
 
 def render_tab_tablero():
     import io
-    _tr_subtabs = st.tabs(["📊 Tablero del día", "📅 Histórico Mensual", "📆 Histórico Anual"])
+    _tr_subtabs = st.tabs(["📊 Tablero del día", "📅 Histórico Mensual", "📆 Histórico Anual", "📍 Distancias & Costos"])
 
     # ══════════════════════════════════════════════════════════════════
     # TAB 1 — TABLERO DEL DÍA
@@ -10121,9 +10532,14 @@ def render_tab_tablero():
 
         es_sabado = fecha_dia.weekday() == 5
 
-        # ── LICENCIAS — tabla editable persistente (v4.70) ────────────────────
+        # ── LICENCIAS — tabla editable persistente (v4.99: Sheets) ──────────
         st.markdown("### 🪪 Licencias conductores")
-        st.caption("Editá directamente la tabla. Los datos persisten durante la sesión (no se borran con F5 mientras no se recargue la página).")
+        st.caption(
+            "Editá directamente la tabla. "
+            + ("Los cambios se guardan en Google Sheets (persisten entre sesiones)." if _SHEETS_ID_PERSISTENCIA
+               else "⚠️ Sin Sheets de persistencia configurado — los datos se borran al recargar. "
+                    "Configura `SHEETS_PERSISTENCIA_ID` en los secrets de Streamlit.")
+        )
 
         # Inicializar tabla de licencias desde datos hardcoded si no existe
         _LICENCIAS_DEFAULT = [
@@ -10160,14 +10576,19 @@ def render_tab_tablero():
             {"Chofer": "COLQUE",      "N° Licencia": "26691373", "Venc. Licencia": "28/5/2026",  "Clases": "A.1.2 B.2 C.1"},
         ]
 
+        # v4.99: cargar desde Sheets en el primer render de la sesión
         if "tr_licencias_data" not in ss:
-            ss["tr_licencias_data"] = _LICENCIAS_DEFAULT.copy()
+            _lic_from_sheets = None
+            if _SHEETS_ID_PERSISTENCIA:
+                with st.spinner("Cargando licencias desde Sheets…"):
+                    _lic_from_sheets = _cargar_licencias_sheets()
+            ss["tr_licencias_data"] = _lic_from_sheets if _lic_from_sheets else _LICENCIAS_DEFAULT.copy()
 
         _df_lic_edit = pd.DataFrame(ss["tr_licencias_data"])
 
         _lc_exp = st.expander("🪪 Ver / editar licencias de conductores", expanded=False)
         with _lc_exp:
-            st.caption("Doble click en una celda para editar. Los cambios se mantienen durante la sesión.")
+            st.caption("Doble click en una celda para editar. Presioná 💾 Guardar para persistir en Sheets.")
             _lcol1, _lcol2 = st.columns([6, 1])
             with _lcol1:
                 _df_lic_edited = st.data_editor(
@@ -10186,7 +10607,15 @@ def render_tab_tablero():
             with _lcol2:
                 if st.button("💾 Guardar", key="tr_lic_save", use_container_width=True, type="primary"):
                     ss["tr_licencias_data"] = _df_lic_edited.to_dict("records")
-                    st.success("✅ Guardado")
+                    if _SHEETS_ID_PERSISTENCIA:
+                        with st.spinner("Guardando en Sheets…"):
+                            _saved = _guardar_licencias_sheets(ss["tr_licencias_data"])
+                        if _saved:
+                            st.success("✅ Guardado en Sheets")
+                        else:
+                            st.warning("⚠️ Guardado localmente (Sheets no disponible)")
+                    else:
+                        st.success("✅ Guardado (solo sesión)")
                     st.rerun()
                 if st.button("↩️ Restaurar", key="tr_lic_reset", use_container_width=True):
                     ss["tr_licencias_data"] = _LICENCIAS_DEFAULT.copy()
@@ -10715,6 +11144,8 @@ def render_tab_tablero():
             })
 
         if tabla_rows:
+            # v4.99: cachear para Cerrar Día
+            ss["tr_tabla_rows_cache"] = tabla_rows
             df_tab = pd.DataFrame(tabla_rows)
 
             def _style_tabla(row):
@@ -11131,6 +11562,35 @@ def render_tab_tablero():
                     ss["tr_xl2_bytes"] = _buf_xl2.getvalue()
                     ss["tr_xl2_fname"] = f"{fecha_dia.strftime('%d-%m-%Y')}_Tablero-Ruteador_BKCC.xlsx"
                     st.success("✅ Excel Tablero generado — tabla única espejo del PDF + hoja KPIs para Histórico")
+
+                    # v4.99: auto-guardar KPIs del día en Sheets de persistencia
+                    if _SHEETS_ID_PERSISTENCIA and tabla_rows:
+                        try:
+                            _kpis_dia = {
+                                "Camiones reparto":      len([r for r in tabla_rows if r.get("PDV", 0) > 0]),
+                                "Total PDV":             sum(r.get("PDV", 0) for r in tabla_rows),
+                                "Bultos UP":             round(sum(r.get("Bultos UP", 0) for r in tabla_rows), 2),
+                                "Paletas":               round(sum(r.get("Paletas", 0) for r in tabla_rows), 2),
+                                "HL":                    round(sum(r.get("HL", 0) for r in tabla_rows), 2),
+                                "Peso(kg)":              round(sum(r.get("Peso(kg)", 0) for r in tabla_rows), 0),
+                                "Drop Size":             round(
+                                    sum(r.get("PDV", 0) for r in tabla_rows) /
+                                    max(len([r for r in tabla_rows if r.get("PDV", 0) > 0]), 1), 2),
+                                "Eficiencia":            round(ss.get("tr_kpi_eficiencia", 0), 4),
+                                "Util. Vehículos":       round(ss.get("tr_kpi_util_veh", 0), 4),
+                                "Fuera de zona (%)":     round(ss.get("tr_kpi_fz", 0), 4),
+                                "Ocup. bodega":          round(ss.get("tr_kpi_ocup", 0), 2),
+                                "Productividad ruteo":   round(ss.get("tr_kpi_prod_ruteo", 0), 4),
+                                "Causa demora":          ss.get("tr_causa_demora_val", ""),
+                            }
+                            with st.spinner("💾 Guardando KPIs del día en Sheets…"):
+                                _saved_kpi = _guardar_kpis_diarios_sheets(fecha_dia, _kpis_dia)
+                            if _saved_kpi:
+                                st.info("💾 KPIs del día guardados en Sheets (Histórico Mensual actualizado)")
+                                # Invalidar cache del histórico para que recargue
+                                ss.pop("hist_data_loaded_from_sheets", None)
+                        except Exception as _eks:
+                            pass  # No bloquear el flujo principal
                 except Exception as _xe2:
                     import traceback
                     st.error(f"Error: {_xe2}")
@@ -11563,47 +12023,84 @@ def render_tab_tablero():
             ss["hist_data"] = []
 
         st.markdown("## 📅 Histórico Mensual — Dashboard")
-        st.caption("Subí los Excel diarios generados desde el Tablero Ruteador. Cada archivo agrega un día.")
+        st.caption("El tablero se alimenta automáticamente al generar el Excel Tablero. También podés importar el Excel mensual DPO (Tablero Ruteador Mensual) o los Excel diarios anteriores.")
 
-        # Upload
+        # v4.99: cargar desde Sheets al primer render de la sesión
+        if _SHEETS_ID_PERSISTENCIA and not ss.get("hist_data_loaded_from_sheets"):
+            with st.spinner("Cargando histórico desde Sheets…"):
+                _hist_from_sheets = _cargar_kpis_diarios_sheets()
+            if _hist_from_sheets:
+                # Merge: no duplicar fechas existentes
+                _fechas_existentes = {r["fecha"] for r in ss["hist_data"]}
+                for _r in _hist_from_sheets:
+                    if _r["fecha"] not in _fechas_existentes:
+                        ss["hist_data"].append(_r)
+                ss["hist_data"].sort(key=lambda x: x["fecha"])
+                st.toast(f"✅ {len(_hist_from_sheets)} días cargados desde Sheets")
+            ss["hist_data_loaded_from_sheets"] = True
+
+        # Upload — acepta Excel diarios (hoja KPIs) Y tablero mensual DPO
         _hu1, _hu2 = st.columns([3, 1])
         with _hu1:
-            uploaded = st.file_uploader("📁 Excel(s) diarios del Tablero Ruteador",
-                type=["xlsx"], accept_multiple_files=True, key="hist_uploader")
+            uploaded = st.file_uploader(
+                "📁 Importar Excel(s) — diarios (hoja KPIs) o Tablero Mensual DPO",
+                type=["xlsx"], accept_multiple_files=True, key="hist_uploader",
+                help="Acepta: (1) Excel diario generado por esta app (hoja 'KPIs') o "
+                     "(2) Tablero Ruteador Mensual formato DPO (filas=KPIs, columnas=fechas)"
+            )
         with _hu2:
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("🗑️ Limpiar histórico", key="hist_clear", use_container_width=True):
                 ss["hist_data"] = []
+                ss.pop("hist_data_loaded_from_sheets", None)
                 st.rerun()
 
         if uploaded:
             nuevos = 0
             for f in uploaded:
                 try:
-                    df_kpi = pd.read_excel(f, sheet_name="KPIs", header=0)
-                    kv = dict(zip(df_kpi["KPI"].astype(str), df_kpi["Valor"].astype(str)))
-                    fecha_str = kv.get("Fecha","")
-                    if not fecha_str: continue
-                    fecha = pd.to_datetime(fecha_str, dayfirst=True, errors="coerce")
-                    if pd.isna(fecha): continue
-                    if fecha in [r["fecha"] for r in ss["hist_data"]]: continue
-                    ss["hist_data"].append({
-                        "fecha": fecha,
-                        "camiones":      _safe_int(kv.get("Camiones reparto",0)),
-                        "pedidos":       _safe_int(kv.get("Total PDV",0)),
-                        "bultos_up":     _safe_float(kv.get("Bultos UP",0)),
-                        "paletas":       _safe_float(kv.get("Paletas",0)),
-                        "hl":            _safe_float(kv.get("HL",0)),
-                        "peso_kg":       _safe_float(kv.get("Peso(kg)",0)),
-                        "drop_size":     _safe_float(kv.get("Drop Size",0)),
-                        "eficiencia":    _safe_float(kv.get("Eficiencia",0)),
-                        "util_vehiculos":_safe_float(kv.get("Util. Vehículos",0)),
-                        "fuera_zona_pct":_safe_float(kv.get("Fuera de zona (%)",0)),
-                        "ocup_bodega":   _safe_float(kv.get("Ocup. bodega",0)),
-                        "prod_ruteo":    _safe_float(kv.get("Productividad ruteo",0)),
-                        "causa_demora":  kv.get("Causa demora",""),
-                    })
-                    nuevos += 1
+                    _xl_test = pd.ExcelFile(f)
+                    f.seek(0)
+                    # Detectar formato: hoja KPIs = diario, sin hoja KPIs = DPO mensual
+                    if "KPIs" in _xl_test.sheet_names:
+                        # Formato diario (generado por esta app)
+                        df_kpi = pd.read_excel(f, sheet_name="KPIs", header=0)
+                        kv = dict(zip(df_kpi["KPI"].astype(str), df_kpi["Valor"].astype(str)))
+                        fecha_str = kv.get("Fecha","")
+                        if not fecha_str: continue
+                        fecha = pd.to_datetime(fecha_str, dayfirst=True, errors="coerce")
+                        if pd.isna(fecha): continue
+                        if fecha in [r["fecha"] for r in ss["hist_data"]]: continue
+                        ss["hist_data"].append({
+                            "fecha": fecha,
+                            "camiones":      _safe_int(kv.get("Camiones reparto",0)),
+                            "pedidos":       _safe_int(kv.get("Total PDV",0)),
+                            "bultos_up":     _safe_float(kv.get("Bultos UP",0)),
+                            "paletas":       _safe_float(kv.get("Paletas",0)),
+                            "hl":            _safe_float(kv.get("HL",0)),
+                            "peso_kg":       _safe_float(kv.get("Peso(kg)",0)),
+                            "drop_size":     _safe_float(kv.get("Drop Size",0)),
+                            "eficiencia":    _safe_float(kv.get("Eficiencia",0)),
+                            "util_vehiculos":_safe_float(kv.get("Util. Vehículos",0)),
+                            "fuera_zona_pct":_safe_float(kv.get("Fuera de zona (%)",0)),
+                            "ocup_bodega":   _safe_float(kv.get("Ocup. bodega",0)),
+                            "prod_ruteo":    _safe_float(kv.get("Productividad ruteo",0)),
+                            "causa_demora":  kv.get("Causa demora",""),
+                        })
+                        nuevos += 1
+                    else:
+                        # Formato DPO mensual (Tablero Ruteador Mensual)
+                        f.seek(0)
+                        _parsed = _parse_tablero_mensual_dpo(f.read())
+                        _fechas_existentes = {r["fecha"] for r in ss["hist_data"]}
+                        added = 0
+                        for _pr in _parsed:
+                            if _pr["fecha"] not in _fechas_existentes:
+                                ss["hist_data"].append(_pr)
+                                added += 1
+                        nuevos += added
+                        if added:
+                            st.info(f"📊 Tablero DPO: {added} días importados de '{f.name}'")
                 except Exception:
                     pass
             if nuevos > 0:
@@ -12348,6 +12845,152 @@ def render_tab_tablero():
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key="hist_anual_dl_xl", use_container_width=True)
 
+    # ══════════════════════════════════════════════════════════════════
+    # TAB 4 — DISTANCIAS & COSTOS (v4.99)
+    # ══════════════════════════════════════════════════════════════════
+    with _tr_subtabs[3]:
+        import datetime as _dt_dist
+        ss = st.session_state
+
+        st.markdown("## 📍 Distancias & Costos de Reparto")
+        st.caption(f"Fuente: Google Sheets ID `{_SHEETS_ID_DISTANCIAS}` — distancia km a cada cliente.")
+
+        # ── Cargar datos de distancias ─────────────────────────────────────────
+        _COSTO_COMBUSTIBLE_LT = 1500.0   # $/litro GNC (editable)
+        _RENDIMIENTO_KML      = 8.0      # km/litro promedio flota
+        _COSTO_X_KM           = _COSTO_COMBUSTIBLE_LT / _RENDIMIENTO_KML
+
+        _dist_cfg_c1, _dist_cfg_c2 = st.columns(2)
+        with _dist_cfg_c1:
+            _costo_comb = st.number_input("Precio combustible ($/lt o GNC equiv.)",
+                value=ss.get("dist_costo_comb", _COSTO_COMBUSTIBLE_LT),
+                step=50.0, format="%.0f", key="dist_costo_comb")
+        with _dist_cfg_c2:
+            _rend_km = st.number_input("Rendimiento (km/litro)",
+                value=ss.get("dist_rend_km", _RENDIMIENTO_KML),
+                step=0.5, format="%.1f", key="dist_rend_km")
+        _costo_km = _costo_comb / max(_rend_km, 0.1)
+
+        # Cargar desde Sheets
+        if st.button("🔄 Cargar distancias desde Sheets", key="dist_cargar_btn", type="primary"):
+            ss.pop("dist_df", None)
+            ss.pop("dist_loaded", None)
+
+        if not ss.get("dist_loaded"):
+            with st.spinner("Cargando distancias…"):
+                try:
+                    import gspread as _gs_d
+                    from google.oauth2.service_account import Credentials as _C_d
+                    _creds_d = _C_d.from_service_account_info(
+                        dict(st.secrets["gcp_service_account"]),
+                        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+                    )
+                    _client_d = _gs_d.authorize(_creds_d)
+                    _ss_d = _client_d.open_by_key(_SHEETS_ID_DISTANCIAS)
+                    _ws_d  = _ss_d.get_worksheet(0)
+                    _records_d = _ws_d.get_all_records()
+                    if _records_d:
+                        _df_dist = pd.DataFrame(_records_d)
+                        ss["dist_df"]     = _df_dist
+                        ss["dist_loaded"] = True
+                except Exception as _ed:
+                    st.warning(f"⚠️ No se pudieron cargar las distancias: {_ed}")
+                    ss["dist_loaded"] = False
+
+        _df_dist = ss.get("dist_df")
+
+        if _df_dist is None or _df_dist.empty:
+            st.info(
+                "Sin datos de distancias cargados. Presioná **Cargar distancias desde Sheets** "
+                "o verificá que la service account tenga acceso al Sheets de distancias."
+            )
+        else:
+            # Detectar columnas automáticamente
+            _cols_dist = [str(c).strip() for c in _df_dist.columns]
+            _col_cliente = next((c for c in _cols_dist if any(k in c.upper() for k in ["CLIENTE","PDV","NOMBRE"])), _cols_dist[0])
+            _col_km      = next((c for c in _cols_dist if any(k in c.upper() for k in ["KM","DIST","KILOM"])), _cols_dist[-1])
+            _col_camion  = next((c for c in _cols_dist if any(k in c.upper() for k in ["CAMION","CHOFER","TRUCK","RUTA"])), None)
+
+            try:
+                _df_dist[_col_km] = pd.to_numeric(_df_dist[_col_km], errors="coerce").fillna(0)
+            except Exception:
+                pass
+
+            st.success(f"✅ {len(_df_dist)} clientes cargados")
+
+            # ── KPIs globales ──────────────────────────────────────────────────
+            _km_total  = _df_dist[_col_km].sum()
+            _costo_tot = _km_total * _costo_km
+            _km_prom   = _df_dist[_col_km].mean()
+
+            _kc = st.columns(4)
+            _kc[0].metric("📏 Km totales",    f"{_km_total:,.1f} km")
+            _kc[1].metric("💰 Costo total",   f"${_costo_tot:,.0f}")
+            _kc[2].metric("📊 Km promedio",   f"{_km_prom:.1f} km/cliente")
+            _kc[3].metric("💵 Costo/km",      f"${_costo_km:.1f}/km")
+
+            # ── Análisis por camión si hay columna ────────────────────────────
+            if _col_camion:
+                st.markdown("#### 🚛 Análisis por camión")
+                _by_cam = (
+                    _df_dist.groupby(_col_camion)[_col_km]
+                    .agg(["sum","count","mean"])
+                    .rename(columns={"sum":"Km Total","count":"N° Clientes","mean":"Km Prom"})
+                    .sort_values("Km Total", ascending=False)
+                    .reset_index()
+                )
+                _by_cam["Costo Est."] = (_by_cam["Km Total"] * _costo_km).apply(lambda x: f"${x:,.0f}")
+                _by_cam["Km Total"]   = _by_cam["Km Total"].round(1)
+                _by_cam["Km Prom"]    = _by_cam["Km Prom"].round(1)
+                st.dataframe(_by_cam, use_container_width=True, hide_index=True)
+
+            # ── Top y Bottom clientes por distancia ───────────────────────────
+            _t_dc1, _t_dc2 = st.columns(2)
+            with _t_dc1:
+                st.markdown("#### 📌 Top 10 — Mayor distancia")
+                _top10_d = _df_dist.nlargest(10, _col_km)[[_col_cliente, _col_km]].copy()
+                _top10_d["Costo Est."] = (_top10_d[_col_km] * _costo_km).apply(lambda x: f"${x:,.0f}")
+                st.dataframe(_top10_d, use_container_width=True, hide_index=True)
+            with _t_dc2:
+                st.markdown("#### 📌 Top 10 — Menor distancia")
+                _bot10_d = _df_dist.nsmallest(10, _col_km)[[_col_cliente, _col_km]].copy()
+                _bot10_d["Costo Est."] = (_bot10_d[_col_km] * _costo_km).apply(lambda x: f"${x:,.0f}")
+                st.dataframe(_bot10_d, use_container_width=True, hide_index=True)
+
+            # ── Gráfico distribución km ───────────────────────────────────────
+            try:
+                import plotly.express as _px_d
+                _fig_d = _px_d.histogram(
+                    _df_dist, x=_col_km, nbins=20,
+                    title="Distribución de distancias (km)",
+                    labels={_col_km: "Distancia (km)", "count": "N° Clientes"},
+                    color_discrete_sequence=["#1F3864"],
+                )
+                _fig_d.update_layout(
+                    plot_bgcolor="#FAFAFA", paper_bgcolor="white",
+                    font=dict(family="Arial", size=12),
+                    margin=dict(l=40, r=20, t=40, b=40),
+                )
+                st.plotly_chart(_fig_d, use_container_width=True)
+            except ImportError:
+                pass
+
+            # ── Oportunidades de ahorro ───────────────────────────────────────
+            st.markdown("#### 💡 Oportunidades de ahorro")
+            _km_p75  = _df_dist[_col_km].quantile(0.75)
+            _clientes_lejanos = _df_dist[_df_dist[_col_km] > _km_p75]
+            _ahorro_potencial = _clientes_lejanos[_col_km].sum() * _costo_km * 0.15  # 15% optimización
+            _sc1, _sc2 = st.columns(2)
+            _sc1.metric(f"Clientes sobre P75 ({_km_p75:.0f} km)",
+                        f"{len(_clientes_lejanos)}",
+                        f"${_clientes_lejanos[_col_km].sum() * _costo_km:,.0f} costo")
+            _sc2.metric("Ahorro potencial (opt. rutas +15%)",
+                        f"${_ahorro_potencial:,.0f}/día",
+                        f"${_ahorro_potencial * 22:,.0f}/mes estimado")
+
+            with st.expander("📋 Tabla completa de distancias"):
+                st.dataframe(_df_dist, use_container_width=True, hide_index=True)
+
 
 def main():
     st.set_page_config(
@@ -12428,13 +13071,13 @@ def main():
         0:  render_tab_archivos,
         1:  render_tab_planilla,
         2:  render_tab_resumen,
-        3:  render_tab_proyeccion,
-        4:  render_tab_t2,
+        3:  render_tab_t2,           # ← movido (v4.99)
+        4:  render_tab_proyeccion,   # ← movido (v4.99)
         5:  render_tab_clasificacion,
         6:  render_tab_top_skus,
         7:  render_tab_tablero,
-        8:  render_tab_boletas,
-        9:  render_tab_cierre,
+        8:  render_tab_cierre,
+        9:  render_tab_boletas,      # ← movido (v4.99)
         10: render_tab_validacion,
     }
 
