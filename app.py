@@ -463,7 +463,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "5.1.1"
+APP_VERSION = "4.99.0"
 # ── CHANGELOG v4.99.0 ─────────────────────────────────────────────────────
 # 1. Secciones reordenadas: Camiones T2 → antes de Proyección Picking.
 #    Boletas → antes de Validación + Log. Paso 1 en T2.
@@ -732,44 +732,8 @@ def _persistencia_get_or_create_sheet(client, title: str):
     except Exception:
         return None
 
-# ── PERSISTENCIA: Configuración de camiones (patentes + capacidades) ─────────
-
-def _guardar_cam_config_sheets(cam_data: list) -> bool:
-    """Guarda tabla de patentes + capacidades en hoja 'CamionesConfig' del Sheets persistencia."""
-    client = _persistencia_get_client()
-    if not client:
-        return False
-    try:
-        ws = _persistencia_get_or_create_sheet(client, "CamionesConfig")
-        if not ws:
-            return False
-        if not cam_data:
-            return True
-        cols = list(cam_data[0].keys())
-        matrix = [cols] + [[str(row.get(c, "")) for c in cols] for row in cam_data]
-        ws.clear()
-        ws.update("A1", matrix, value_input_option="RAW")
-        return True
-    except Exception as _e_cam_save:
-        log_event("error", f"_guardar_cam_config_sheets: {_e_cam_save}")
-        return False
-
-def _cargar_cam_config_sheets() -> list | None:
-    """Carga configuración de camiones desde Sheets. None si no disponible."""
-    client = _persistencia_get_client()
-    if not client:
-        return None
-    try:
-        ws = _persistencia_get_or_create_sheet(client, "CamionesConfig")
-        if not ws:
-            return None
-        data = ws.get_all_records()
-        return data if data else None
-    except Exception as _e_cam_load:
-        log_event("error", f"_cargar_cam_config_sheets: {_e_cam_load}")
-        return None
-
 def _guardar_licencias_sheets(licencias_data: list) -> bool:
+    """Guarda la tabla de licencias en la hoja 'Licencias' del Sheets de persistencia."""
     client = _persistencia_get_client()
     if not client:
         return False
@@ -782,11 +746,9 @@ def _guardar_licencias_sheets(licencias_data: list) -> bool:
         cols = list(licencias_data[0].keys())
         matrix = [cols] + [[str(row.get(c, "")) for c in cols] for row in licencias_data]
         ws.clear()
-        # v5.1.1: usar API posicional (compatible con gspread 5 y 6) con RAW
-        ws.update("A1", matrix, value_input_option="RAW")
+        ws.update(range_name="A1", values=matrix)
         return True
-    except Exception as _e_lic_save:
-        log_event("error", f"_guardar_licencias_sheets: {_e_lic_save}")
+    except Exception:
         return False
 
 def _cargar_licencias_sheets() -> list | None:
@@ -800,8 +762,7 @@ def _cargar_licencias_sheets() -> list | None:
             return None
         data = ws.get_all_records()
         return data if data else None
-    except Exception as _e_lic_load:
-        log_event("error", f"_cargar_licencias_sheets: {_e_lic_load}")
+    except Exception:
         return None
 
 def _guardar_kpis_diarios_sheets(fecha, kpis_dict: dict) -> bool:
@@ -2335,14 +2296,13 @@ _SECCIONES = [
     ("📁", "Archivos"),
     ("📦", "Planilla Carga"),
     ("📋", "Resumen Camiones"),
-    ("🚛", "Camiones T2"),
+    ("🚛", "Camiones T2"),          # ← movido antes de Proyección (v4.99)
     ("📊", "Proyección Picking"),
-    ("🏗️", "Autoelevadores"),       # ← nuevo (v5.1.1) — Paso 3 + Paso 4
     ("🏷️", "Clasificación"),
     ("🏆", "Top SKUs"),
     ("🚚", "Tablero Ruteador"),
     ("💰", "Cierre"),
-    ("🖨️", "Boletas"),
+    ("🖨️", "Boletas"),              # ← movido antes de Validación (v4.99)
     ("✅", "Validación + Log"),
 ]
 
@@ -2811,37 +2771,54 @@ def render_tab_planilla():
         st.info("⬅️ Subí **CAR.xlsx** y **Frescura 3.0.xlsx** en la pestaña **📁 Archivos** para continuar.")
         return
 
-    if st.session_state.get("dry_run"):
+    if st.button("🚀 Generar Planilla de Carga", type="primary", key="t1_gen"):
         try:
-            with st.spinner("DRY-RUN: cargando archivos…"):
-                api, ddm, fr, fr_diag = load_frescura(fr_file)
-                car_df, blue_audit = load_car(car_file, ddm=ddm)
-            st.success(f"✓ DRY-RUN OK — {len(car_df)} filas listas. PDF no generado.")
-            with st.expander("Preview CAR (primeras 20 filas)"):
-                st.dataframe(car_df.head(20), width="stretch")
-        except Exception as e:
-            st.error(f"❌ Error DRY-RUN: {e}")
-        return
-
-    # ── Generación automática (hash-based, igual que Resumen Camiones) ─────────
-    _pc_hash = hashlib.md5(car_file.getvalue() + fr_file.getvalue()).hexdigest()
-    _pc_cache = f"planilla_pdf_{_pc_hash}"
-
-    if _pc_cache not in st.session_state:
-        try:
-            with st.spinner("Cargando Frescura…"):
+            with st.spinner("Cargando Frescura..."):
                 api, ddm, fr, fr_diag = load_frescura(fr_file)
             log_event("info", f"Frescura cargada: API={len(api)} | DDM={len(ddm)} | FR={len(fr)}")
 
-            with st.spinner("Cargando CAR…"):
+            with st.spinner("Cargando CAR..."):
                 car_df, blue_audit = load_car(car_file, ddm=ddm)
             log_event("info", f"CAR cargado: {len(car_df)} filas | bloque azul={len(blue_audit)}")
 
-            with st.spinner("Generando PDF Planilla de Carga…"):
+            if st.session_state.get("dry_run"):
+                st.success(f"✓ DRY-RUN OK — {len(car_df)} filas listas. PDF no generado.")
+                with st.expander("Preview CAR (primeras 20 filas)"):
+                    st.dataframe(car_df.head(20), width="stretch")
+                return
+
+            with st.spinner("Generando PDF (puede tardar)..."):
                 pdf_bytes, stats = generate_pdf(car_df, api, ddm, fr)
 
-            log_event("info", f"Planilla generada: {stats['total_pages']} páginas, {len(stats['repartos'])} repartos")
-            st.session_state[_pc_cache] = (pdf_bytes, stats)
+            log_event("info", f"Planilla generada: {stats['total_pages']} páginas, "
+                              f"{len(stats['repartos'])} repartos")
+
+            st.success(
+                f"✓ Planilla lista — {stats['total_pages']} páginas | "
+                f"{len(stats['repartos'])} repartos"
+            )
+
+            st.download_button(
+                "⬇ Descargar Planilla de Carga (PDF)",
+                data=pdf_bytes,
+                file_name=_stamp("Planilla_Carga", "pdf"),
+                mime="application/pdf",
+                type="primary",
+                width="stretch",
+            )
+
+            with st.expander(f"📊 Alertas y diagnósticos"):
+                a, b, c, d = st.columns(4)
+                a.metric("🔴 RED", len(stats["red"]))
+                b.metric("🟡 YELLOW", len(stats["yellow"]))
+                c.metric("📦 c/Pallet", len(stats["pallet_applied"]))
+                d.metric("⚠ Sin BXP", len(stats["miss_bxp"]))
+                if stats["orphans_no_ddm"]:
+                    st.warning("Huérfanos sin DDM:")
+                    for o in stats["orphans_no_ddm"]:
+                        st.write(f"- {o}")
+
+            # Stash para snapshot (Sprint 1: solo en memoria)
             st.session_state["last_planilla_pdf"] = pdf_bytes
 
         except Exception as e:
@@ -2850,34 +2827,6 @@ def render_tab_planilla():
             with st.expander("Stack trace"):
                 import traceback
                 st.code(traceback.format_exc())
-            return
-
-    pdf_bytes, stats = st.session_state[_pc_cache]
-
-    st.success(
-        f"✓ Planilla lista — {stats['total_pages']} páginas | "
-        f"{len(stats['repartos'])} repartos"
-    )
-
-    st.download_button(
-        "⬇ Descargar Planilla de Carga (PDF)",
-        data=pdf_bytes,
-        file_name=_stamp("Planilla_Carga", "pdf"),
-        mime="application/pdf",
-        type="primary",
-        width="stretch",
-    )
-
-    with st.expander(f"📊 Alertas y diagnósticos"):
-        a, b, c, d = st.columns(4)
-        a.metric("🔴 RED", len(stats["red"]))
-        b.metric("🟡 YELLOW", len(stats["yellow"]))
-        c.metric("📦 c/Pallet", len(stats["pallet_applied"]))
-        d.metric("⚠ Sin BXP", len(stats["miss_bxp"]))
-        if stats["orphans_no_ddm"]:
-            st.warning("Huérfanos sin DDM:")
-            for o in stats["orphans_no_ddm"]:
-                st.write(f"- {o}")
 
 
 # ── TAB 2 — Resumen por Camión (REUSO v3.9) ────────────────────────────────
@@ -3065,64 +3014,32 @@ def render_tab_t2():
 
     # título ya renderizado por main()
     st.caption(
-        "v5.1.1 — Detecta automáticamente los camiones con reparto en el "
+        "v4.18.1 — Detecta automáticamente los camiones con reparto en el "
         "**Sheet T2 Status Carga** (F3 > 0) y genera un PDF combinado "
         "(1 hoja por camión, tamaño Carta) listo para imprimir."
     )
 
-    # ── PASO 1 — Enviar proyección a Google Sheets ────────────────────────────
-    # (movido desde Proyección Picking — debe ejecutarse ANTES de generar PDF T2)
-    _t3_car_use = st.session_state.get("t1_car") or st.session_state.get("t4_car")
-    _t3_fr_use  = st.session_state.get("t1_fr")
-
+    # ── PASO 1 — Generar planillas de carga (v4.99) ───────────────────────────
     with st.container(border=True):
         _p1_c1, _p1_c2 = st.columns([4, 1])
         with _p1_c1:
-            st.markdown("#### 📤 Paso 1 — Enviar proyección a Google Sheets")
+            st.markdown("#### 📋 Paso 1 — Generar planillas de carga T2")
             st.caption(
-                "**Hacé esto primero**, antes de generar el PDF. "
-                "Escribe la distribución original del CAR en la *Matriz Pall* del Sheets maestro "
-                "(base para el seguimiento diario de productividad y el histórico de pallets por cancha)."
+                "Generá el PDF con las planillas de cada camión antes de iniciar la carga. "
+                "Una hoja por camión detectado automáticamente desde el Sheet T2 Status Carga."
             )
         with _p1_c2:
             st.markdown("<br>", unsafe_allow_html=True)
-            _t3_paso1_btn = st.button(
-                "📤 Enviar a Sheets",
-                use_container_width=True,
-                type="primary",
-                key="t3_paso1_sheets_btn",
-                disabled=not (_t3_car_use and _t3_fr_use),
-            )
-        if not (_t3_car_use and _t3_fr_use):
-            st.caption("⬅️ Cargá CAR.xlsx y Frescura 3.0 en **📁 Archivos** para habilitar este paso.")
-
-    if _t3_paso1_btn and _t3_car_use and _t3_fr_use:
-        with st.spinner("Calculando proyección y enviando a Matriz Pall…"):
-            try:
-                _pdata_t3 = _t4_load_car_proyeccion(
-                    car_bytes=_t3_car_use.getvalue(),
-                    fr_bytes=_t3_fr_use.getvalue(),
-                )
-                _df_t3 = _pdata_t3["df"].copy()
-                _df_t3 = _df_t3[_df_t3["TOTAL_PICK"] > 0].reset_index(drop=True)
-                _creds_t3 = dict(st.secrets["gcp_service_account"])
-                _n_t3 = _push_matriz_pall_to_sheets(_df_t3, _pdata_t3, _creds_t3)
-                st.success(f"✅ {_n_t3} fila(s) enviadas a la Matriz Pall — {_pdata_t3['fecha']}")
-                log_event("info", f"T2 Paso1 Sheets: {_n_t3} filas ({_pdata_t3['fecha']})")
-            except KeyError:
-                st.error("❌ Falta `gcp_service_account` en `st.secrets`.")
-            except Exception as _ex_t3p1:
-                st.error(f"❌ Error: {_ex_t3p1}")
-                with st.expander("Stack trace"):
-                    import traceback
-                    st.code(traceback.format_exc())
+            if st.button("🖨️ Generar PDF", type="primary", use_container_width=True, key="t3_paso1_quick"):
+                st.session_state["t3_trigger_gen"] = True
+                st.rerun()
 
     st.divider()
 
-    with st.expander("ℹ️ Cómo funciona (Paso 2 — PDF T2)", expanded=False):
+    with st.expander("ℹ️ Cómo funciona", expanded=False):
         st.markdown(
             """
-            1. Al apretar **Generar PDF Camiones**, Streamlit llama a un Apps Script
+            1. Al apretar **Generar PDF**, Streamlit llama a un Apps Script
                deployado dentro del propio Sheet T2 Status Carga.
             2. El Apps Script lee la celda **F3** de cada hoja numérica
                (101–129). Si F3 > 0, ese camión tiene reparto y se incluye.
@@ -3155,7 +3072,7 @@ def render_tab_t2():
     col_gen, col_clear = st.columns([3, 1])
     with col_gen:
         gen_clicked = st.button(
-            "🖨️  Paso 2 — Generar PDF Camiones T2",
+            "🖨️  Generar PDF Camiones",
             type="primary",
             width="stretch",
             key="t3_btn_generate",
@@ -3166,6 +3083,10 @@ def render_tab_t2():
             width="stretch",
             key="t3_btn_clear",
         )
+
+    # v4.99: trigger desde Paso 1
+    if st.session_state.pop("t3_trigger_gen", False):
+        gen_clicked = True
 
     if clear_clicked:
         for k in ("t3_pdf_bytes", "t3_pdf_filename", "t3_pdf_trucks"):
@@ -5360,38 +5281,22 @@ def render_tab_proyeccion():
     cp1, cp2 = st.columns([1, 1])
     # v4.71: layout vertical — pickeros arriba, controladores abajo
 
-    # ── v5.1.1: Frase/enseñanza del día — renderizado HTML correcto ─────────
+    # ── v4.71: Enseñanza/frase del día ──────────────────────────────────────
     _ensenanza = get_ensenanza_dia()
     _ensenanza_full = get_ensenanza_dia_full()
+    # v4.99: mostrar con autor separado
     _frase_txt = _ensenanza_full["frase"]
     _frase_aut = _ensenanza_full["autor"]
     _frase_tip = _ensenanza_full["tip"]
     _frase_ico = _ensenanza_full["emoji"]
-
-    _aut_html = (
-        f"<div style='margin-top:4px;font-size:12px;color:#888;font-style:italic;'>"
-        f"— {_frase_aut}</div>"
-        if _frase_aut else ""
-    )
-    _tip_html = (
-        f"<div style='margin-top:6px;padding:4px 10px;background:#e8f0fe;"
-        f"border-left:3px solid #1F3864;border-radius:4px;"
-        f"font-size:11.5px;color:#1F3864;font-weight:600;'>"
-        f"🎯 {_frase_tip}</div>"
-        if _frase_tip else ""
-    )
     _frase_html = (
-        f"<div style='padding:10px 14px;background:linear-gradient(90deg,#1F3864 0%,#2e5fa3 100%);"
-        f"border-radius:8px;color:white;margin-bottom:8px;'>"
-        f"<div style='font-size:13px;font-weight:700;opacity:0.85;margin-bottom:4px;'>"
-        f"💡 Aprendizaje del día</div>"
-        f"<div style='font-size:15px;font-weight:600;line-height:1.45;'>"
-        f"{_frase_ico} <em>«{_frase_txt}»</em></div>"
-        f"{_aut_html}"
-        f"</div>"
-        + (_tip_html if _tip_html else "")
+        f"<div style='padding:2px 0'>"
+        f"{_frase_ico} <strong>«{_frase_txt}»</strong>"
+        + (f"<br><small style='color:#888;margin-left:8px'>— {_frase_aut}</small>" if _frase_aut else "")
+        + (f"<br><small style='color:#1F3864;margin-left:8px'>🎯 {_frase_tip}</small>" if _frase_tip else "")
+        + "</div>"
     )
-    st.markdown(_frase_html, unsafe_allow_html=True)
+    st.info(_frase_html, icon="💡")
 
     # ── v4.84: fecha de picking = siempre hoy (el picking se hace hoy aunque
     #           la carga se entregue mañana). Se usa en todos los PDFs/XLSX
@@ -5400,84 +5305,90 @@ def render_tab_proyeccion():
     _fecha_picking_hoy = _dt_pick.date.today()
 
     # ─────────────────────────────────────────────────────────────────────────
-    # SECCIÓN A: PDF PICKEROS + CONTROLADORES — auto-generación (v5.1.1)
+    # SECCIÓN A: PDF PICKEROS + CONTROLADORES (botón unificado — v4.99)
     # ─────────────────────────────────────────────────────────────────────────
     with st.container(border=True):
-        st.markdown("#### 📄 PDFs de Picking")
-        st.caption("Se generan automáticamente al cargar los archivos. Usá el botón para regenerar si cambiaste parámetros.")
+        st.markdown("#### 📄 Generar PDFs de Picking")
+        st.caption("Un solo botón genera el PDF de pickeros (×4 canchas) Y el PDF del controlador.")
 
-        # Auto-generación basada en hash de inputs (CAR + Frescura + fecha)
-        import hashlib as _hs
-        _pdf_hash_src = (
-            car_use.getvalue()
-            + fr_use.getvalue()
-            + str(_fecha_picking_hoy).encode()
-            + str(sorted(vel_custom.items())).encode()
-            + str(sorted(pers_custom.items())).encode()
-            + str(hora_inicio_global).encode()
-        )
-        _auto_pdf_hash = _hs.md5(_pdf_hash_src).hexdigest()
-        _auto_pdf_key  = f"t4_auto_pdf_{_auto_pdf_hash}"
+        _gcol1, _gcol2 = st.columns([3, 1])
+        with _gcol1:
+            _btn_generar_pdfs = st.button(
+                "📄 Generar PDF Pickeros + PDF Controladores",
+                type="primary", use_container_width=True, key="t4_pdf_ambos_btn",
+                help="Genera ambos PDFs en una sola operación. Descargás cada uno por separado.",
+            )
+        with _gcol2:
+            _btn_solo_ctrl = st.button(
+                "🎛️ Solo Controlador",
+                use_container_width=True, key="t4_pdf_solo_ctrl",
+                help="Regenera solo el PDF controlador (más rápido si ya tenés el de pickeros)",
+            )
 
-        if _auto_pdf_key not in st.session_state:
-            with st.spinner("Generando PDFs de picking automáticamente…"):
-                try:
-                    _pdf_auto = _t4_generar_pdf_x4(
-                        df=df_display,
-                        totales_bult=totales_bult,
-                        totales_pall=totales_pall_c,
-                        totales_hl=totales_hl,
-                        totales_kg=totales_kg,
-                        productividad=vel_custom,
-                        personas=pers_custom,
-                        inicio=hora_inicio_global,
-                        fecha=_fecha_picking_hoy,
-                        mix_picking=pdata["mix_picking"],
-                        fin_calc=fin_calc_dict,
-                        asign_detail=totales_calc.get("asign_detail", {}),
-                        ctrl_params=None,
-                        ensenanza=_ensenanza,
-                    )
-                    _fname_auto = f"proyeccion_picking_{_fecha_picking_hoy.strftime('%d-%m-%Y')}.pdf"
-                    st.session_state["t4_pdf_pickeros_bytes"] = _pdf_auto
-                    st.session_state["t4_pdf_pickeros_fname"] = _fname_auto
-                    log_event("info", f"PDF Pickeros auto-generado: {_fname_auto}")
-                except Exception as _ep_auto:
-                    log_event("error", f"Auto-gen PDF Pickeros: {_ep_auto}")
+        if _btn_generar_pdfs or _btn_solo_ctrl:
+            _gen_pickeros = bool(_btn_generar_pdfs)
+            _gen_ctrl     = True   # siempre se genera el de controladores
 
-                try:
-                    _pdf_ctrl_auto = _t4_generar_pdf_controlador(
-                        fecha=_fecha_picking_hoy,
-                        fin_por_cancha=fin_por_cancha,
-                        fin_global_dt=fin_global_dt,
-                        totales_bult=totales_bult,
-                        totales_hl=totales_hl,
-                        totales_kg=totales_kg,
-                        totales_pall_c=totales_pall_c,
-                        mix_picking=pdata["mix_picking"],
-                        n_camiones=len(df_display[df_display["TOTAL_PICK"] > 0]),
-                        tot_pick=pdata["tot_pick"],
-                        top_skus_lines=_top_skus_lines,
-                        alertas=_alertas,
-                        ensenanza=_ensenanza,
-                    )
-                    _fname_ctrl_auto = f"{_fecha_picking_hoy.strftime('%d-%m-%Y')}_resumen_controlador_picking.pdf"
-                    st.session_state["t4_pdf_ctrl_bytes"] = _pdf_ctrl_auto
-                    st.session_state["t4_pdf_ctrl_fname"] = _fname_ctrl_auto
-                    log_event("info", f"PDF Controlador auto-generado: {_fname_ctrl_auto}")
-                except Exception as _ec_auto:
-                    log_event("error", f"Auto-gen PDF Controlador: {_ec_auto}")
+            with st.spinner("Generando PDFs…"):
+                # — PDF Pickeros —
+                if _gen_pickeros:
+                    try:
+                        pdf_bytes = _t4_generar_pdf_x4(
+                            df=df_display,
+                            totales_bult=totales_bult,
+                            totales_pall=totales_pall_c,
+                            totales_hl=totales_hl,
+                            totales_kg=totales_kg,
+                            productividad=vel_custom,
+                            personas=pers_custom,
+                            inicio=hora_inicio_global,
+                            fecha=_fecha_picking_hoy,
+                            mix_picking=pdata["mix_picking"],
+                            fin_calc=fin_calc_dict,
+                            asign_detail=totales_calc.get("asign_detail", {}),
+                            ctrl_params=None,
+                            ensenanza=_ensenanza,
+                        )
+                        fname = f"proyeccion_picking_{_fecha_picking_hoy.strftime('%d-%m-%Y')}.pdf"
+                        st.session_state["t4_pdf_pickeros_bytes"] = pdf_bytes
+                        st.session_state["t4_pdf_pickeros_fname"] = fname
+                        log_event("info", f"PDF Pickeros generado: {fname}")
+                    except Exception as _ep:
+                        st.error(f"❌ Error PDF Pickeros: {_ep}")
 
-                st.session_state[_auto_pdf_key] = True
+                # — PDF Controladores —
+                if _gen_ctrl:
+                    try:
+                        _pdf_ctrl = _t4_generar_pdf_controlador(
+                            fecha=_fecha_picking_hoy,
+                            fin_por_cancha=fin_por_cancha,
+                            fin_global_dt=fin_global_dt,
+                            totales_bult=totales_bult,
+                            totales_hl=totales_hl,
+                            totales_kg=totales_kg,
+                            totales_pall_c=totales_pall_c,
+                            mix_picking=pdata["mix_picking"],
+                            n_camiones=len(df_display[df_display["TOTAL_PICK"] > 0]),
+                            tot_pick=pdata["tot_pick"],
+                            top_skus_lines=_top_skus_lines,
+                            alertas=_alertas,
+                            ensenanza=_ensenanza,
+                        )
+                        _fname_ctrl = f"{_fecha_picking_hoy.strftime('%d-%m-%Y')}_resumen_controlador_picking.pdf"
+                        st.session_state["t4_pdf_ctrl_bytes"] = _pdf_ctrl
+                        st.session_state["t4_pdf_ctrl_fname"] = _fname_ctrl
+                        log_event("info", f"PDF Controlador generado: {_fname_ctrl}")
+                    except Exception as _ec:
+                        st.error(f"❌ Error PDF Controladores: {_ec}")
 
-        # ── Botones de descarga (persisten en session_state) ──────────────────
-        _dl_c1, _dl_c2, _dl_c3 = st.columns([2, 2, 1])
+        # — Botones de descarga (persisten en session_state) —
+        _dl_c1, _dl_c2 = st.columns(2)
         with _dl_c1:
             if st.session_state.get("t4_pdf_pickeros_bytes"):
                 st.download_button(
                     "⬇ Descargar PDF Pickeros",
                     data=st.session_state["t4_pdf_pickeros_bytes"],
-                    file_name=st.session_state.get("t4_pdf_pickeros_fname", "picking.pdf"),
+                    file_name=st.session_state.get("t4_pdf_pickeros_fname","picking.pdf"),
                     mime="application/pdf", use_container_width=True,
                     key="t4_pdf_dl",
                 )
@@ -5486,17 +5397,10 @@ def render_tab_proyeccion():
                 st.download_button(
                     "⬇ Descargar PDF Controladores",
                     data=st.session_state["t4_pdf_ctrl_bytes"],
-                    file_name=st.session_state.get("t4_pdf_ctrl_fname", "controlador.pdf"),
+                    file_name=st.session_state.get("t4_pdf_ctrl_fname","controlador.pdf"),
                     mime="application/pdf", use_container_width=True,
                     key="t4_pdf_ctrl_dl",
                 )
-        with _dl_c3:
-            if st.button("🔄 Regenerar", key="t4_pdf_regen_btn",
-                         help="Forzar regeneración (si cambiaste velocidad/personas/hora)"):
-                st.session_state.pop(_auto_pdf_key, None)
-                st.session_state.pop("t4_pdf_pickeros_bytes", None)
-                st.session_state.pop("t4_pdf_ctrl_bytes", None)
-                st.rerun()
 
         # ── Botón XLSX proyección ──────────────────────────────────────────────
         st.markdown("---")
@@ -5832,42 +5736,6 @@ def render_tab_proyeccion():
         except Exception as _ex_xl:
             st.warning(f"No se pudo generar el Excel: {_ex_xl}")
 
-
-    st.info("➡️ Los pasos de Autoelevadores se encuentran en la sección **🏗️ Autoelevadores**.", icon="ℹ️")
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# TAB AUTOELEVADORES — Paso 3 (AE Pallets) + Paso 4 (Reposición AE)
-# Movido desde Proyección Picking (v5.1.1)
-# ════════════════════════════════════════════════════════════════════════════
-
-def render_tab_ae():
-    """Sección Autoelevadores: Paletas completas AE (Paso 3) + Reposición canchas (Paso 4)."""
-    import datetime as _dt_ae
-
-    st.caption(
-        "Fuente: CAR.xlsx + Frescura 3.0 (DDM) + ANR.xlsx. "
-        "Cargalos en **📁 Archivos** para activar los cálculos."
-    )
-
-    car_use = st.session_state.get("t1_car") or st.session_state.get("t4_car")
-    fr_use  = st.session_state.get("t1_fr")
-
-    if not (car_use and fr_use):
-        st.info("⬅️ Subí **CAR.xlsx** y **Frescura 3.0.xlsx** en la pestaña **📁 Archivos** para activar.")
-        return
-
-    # Fecha de picking (para nombres de archivo)
-    _fecha_ae_hoy = _dt_ae.date.today()
-    try:
-        _pdata_ae = _t4_load_car_proyeccion(
-            car_bytes=car_use.getvalue(),
-            fr_bytes=fr_use.getvalue(),
-        )
-        _fecha_ae_hoy = _pdata_ae.get("fecha", _fecha_ae_hoy)
-    except Exception:
-        pass
-
     # ── Paso 3 — Paletas completas AE por SKU × Camión ───────────────────────
     st.divider()
     with st.container(border=True):
@@ -5971,7 +5839,7 @@ def render_tab_ae():
             f"🚫 Excluir camiones del Excel AE Pallets ({_p3_n_con_pallet} con paletas completas)",
             options=_CAM_LABELS_P3_FULL,
             default=_p3_excl_default_norm,
-            key="tae_p3_cams_excluir",
+            key="t4_p3_cams_excluir",
             help="Solo se listan los camiones que tienen ≥1 paleta completa. "
                  "Los camiones con 0 paletas en todos los SKUs no aparecen. "
                  "Independiente de la exclusión de Proyección Picking.",
@@ -6277,15 +6145,15 @@ def render_tab_ae():
                             _buf3x = _io3.BytesIO()
                             _wb3x.save(_buf3x)
                             _buf3x.seek(0)
-                            _fecha_p3 = (_fecha_ae_hoy.strftime("%d-%m-%Y")
-                                         if hasattr(_fecha_ae_hoy, "strftime") else "hoy")
+                            _fecha_p3 = (pdata["fecha"].strftime("%d-%m-%Y")
+                                         if hasattr(pdata["fecha"], "strftime") else "hoy")
                             st.download_button(
                                 "⬇️ Descargar Excel AE Pallets",
                                 data=_buf3x.getvalue(),
                                 file_name=f"{_fecha_p3}_AE_pallets_bkcc.xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                 use_container_width=True,
-                                key="tae_paso3_dl",
+                                key="t4_paso3_dl",
                             )
                         except Exception as _ep3x:
                             st.warning(f"⚠️ No se pudo generar Excel: {_ep3x}")
@@ -6345,7 +6213,7 @@ def render_tab_ae():
 
                         if st.button(
                             "📤 Enviar todo a Sheets  (Agregados AE + Reposición AE + Histórico)",
-                            key="tae_send_all_sheets",
+                            key="t4_send_all_sheets",
                             use_container_width=True,
                             type="primary",
                             help="1) GAS: Agregados AE → 2) gspread: Reposición AE → 3) gspread: Append Histórico"
@@ -6681,7 +6549,7 @@ def render_tab_ae():
                                     "application/vnd.openxmlformats-"
                                     "officedocument.spreadsheetml.sheet"),
                                 use_container_width=True,
-                                key="tae_paso4_dl",
+                                key="t4_paso4_dl",
                             )
                         except Exception as _er4x:
                             st.warning(f"⚠️ No se pudo generar Excel reposición: {_er4x}")
@@ -10576,68 +10444,18 @@ def render_tab_tablero():
                     step=0.5, format="%.1f", key="tr_cfg_fz")
             fz_target = fz_target_pct / 100
 
-            # Patentes y capacidades — con persistencia Sheets (v5.1.1)
+            # Patentes y capacidades
             st.markdown("**Patentes y capacidades de camiones**")
-
-            # Inicializar desde Sheets en el primer render (misma lógica que licencias)
-            if "tr_cam_config_data" not in ss:
-                _cam_from_sheets = None
-                if _SHEETS_ID_PERSISTENCIA:
-                    with st.spinner("Cargando config camiones desde Sheets…"):
-                        _cam_from_sheets = _cargar_cam_config_sheets()
-                if _cam_from_sheets:
-                    # Reconstruir con los tipos correctos (Sheets devuelve strings)
-                    _cam_default_fallback = [
-                        {"camion": k, "patente": v,
+            cam_data = [{"camion": k, "patente": v,
                          "capacidad_kg": _TR_CAPACIDADES_DEFAULT.get(v, 9480)}
-                        for k, v in _TR_CAMIONES_DEFAULT.items()
-                    ]
-                    try:
-                        _cam_from_sheets_typed = []
-                        for _cr in _cam_from_sheets:
-                            _cam_from_sheets_typed.append({
-                                "camion":       int(float(str(_cr.get("camion", 0)))),
-                                "patente":      str(_cr.get("patente", "")),
-                                "capacidad_kg": int(float(str(_cr.get("capacidad_kg", 9480)))),
-                            })
-                        ss["tr_cam_config_data"] = _cam_from_sheets_typed
-                    except Exception:
-                        ss["tr_cam_config_data"] = _cam_default_fallback
-                else:
-                    ss["tr_cam_config_data"] = [
-                        {"camion": k, "patente": v,
-                         "capacidad_kg": _TR_CAPACIDADES_DEFAULT.get(v, 9480)}
-                        for k, v in _TR_CAMIONES_DEFAULT.items()
-                    ]
-
-            _cam_col1, _cam_col2 = st.columns([6, 1])
-            with _cam_col1:
-                df_cam_edit = st.data_editor(
-                    pd.DataFrame(ss["tr_cam_config_data"]),
-                    use_container_width=True, hide_index=True, key="tr_cam_cfg",
-                    column_config={
-                        "camion":       st.column_config.NumberColumn("N° Camión", disabled=True),
-                        "patente":      st.column_config.TextColumn("Patente"),
-                        "capacidad_kg": st.column_config.NumberColumn("Cap. máx (kg)", step=10),
-                    })
-            with _cam_col2:
-                st.markdown("<br>", unsafe_allow_html=True)
-                if st.button("💾 Guardar", key="tr_cam_save", use_container_width=True, type="primary"):
-                    ss["tr_cam_config_data"] = df_cam_edit.to_dict("records")
-                    if _SHEETS_ID_PERSISTENCIA:
-                        with st.spinner("Guardando en Sheets…"):
-                            _cam_saved = _guardar_cam_config_sheets(ss["tr_cam_config_data"])
-                        if _cam_saved:
-                            st.success("✅ Guardado")
-                        else:
-                            st.warning("⚠️ Solo sesión")
-                    else:
-                        st.success("✅ Guardado (sesión)")
-                    st.rerun()
-                if st.button("↩️ Restaurar", key="tr_cam_reset", use_container_width=True):
-                    ss.pop("tr_cam_config_data", None)
-                    st.rerun()
-
+                        for k, v in _TR_CAMIONES_DEFAULT.items()]
+            df_cam_edit = st.data_editor(pd.DataFrame(cam_data),
+                use_container_width=True, hide_index=True, key="tr_cam_cfg",
+                column_config={
+                    "camion": st.column_config.NumberColumn("N° Camión", disabled=True),
+                    "patente": st.column_config.TextColumn("Patente"),
+                    "capacidad_kg": st.column_config.NumberColumn("Cap. máx (kg)", step=10),
+                })
             cam_patente = dict(zip(df_cam_edit["camion"], df_cam_edit["patente"]))
             cam_capkg   = dict(zip(df_cam_edit["patente"], df_cam_edit["capacidad_kg"]))
 
@@ -13253,15 +13071,14 @@ def main():
         0:  render_tab_archivos,
         1:  render_tab_planilla,
         2:  render_tab_resumen,
-        3:  render_tab_t2,
-        4:  render_tab_proyeccion,
-        5:  render_tab_ae,           # ← nuevo v5.1.1
-        6:  render_tab_clasificacion,
-        7:  render_tab_top_skus,
-        8:  render_tab_tablero,
-        9:  render_tab_cierre,
-        10: render_tab_boletas,
-        11: render_tab_validacion,
+        3:  render_tab_t2,           # ← movido (v4.99)
+        4:  render_tab_proyeccion,   # ← movido (v4.99)
+        5:  render_tab_clasificacion,
+        6:  render_tab_top_skus,
+        7:  render_tab_tablero,
+        8:  render_tab_cierre,
+        9:  render_tab_boletas,      # ← movido (v4.99)
+        10: render_tab_validacion,
     }
 
     _ico, _nombre = _SECCIONES[_sec]
