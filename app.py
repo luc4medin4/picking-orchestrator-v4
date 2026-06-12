@@ -207,21 +207,8 @@ CAMBIOS v4.70.0 — 9 CORRECCIONES OPERATIVAS:
 """
 # ── Picking Orchestrator v4.70.0 — Beccacece Hnos SA ─────────────────────────
 _CHANGELOG = """
-  ── v5.2.0 ──────────────────────────────────────────────────────────────
-  1. Alertas y diagnósticos (Planilla Carga): métricas operativas reemplazadas.
-     Ahora muestra: Repartos, Páginas PDF, SKUs Alerta, Sin Cancha, Sin Fecha, Huérfanos s/DDM.
-  2. Camiones T2 — preview PDF: iframe base64 reemplazado por pdf.js (funciona en Chrome).
-  3. Proyección Picking: eliminado Paso 1 de esta sección (ya está en Camiones T2).
-  4. Frases del día: lista completa con autores reales verificados (Deming, Ohno, Drucker, etc.).
-  5. Proyección Picking: eliminado botón Descargar Excel (.xlsx).
-  6. Tablero Ruteador Excel: agregada sección "Análisis Operativo" espejo del PDF
-     (Prom. Bultos UP/cam, Mayor/Menor carga, HL Total, Drop Size, Alertas exceso).
-     Headers con acento gold (#C9A84C) para consistencia visual con PDF.
-  7. Validación + Log: sección expandida con resumen por sección, alertas destacadas,
-     métricas clave visual (PDV, HL, kg, Drop Size, paletas), AE puras por cancha,
-     log parseado por tipo (errores/warnings/info) con contador.
-  ── v5.1.1 ──────────────────────────────────────────────────────────────
 
+  1. FIX CRÍTICO UP — fuente única CAR (no más ANR para Bultos UP):
      - Los Bultos UP, HL y Peso se calculan EXCLUSIVAMENTE desde el CAR.
      - Lógica por fila: bultos_eq = Bultos + Unids / un_x_bulto (DDM col N).
        Si un_x_bulto = 0 o Unids = 0 → bultos_eq = Bultos.
@@ -476,7 +463,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "5.2.1"
+APP_VERSION = "5.1.1"
 # ── CHANGELOG v4.99.0 ─────────────────────────────────────────────────────
 # 1. Secciones reordenadas: Camiones T2 → antes de Proyección Picking.
 #    Boletas → antes de Validación + Log. Paso 1 en T2.
@@ -655,44 +642,36 @@ LEMAS = [
 # ─── ENSEÑANZA / FRASE DEL DÍA ─────────────────────────────────────────────
 # Una por día, rotación automática por número de día del año. Sin repetición.
 ENSEÑANZAS_DIA = [
-    # v5.2.0 — Lista curada de frases reales con autores verificados.
-    # Formato: '{emoji} «{frase}» — {Nombre Apellido}'
-    # La función get_ensenanza_dia_full() parsea el '— Autor' automáticamente.
-    "🔍 «En Dios confiamos. Todos los demás traigan datos.» — W. Edwards Deming",
-    "📊 «Si no podés medirlo, no podés mejorarlo.» — W. Edwards Deming",
-    "⚙️ «La calidad es responsabilidad de todos; la culpa no es de nadie.» — W. Edwards Deming",
-    "🔄 «Sin estándares no hay mejora posible.» — Taiichi Ohno",
-    "🏭 «Donde no hay estándar, no puede haber kaizen.» — Taiichi Ohno",
-    "📉 «El desperdicio más peligroso es el sobrestock: oculta los problemas reales.» — Taiichi Ohno",
-    "🎯 «La eficiencia es hacer bien las cosas; la eficacia es hacer las cosas correctas.» — Peter F. Drucker",
-    "🌱 «La cultura se come a la estrategia en el desayuno.» — Peter F. Drucker",
-    "💡 «Lo que se mide, se gestiona.» — Peter F. Drucker",
-    "🔧 «La calidad nunca es un accidente; siempre es el resultado de un esfuerzo inteligente.» — John Ruskin",
-    "🏆 «La excelencia no es un acto sino un hábito.» — Aristóteles",
-    "🎯 «Los planes son inútiles, pero la planificación es indispensable.» — Dwight D. Eisenhower",
-    "⏱️ «El tiempo es el único recurso que no se puede recuperar.» — Peter F. Drucker",
-    "🔗 «Una cadena es tan fuerte como su eslabón más débil.» — Thomas Reid",
-    "🚀 «Empezar es la clave del éxito; ejecutar es la clave de la continuidad.» — Philip B. Crosby",
-    "🛡️ «La seguridad no es el resultado del azar: es el resultado de la atención.» — Phil Crosby",
-    "📦 «El inventario es el resultado de un proceso deficiente.» — Taiichi Ohno",
-    "🔁 «Pequeñas mejoras aplicadas consistentemente llevan a resultados extraordinarios.» — Masaaki Imai",
-    "🧩 «Kaizen es la filosofía de mejora continua que no tiene fin.» — Masaaki Imai",
-    "🔍 «Primero comprendé el problema; recién entonces buscá la solución.» — Kaoru Ishikawa",
-    "📋 «La calidad comienza con educación y termina con educación.» — Kaoru Ishikawa",
-    "🌟 «Noventa y cinco por ciento de los problemas de calidad pueden resolverse con las siete herramientas básicas.» — Kaoru Ishikawa",
-    "⚡ «Hacé lo correcto en el momento correcto, en el lugar correcto, con la cantidad correcta.» — Kiichiro Toyoda",
-    "🤝 «Ningún problema es demasiado pequeño para resolverlo; ningún desperdicio es demasiado pequeño para eliminarlo.» — Shigeo Shingo",
-    "🏗️ «Donde no hay estandarización, no puede haber mejora.» — Shigeo Shingo",
-    "📌 «El mayor defecto es no ver los defectos.» — Confucio",
-    "🧠 «El éxito no es definitivo, el fracaso no es fatal: lo que cuenta es el coraje de continuar.» — Winston Churchill",
-    "🌊 «Cuando el viento de cambio sopla, algunos construyen muros; otros construyen molinos de viento.» — Proverbio chino",
-    "⚖️ «La logística es la diferencia entre hablar de guerra y librarla.» — Omar N. Bradley",
-    "🎓 «Invertir en conocimiento siempre paga los mejores intereses.» — Benjamin Franklin",
-    "🔎 «Un problema bien formulado ya está medio resuelto.» — Charles Kettering",
-    "📐 «Medir es conocer.» — Lord Kelvin",
-    "🚛 «La cadena de suministro es el esqueleto de la economía global.» — Martin Christopher",
-    "🔩 «Prevenir es más barato que corregir — siempre.» — Philip B. Crosby",
-    "📊 «Los números no mienten; la falta de números sí lo hace.» — W. Edwards Deming",
+    "📖 «El éxito no es definitivo, el fracaso no es fatal: lo que cuenta es el coraje de continuar.» — Churchill",
+    "🧠 «La calidad nunca es un accidente; siempre es el resultado de un esfuerzo inteligente.» — John Ruskin",
+    "⚙️ «Si no puedes medir algo, no puedes mejorarlo.» — Peter Drucker | Control: medí tus bultos por hora hoy.",
+    "🔁 «Pequeñas mejoras diarias llevan a resultados sorprendentes.» — Kaizen | Lean: 1% mejor cada turno.",
+    "👁️ «El que mira hacia afuera sueña; el que mira hacia adentro despierta.» — Jung | Autocontrol: revisá tu postura al cargar.",
+    "🎯 «Los planes son inútiles, pero la planificación es indispensable.» — Eisenhower | Revisá el orden de canchas antes de arrancar.",
+    "🏆 «La excelencia no es un acto, es un hábito.» — Aristóteles | Hoy: un control extra por pallet.",
+    "🔍 «En Dios confiamos. Todos los demás traigan datos.» — W. Edwards Deming | DPO: lo que no se registra no se mejora.",
+    "🛡️ «La seguridad no es una prioridad — es un valor.» — DuPont | EPI completo antes de arrancar.",
+    "📦 «El stock es como agua: fluye si el canal está limpio.» — FIFO/FEFO: mover lo más viejo primero.",
+    "🤝 «El trabajo en equipo divide el esfuerzo y multiplica el éxito.» — Equidistribución de carga entre canchas.",
+    "📋 «Lo que se escribe se recuerda; lo que se registra se mejora.» — OWD: cada observación cuenta.",
+    "⏱️ «El tiempo de ciclo solo mejora si lo conocés.» — Midí tu tiempo de picking hoy y compará.",
+    "💡 «Un problema bien definido está medio resuelto.» — 5 Porqués: antes de culpar, entender.",
+    "🔧 «El mantenimiento preventivo es mil veces más barato que el correctivo.» — Checklist AE antes de operar.",
+    "🌱 «La cultura se come a la estrategia en el desayuno.» — Peter Drucker | Cada hábito correcto construye cultura.",
+    "📊 «Sin estándares no hay mejora.» — Taiichi Ohno | SOP: la planilla de carga es el estándar. Seguirla es respetarlo.",
+    "🧩 «El todo es más que la suma de sus partes.» — Aristóteles | Picking, AE y control: los tres juntos hacen la diferencia.",
+    "🚀 «La velocidad sin dirección solo genera accidentes.» — Rápido con precisión, no rápido con errores.",
+    "🔄 «La mejora continua es mejor que la perfección tardía.» — Mark Twain | Un ajuste pequeño hoy vale más que un gran plan mañana.",
+    "🧘 «La pausa de un segundo de control evita una hora de corrección.» — Verificá el SKU antes de palletizar.",
+    "📍 «Si no sabés dónde estás parado, no podés saber hacia dónde vas.» — El DQI empieza con inventario real.",
+    "🎓 «El experto fue alguna vez un principiante que no se rindió.» — Capacitá a alguien hoy, aunque sea una cosa.",
+    "⚡ «La eficiencia es hacer bien las cosas; la eficacia es hacer las cosas correctas.» — Drucker",
+    "📉 «El desperdicio más peligroso es el que no vemos.» — Lean | ¿Cuántos movimientos innecesarios hacés por turno?",
+    "🏗️ «La estructura que soporta el negocio se construye bulto a bulto, noche a noche.» — Beccacece Hnos",
+    "🧭 «La brújula del buen operador siempre apunta al cliente.» — Cada error de picking es un cliente insatisfecho.",
+    "🔗 «La cadena es tan fuerte como su eslabón más débil.» — El eslabón esta noche sos vos. Sé el más fuerte.",
+    "📌 «Organización es el arte de hacer que las cosas sucedan.» — Antes de empezar: cancha ordenada, planilla en mano.",
+    "🌟 «El reconocimiento comienza por el autocontrol.» — Los mejores operadores se evalúan solos primero.",
 ]
 
 def get_ensenanza_dia() -> str:
@@ -2889,33 +2868,12 @@ def render_tab_planilla():
         width="stretch",
     )
 
-    with st.expander("📊 Diagnóstico operativo de la planilla"):
-        _da, _db, _dc = st.columns(3)
-        _dd, _de, _df = st.columns(3)
-        _n_alertas = len(stats["red"]) + len(stats["yellow"])
-        _da.metric("🚛 Repartos", len(stats["repartos"]))
-        _db.metric("📄 Páginas PDF", stats["total_pages"])
-        _dc.metric(
-            "🚦 SKUs con Alerta",
-            _n_alertas,
-            delta=f"🔴 {len(stats['red'])}  🟡 {len(stats['yellow'])}" if _n_alertas > 0 else "✅ sin alertas",
-            delta_color="inverse" if _n_alertas > 0 else "off",
-        )
-        _dd.metric(
-            "🏗️ Sin Cancha DDM",
-            len(stats["sin_cancha_skus"]),
-            delta_color="inverse" if stats["sin_cancha_skus"] else "off",
-        )
-        _de.metric(
-            "📅 Sin Fecha DDM",
-            len(stats["no_fecha"]),
-            delta_color="inverse" if stats["no_fecha"] else "off",
-        )
-        _df.metric(
-            "🧩 Huérfanos s/DDM",
-            len(stats["orphans_no_ddm"]),
-            delta_color="inverse" if stats["orphans_no_ddm"] else "off",
-        )
+    with st.expander(f"📊 Alertas y diagnósticos"):
+        a, b, c, d = st.columns(4)
+        a.metric("🔴 RED", len(stats["red"]))
+        b.metric("🟡 YELLOW", len(stats["yellow"]))
+        c.metric("📦 c/Pallet", len(stats["pallet_applied"]))
+        d.metric("⚠ Sin BXP", len(stats["miss_bxp"]))
         if stats["orphans_no_ddm"]:
             st.warning("Huérfanos sin DDM:")
             for o in stats["orphans_no_ddm"]:
@@ -3255,58 +3213,19 @@ def render_tab_t2():
             key="t3_pdf_dl",
         )
 
-        # Preview con PDF.js — funciona en todos los navegadores modernos
+        # Preview embebido — Ctrl+P imprime directo
         b64 = base64.b64encode(pdf_cached).decode("utf-8")
-        import streamlit.components.v1 as _cmpt3
-        _pdfjs_html = f"""<!DOCTYPE html><html><head>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<style>
-  body{{margin:0;background:#1e1e2e;padding:8px;font-family:Arial,sans-serif;}}
-  #loading{{color:#aaa;font-size:13px;text-align:center;padding:30px;}}
-  #error{{color:#ff6b6b;font-size:13px;text-align:center;padding:20px;display:none;}}
-  canvas{{display:block;margin:8px auto;border-radius:4px;
-          box-shadow:0 2px 12px rgba(0,0,0,.6);max-width:100%;cursor:pointer;}}
-  #info{{color:#8888aa;font-size:11px;text-align:center;padding:4px 0 8px;}}
-</style></head><body>
-<div id="loading">🔄 Cargando previsualización T2…</div>
-<div id="error"></div>
-<div id="info"></div>
-<div id="container"></div>
-<script>
-pdfjsLib.GlobalWorkerOptions.workerSrc=
-  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-const b64Data="{b64}";
-const bin=atob(b64Data);const u8=new Uint8Array(bin.length);
-for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i);
-pdfjsLib.getDocument({{data:u8,verbosity:0}}).promise.then(function(pdf){{
-  document.getElementById('loading').style.display='none';
-  document.getElementById('info').textContent=
-    'PDF · '+pdf.numPages+' página'+(pdf.numPages>1?'s':'')+
-    ' · Ctrl+P para imprimir directo';
-  const cont=document.getElementById('container');
-  const scale=Math.min(1.4,window.innerWidth/620);
-  function renderPage(n){{
-    pdf.getPage(n).then(function(p){{
-      const vp=p.getViewport({{scale}});
-      const cv=document.createElement('canvas');
-      cv.width=vp.width;cv.height=vp.height;
-      cv.title='Página '+n+' de '+pdf.numPages;
-      cont.appendChild(cv);
-      p.render({{canvasContext:cv.getContext('2d'),viewport:vp}}).promise.then(()=>{{
-        if(n<pdf.numPages)renderPage(n+1);
-      }});
-    }});
-  }}
-  renderPage(1);
-}}).catch(function(e){{
-  document.getElementById('loading').style.display='none';
-  const el=document.getElementById('error');
-  el.style.display='block';
-  el.textContent='⚠ Error al renderizar PDF: '+e.message+
-    '. Descargá el archivo y abrilo en tu visor PDF.';
-}});
-</script></body></html>"""
-        _cmpt3.html(_pdfjs_html, height=900, scrolling=True)
+        st.markdown(
+            f"""
+            <iframe
+                src="data:application/pdf;base64,{b64}"
+                width="100%"
+                height="900"
+                style="border: 1px solid #d0d0d0; border-radius: 8px; margin-top: 12px;">
+            </iframe>
+            """,
+            unsafe_allow_html=True,
+        )
 
 # ── TAB 4 — Proyección Picking ×4 — v4.6 ──────────────────────────────────
 #
@@ -4917,6 +4836,46 @@ def render_tab_proyeccion():
         _keep_mask  = ~df_display[_cam_col_t4].astype(int).isin(_cams_excluir_set)
         df_display  = df_display[_keep_mask].reset_index(drop=True)
 
+    # ── v4.55.2: Botón "Enviar a Sheets" PROMINENTE al inicio ─────────────────
+    # Se muestra antes de la tabla para recordar al usuario que debe enviarlo
+    # al principio, antes de reasignar o ajustar cargas, para que la Matriz Pall
+    # refleje el estado real del CAR sin modificaciones manuales.
+    with st.container(border=True):
+        _sheets_top_cols = st.columns([3, 1])
+        with _sheets_top_cols[0]:
+            st.markdown(
+                "#### 📤 Paso 1 — Enviar proyección a Google Sheets",
+            )
+            st.caption(
+                "**Hacé esto primero**, antes de reasignar cargas entre canchas. "
+                "El botón escribe la distribución original del CAR en la *Matriz Pall* del Sheets maestro, "
+                "que es la base para el seguimiento diario de productividad y el histórico de pallets por cancha. "
+                "Si enviás después de reasignar, los valores quedarán con los ajustes manuales y no con el dato fuente real.",
+            )
+        with _sheets_top_cols[1]:
+            if st.button(
+                "📤 Enviar a Sheets",
+                use_container_width=True,
+                type="primary",
+                key="t4_sheets_top_btn",
+                help="Inserta las filas de hoy en la hoja 'Matriz Pall' del Sheets maestro (dato fuente, sin reasignaciones)",
+            ):
+                with st.spinner("Enviando a Google Sheets…"):
+                    try:
+                        _creds_json_top = dict(st.secrets["gcp_service_account"])
+                        _n_rows_top = _push_matriz_pall_to_sheets(df_display, pdata, _creds_json_top)
+                        st.success(f"✅ {_n_rows_top} fila(s) enviadas a la Matriz Pall")
+                        log_event("info", f"Sheets Matriz Pall (top): {_n_rows_top} filas ({pdata['fecha']})")
+                    except KeyError:
+                        st.error(
+                            "❌ Falta  en . "
+                            "Agregá el JSON de la service account en .",
+                        )
+                    except Exception as _ex_top:
+                        st.error(f"❌ Error al escribir en Sheets: {_ex_top}")
+                        with st.expander("Stack trace"):
+                            import traceback
+                            st.code(traceback.format_exc())
 
     st.divider()
 
@@ -5564,9 +5523,16 @@ def render_tab_proyeccion():
             _tot_row["TOT PALL"]  = round(sum(totales_pall_c.values()), 2)
             _tot_row["Bult Pick"] = round(pdata["tot_pick"], 1)
             df_xlsx_exp = pd.concat([df_xlsx_exp, pd.DataFrame([_tot_row])], ignore_index=True)
-            # xlsx removed — v5.2.0: se eliminó descarga Excel de esta sección
+            xlsx_bytes = df_to_xlsx(df_xlsx_exp, sheet_name="Proyección")
+            fname_xlsx = f"proyeccion_picking_{_fecha_picking_hoy.strftime('%d-%m-%Y')}.xlsx"
+            st.download_button(
+                "📊 Descargar Excel (XLSX)",
+                data=xlsx_bytes, file_name=fname_xlsx,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True, key="t4_xlsx_dl",
+            )
         except Exception as _ex_xlsx:
-            pass  # xlsx no disponible — ignorar silenciosamente
+            st.warning(f"⚠️ XLSX no disponible: {_ex_xlsx}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # SECCIÓN B: RESUMEN CONTROLADOR (solo info — PDFs arriba)
@@ -7623,150 +7589,38 @@ def render_tab_extraibles():
         _download_trio(df_pick, "fx_Picking", "(fx) Picking", "t5_pick")
 
 
-# ── TAB 6 — Validación + Log (v5.2.0) ──────────────────────────────────────
+# ── TAB 6 — Validación + Log (PLACEHOLDER, Sprint 2) ───────────────────────
 
 def render_tab_validacion():
-    import datetime as _dtv
-    ss = st.session_state
+    # título ya renderizado por main()
+    st.caption(
+        "Pre-checks + reglas de negocio + validación cruzada CAR↔MASTER. "
+        "**Sprint 2** — pendiente."
+    )
 
-    # ── RESUMEN OPERATIVO DEL DÍA ──────────────────────────────────────────
-    st.markdown("### 📊 Resumen Operativo del Día")
-
-    _tabla_rows_v = ss.get("tr_tabla_rows_cache", [])
-    _hoy_v = _dtv.date.today()
-
-    # Métricas clave desde tablero ruteador (si calculado)
-    if _tabla_rows_v:
-        _n_cams_v   = len([r for r in _tabla_rows_v if r.get("PDV", 0) > 0])
-        _n_pdv_v    = sum(r.get("PDV", 0) for r in _tabla_rows_v)
-        _bup_v      = round(sum(r.get("Bultos UP", 0) for r in _tabla_rows_v), 1)
-        _hl_v       = round(sum(r.get("HL", 0) for r in _tabla_rows_v), 2)
-        _kg_v       = round(sum(r.get("Peso(kg)", 0) for r in _tabla_rows_v), 0)
-        _rech_v     = round(sum(r.get("Rechazos", 0) for r in _tabla_rows_v), 1)
-        _drop_v     = round(_n_pdv_v / max(_n_cams_v, 1), 2)
-        _pal_v      = round(sum(r.get("Paletas", 0) for r in _tabla_rows_v), 1)
-
-        _ma, _mb, _mc, _md = st.columns(4)
-        _ma.metric("🚛 Camiones en reparto", _n_cams_v)
-        _mb.metric("📦 PDV ruteados", _n_pdv_v)
-        _mc.metric("💧 HL Totales", f"{_hl_v:.2f}")
-        _md.metric("📐 Drop Size", f"{_drop_v:.2f}")
-        _me, _mf, _mg, _mh = st.columns(4)
-        _me.metric("🏗️ Bultos UP", f"{_bup_v:.1f}")
-        _mf.metric("🗂️ Paletas", f"{_pal_v:.1f}")
-        _mg.metric("⚖️ Peso Total (kg)", f"{_kg_v:,.0f}")
-        _mh.metric("🔄 Rechazos UP", f"{_rech_v:.1f}")
-    else:
-        st.info("ℹ️ Calculá el Tablero Ruteador para ver métricas de reparto.")
+    st.info(
+        "🔧 En desarrollo (Sprint 2).\n\n"
+        "**Pre-checks previstos:**\n"
+        "- CAR.xlsx modificado hoy\n"
+        "- ANR (rechazos1.xlsx) modificado hoy (warning)\n"
+        "- MASTER → Matriz Pall.!A1 == hoy\n"
+        "- Suma TOTAL PALL > 0\n\n"
+        "**Reglas:**\n"
+        "- Camión TOTAL=0 → ocultar y loguear\n"
+        "- Camión Reparto=NO → tabla checkbox, default OFF (decisión #1)\n"
+        "- Cross-validate CAR↔MASTER (WARNING, no bloqueante — decisión #6)\n"
+        "- Sanity checks bloqueantes pre-publicación"
+    )
 
     st.divider()
-
-    # ── ALERTAS DESTACADAS ──────────────────────────────────────────────────
-    st.markdown("### 🚨 Alertas del Día")
-    _alertas_v = []
-
-    # Licencias vencidas
-    _lic_v = ss.get("tr_licencias_data", [])
-    if _lic_v:
-        for _ld in _lic_v:
-            try:
-                _vd = pd.to_datetime(_ld.get("Venc. Licencia", ""), dayfirst=True, errors="coerce")
-                if not pd.isna(_vd) and _vd.date() <= _hoy_v:
-                    _alertas_v.append(("🚫", "LICENCIA VENCIDA",
-                        f"CAM {_ld.get('N° Cam','')} — {_ld.get('Chofer','')} "
-                        f"(venció: {_ld.get('Venc. Licencia','')})"))
-            except Exception:
-                pass
-
-    # Peso excedido
-    if _tabla_rows_v:
-        for _rt in _tabla_rows_v:
-            if _rt.get("_peso_ok") is False:
-                _alertas_v.append(("⚖️", "EXCESO DE PESO",
-                    f"CAM {_rt.get('N° Cam','')} — {_rt.get('Chofer','')} "
-                    f"({_rt.get('Peso(kg)',0):,.0f} kg)"))
-
-    # Rechazos
-    if _tabla_rows_v and sum(r.get("Rechazos", 0) for r in _tabla_rows_v) > 0:
-        _tot_rech = sum(r.get("Rechazos", 0) for r in _tabla_rows_v)
-        _alertas_v.append(("⚠️", "RECHAZOS",
-            f"{_tot_rech:.1f} bultos UP rechazados en total"))
-
-    if _alertas_v:
-        for _ico, _tipo, _desc in _alertas_v:
-            st.error(f"{_ico} **{_tipo}** — {_desc}")
-    else:
-        st.success("✅ Sin alertas críticas registradas.")
-
-    st.divider()
-
-    # ── RESUMEN POR SECCIÓN ─────────────────────────────────────────────────
-    st.markdown("### 📋 Estado por Sección")
-
-    _secs = {
-        "📦 Planilla de Carga":    ss.get("last_planilla_pdf") is not None,
-        "🚚 Resumen Camiones":     ss.get("t2_agr_cache") is not None,
-        "🚌 Camiones T2":          ss.get("t3_pdf_bytes") is not None,
-        "📊 Proyección Picking":   ss.get("t4_pdf_pickeros_bytes") is not None,
-        "🏗️ Autoelevadores":       ss.get("t_ae_pdf_bytes") is not None,
-        "🗂️ Clasificación":        ss.get("t_clas_cache") is not None,
-        "🗺️ Tablero Ruteador":     bool(_tabla_rows_v),
-        "💰 Cierre Financiero":    ss.get("t_cf_pdf_bytes") is not None,
-    }
-    _sc1, _sc2 = st.columns(2)
-    _sec_items = list(_secs.items())
-    for _si, (_sn, _sd) in enumerate(_sec_items):
-        _col = _sc1 if _si < len(_sec_items) // 2 else _sc2
-        _col.markdown(f"{'✅' if _sd else '⬜'} {_sn}")
-
-    st.divider()
-
-    # ── AE PALETAS PURAS POR CANCHA ─────────────────────────────────────────
-    # ── AE PALETAS PURAS ─────────────────────────────────────────────────────
-    if _tabla_rows_v:
-        _ae_total_v    = sum(r.get("Paletas", 0) for r in _tabla_rows_v)
-        _ae_top_v      = sorted(_tabla_rows_v, key=lambda r: r.get("Paletas", 0), reverse=True)
-        _ae_con_pall_v = [r for r in _tabla_rows_v if r.get("Paletas", 0) > 0]
-        if _ae_con_pall_v:
-            st.markdown("### 🏗️ Autoelevadores — Paletas por Camión")
-            _aec1, _aec2, _aec3 = st.columns(3)
-            _aec1.metric("🗂️ Total Paletas AE", f"{_ae_total_v:.0f}")
-            _aec2.metric("🚛 Cams con AE", len(_ae_con_pall_v))
-            _aec3.metric("📊 Prom. Pal/cam AE",
-                         f"{_ae_total_v / max(len(_ae_con_pall_v), 1):.1f}")
-            with st.expander("Detalle AE por camión"):
-                for _aer in _ae_top_v[:15]:
-                    if _aer.get("Paletas", 0) > 0:
-                        st.write(f"🚛 CAM {_aer['N° Cam']} — {_aer.get('Chofer','?')}: "
-                                 f"**{_aer.get('Paletas',0):.0f} pal** AE")
-            st.divider()
-
-    # ── LOG DE LA SESIÓN ────────────────────────────────────────────────────
     st.markdown("### 📜 Log de la corrida actual")
-    log_lines = ss.get("log_buffer", [])
+    log_lines = st.session_state.get("log_buffer", [])
     if not log_lines:
-        st.caption("(sin eventos aún — generá las planillas para ver el log)")
+        st.caption("(sin eventos aún)")
     else:
-        # Parsear eventos por sección
-        _log_errors  = [l for l in log_lines if "[ERROR]" in l.upper()]
-        _log_warns   = [l for l in log_lines if "[WARN" in l.upper()]
-        _log_info    = [l for l in log_lines if "[INFO]" in l.upper()]
-
-        _lc1, _lc2, _lc3 = st.columns(3)
-        _lc1.metric("❌ Errores", len(_log_errors))
-        _lc2.metric("⚠️ Advertencias", len(_log_warns))
-        _lc3.metric("ℹ️ Eventos info", len(_log_info))
-
-        if _log_errors:
-            with st.expander(f"❌ Errores ({len(_log_errors)})", expanded=True):
-                for _le in _log_errors[-20:]:
-                    st.code(_le, language="text")
-
-        with st.expander("📜 Log completo", expanded=False):
-            st.code("\n".join(log_lines[-300:]), language="text")
-
+        st.code("\n".join(log_lines[-200:]), language="text")
         st.download_button(
-            "⬇ Descargar log completo (.txt)",
+            "⬇ Descargar log completo",
             data="\n".join(log_lines).encode("utf-8"),
             file_name=_stamp("run_log", "txt"),
             mime="text/plain",
@@ -7882,9 +7736,6 @@ def render_tab_validacion():
 
                 # Alertas del tablero
                 _y -= 3*mm
-                if _y < 60*mm:
-                    _cvs.showPage(); _page += 1
-                    _draw_page_header(_cvs, _page); _y = _ch - 28*mm
                 _y = _draw_section_title(_cvs, _y, "🚨  ALERTAS")
                 _alertas_cd = []
                 # Licencias vencidas
@@ -7896,19 +7747,15 @@ def render_tab_validacion():
                             if not pd.isna(_vd) and _vd.date() <= _today:
                                 _alertas_cd.append(f"🚫 LICENCIA VENCIDA: {_ld.get('Chofer','')} — {_ld.get('Venc. Licencia','')}")
                         except Exception: pass
-                # Camiones sobre peso (si hay tablero calculado)
+                # Camiones sobre pallets (si hay tablero calculado)
                 for _rt in _tabla_rows_cd:
                     if _rt.get("_peso_ok") is False:
-                        _alertas_cd.append(f"⚖️ EXCESO PESO: CAM {_rt.get('N° Cam','')} — {_rt.get('Chofer','')} ({_rt.get('Peso(kg)',0):,.0f} kg)")
-                # Rechazos
-                _tot_rech_cd = sum(r.get("Rechazos", 0) for r in _tabla_rows_cd)
-                if _tot_rech_cd > 0:
-                    _alertas_cd.append(f"⚠️ RECHAZOS: {_tot_rech_cd:.1f} bultos UP rechazados")
+                        _alertas_cd.append(f"⚖️ EXCESO PESO: CAM {_rt.get('N° Cam','')} — {_rt.get('Chofer','')}")
 
                 if not _alertas_cd:
                     _alertas_cd = ["✅ Sin alertas críticas registradas"]
                 for _al in _alertas_cd:
-                    _col_alerta = colors.red if _al.startswith(("🚫","⚖️","⚠️")) else colors.HexColor("#00AA44")
+                    _col_alerta = colors.red if _al.startswith(("🚫","⚖️")) else colors.HexColor("#00AA44")
                     _cvs.setFont("Helvetica", 9)
                     _cvs.setFillColor(_col_alerta)
                     _cvs.drawString(_M + 4, _y, f"  {_al}")
@@ -7918,41 +7765,6 @@ def render_tab_validacion():
                         _page += 1
                         _draw_page_header(_cvs, _page)
                         _y = _ch - 28*mm
-
-                # ── ANÁLISIS OPERATIVO ─────────────────────────────────────────
-                if _tabla_rows_cd:
-                    _y -= 3*mm
-                    if _y < 60*mm:
-                        _cvs.showPage(); _page += 1
-                        _draw_page_header(_cvs, _page); _y = _ch - 28*mm
-                    _y = _draw_section_title(_cvs, _y, "📈  ANÁLISIS OPERATIVO")
-                    _cams_act_cd = [r for r in _tabla_rows_cd if r.get("Bultos UP", 0) > 0]
-                    _prom_bup_cd = (sum(r.get("Bultos UP", 0) for r in _cams_act_cd)
-                                   / max(len(_cams_act_cd), 1))
-                    _mayor_cd = max(_tabla_rows_cd, key=lambda r: r.get("Bultos UP", 0), default=None)
-                    _menor_cd = min(_cams_act_cd, key=lambda r: r.get("Bultos UP", 999), default=None)
-                    _exceso_cd = [r for r in _tabla_rows_cd if r.get("_peso_ok") is False]
-                    _ae_total_cd = sum(r.get("Paletas", 0) for r in _tabla_rows_cd)
-                    _drop_cd = (_n_pdv / max(len([r for r in _tabla_rows_cd if r.get("PDV",0)>0]),1)
-                                if _n_pdv != "—" else "—")
-                    _ao_kv_cd = [
-                        ("Prom. Bultos UP/cam",   f"{_prom_bup_cd:.1f} UP"),
-                        ("Mayor carga",
-                         f"CAM {_mayor_cd['N° Cam']} — {_mayor_cd.get('Chofer','?')} · {_mayor_cd.get('Bultos UP',0):.1f} UP"
-                         if _mayor_cd else "—"),
-                        ("Menor carga",
-                         f"CAM {_menor_cd['N° Cam']} — {_menor_cd.get('Chofer','?')} · {_menor_cd.get('Bultos UP',0):.1f} UP"
-                         if _menor_cd else "—"),
-                        ("Drop Size",             f"{_drop_cd:.2f}" if isinstance(_drop_cd, float) else "—"),
-                        ("Total Paletas AE",      f"{_ae_total_cd:.0f}"),
-                        ("Alertas peso excedido", f"{len(_exceso_cd)} cam(s)"),
-                    ]
-                    for _aol_cd, _aov_cd in _ao_kv_cd:
-                        _ao_color = colors.red if "excedido" in _aol_cd.lower() and len(_exceso_cd) > 0 else colors.black
-                        _y = _draw_kv(_cvs, _y, _aol_cd, _aov_cd, _ao_color)
-                        if _y < 35*mm:
-                            _cvs.showPage(); _page += 1
-                            _draw_page_header(_cvs, _page); _y = _ch - 28*mm
 
                 # ── LOG COMPLETO ───────────────────────────────────────────────
                 _y -= 3*mm
@@ -11191,95 +11003,69 @@ def render_tab_tablero():
         #
         # El CAR contiene TODAS las líneas: VE (bloque azul) + CHESS juntos.
 
-        # ── Fix v5.2.1 — Fuentes corregidas para Bultos y Paletas ───────────────
-        #
-        # ANTES (bug): bultos y paletas venían de loop CAR+openpyxl con índices posicionales.
-        # AHORA:
-        #   bult_eq_por_cam  = ANR col K (bultos reales — fuente Chess)
-        #   paletas/ae_pall  = _t4_load_car_proyeccion (idéntico a Proyección Picking)
-        #   hl_por_cam/peso  = CAR+DDM (fallback si falla lo anterior)
-
-        bult_eq_por_cam = pd.Series(dtype=float)
-        up_por_cam      = pd.Series(dtype=float)
-        paletas_por_cam = pd.Series(dtype=float)
-        ae_pall_por_cam = pd.Series(dtype=float)
+        bult_eq_por_cam = pd.Series(dtype=float)   # bultos equivalentes (informativo)
+        up_por_cam      = pd.Series(dtype=float)   # UP picking por camion (fracciones, v4.70)
+        paletas_por_cam = pd.Series(dtype=float)   # paletas reales = beq/BXP = UP/50
         hl_por_cam      = pd.Series(dtype=float)
         peso_por_cam    = pd.Series(dtype=float)
+
         _car_disponible = False
-
-        # 1. bult_eq_por_cam: ANR col K (bultos reales por camión)
-        if col_blt_anr is not None and not df_dia.empty:
-            try:
-                bult_eq_por_cam = (
-                    df_dia.groupby(col_camion)[col_blt_anr]
-                    .apply(lambda x: pd.to_numeric(x, errors="coerce").fillna(0).sum())
-                )
-            except Exception:
-                bult_eq_por_cam = pd.Series(dtype=float)
-
-        # 2. paletas + AE: _t4_load_car_proyeccion (= lógica de Proyección Picking)
-        _car_tr_f = ss.get("t1_car") or ss.get("t2_car") or ss.get("t4_car")
-        _fr_tr_f  = ss.get("t1_fr")
-        if _car_tr_f is not None and _fr_tr_f is not None:
-            try:
-                _car_tr_f.seek(0); _fr_tr_f.seek(0)
-                _pdt   = _t4_load_car_proyeccion(_car_tr_f.read(), _fr_tr_f.read())
-                _car_tr_f.seek(0); _fr_tr_f.seek(0)
-                _pdf_t = _pdt["df"].set_index("Camión")
-                # TOTAL_PALL = AE + picking fractions  (= Bultos UP en Proyeccion)
-                paletas_por_cam = _pdf_t["TOTAL_PALL"].astype(float)
-                ae_pall_por_cam = _pdf_t["AE_PALL"].astype(float)
-                # Picking UP (fraccion por camion)
-                _up_c = [f"_up_{c}" for c in _T4_CANCHAS if f"_up_{c}" in _pdf_t.columns]
-                if _up_c:
-                    up_por_cam = _pdf_t[_up_c].sum(axis=1).astype(float)
-                # HL y Peso desde _t4_load_car_proyeccion (DDM x beq del CAR)
-                _hl_c = [f"_hl_{c}" for c in _T4_CANCHAS if f"_hl_{c}" in _pdf_t.columns]
-                _kg_c = "kg"
-                if _hl_c:
-                    _hl_pick = _pdf_t[_hl_c].sum(axis=1)
-                    _hl_ae   = _pdf_t.get("hl_ae", pd.Series(0.0, index=_pdf_t.index))
-                    hl_por_cam = (_hl_pick + _hl_ae).astype(float)
-                if _kg_c in _pdf_t.columns:
-                    peso_por_cam = _pdf_t[_kg_c].astype(float)
-                _car_disponible = True
-            except Exception as _car_err69:
-                st.warning(f"\u26a0\ufe0f Error sincronizando con Proyecci\u00f3n Picking: {_car_err69}")
-
-        # 3. Fallback HL/Peso via CAR+DDM si la llamada anterior fall\u00f3
-        _car_tr_f2 = ss.get("t1_car") or ss.get("t2_car") or ss.get("t4_car")
-        if _car_tr_f2 is not None and _ddm_dict and (hl_por_cam.empty or peso_por_cam.empty):
+        if car_file_tr is not None and _ddm_dict:
             try:
                 import openpyxl as _ox69
-                _car_tr_f2.seek(0)
-                _wb69 = _ox69.load_workbook(_car_tr_f2, read_only=True, data_only=True)
-                _car_tr_f2.seek(0)
+                car_file_tr.seek(0)
+                _wb69 = _ox69.load_workbook(car_file_tr, read_only=True, data_only=True)
+                car_file_tr.seek(0)
                 _ws69 = _wb69.worksheets[0]
                 _car_rows69 = list(_ws69.iter_rows(min_row=2, values_only=True))
                 _wb69.close()
-                from collections import defaultdict as _dd69fb
-                _hl69 = _dd69fb(float); _kg69 = _dd69fb(float)
+
+                from collections import defaultdict as _dd69
+                import math as _math_tr
+                _beq69 = _dd69(float)
+                _up69  = _dd69(float)   # UP picking (fracciones)
+                _ae69  = _dd69(float)   # paletas AE (enteras)
+                _pal69 = _dd69(float)   # TOT PALL = AE + pick_up
+                _hl69  = _dd69(float)
+                _kg69  = _dd69(float)
+
                 for _r69 in _car_rows69:
                     try:
                         _cam69 = _r69[10]; _sku69 = _r69[17]
                         if _cam69 is None or _sku69 is None: continue
-                        _blt69 = float(_r69[19] or 0); _uni69 = float(_r69[21] or 0)
-                        _sid69 = int(float(str(_sku69))); _d69 = _ddm_dict.get(_sid69, {})
+                        _blt69 = float(_r69[19] or 0)
+                        _uni69 = float(_r69[21] or 0)
+                        _sid69 = int(float(str(_sku69)))
+                        _d69   = _ddm_dict.get(_sid69, {})
+                        _bxp69 = _d69.get("bxp", 50) or 50
                         _unb69 = _d69.get("un_bulto", 0)
-                        _hl_u  = _d69.get("hl_unit",  0); _kg_u = _d69.get("kg_unit", 0)
+                        _hl_u  = _d69.get("hl_unit",  0)
+                        _kg_u  = _d69.get("kg_unit",  0)
+                        # bultos equivalentes (enteros + fracción de sueltas)
                         _be69  = _blt69 + (_uni69 / _unb69 if _unb69 > 0 and _uni69 > 0 else 0)
                         _cam_i = int(float(str(_cam69)))
-                        _hl69[_cam_i] += _hl_u * _be69; _kg69[_cam_i] += _kg_u * _be69
+                        # UP = bultos_eq / BXP  (paletas reales, igual que Proyección Picking)
+                        _up_sku = _be69 / _bxp69 if _bxp69 > 0 else 0.0
+                        _ae_sku = float(_math_tr.floor(_up_sku))   # paletas AE completas
+                        _pk_sku = _up_sku - _ae_sku                # fracción picking
+                        _beq69[_cam_i] += _be69
+                        _up69[_cam_i]  += _pk_sku    # UP picking (fracción)
+                        _ae69[_cam_i]  += _ae_sku    # paletas AE (enteras)
+                        _pal69[_cam_i] += _up_sku    # TOT PALL = AE + pick_up
+                        _hl69[_cam_i]  += _hl_u * _be69
+                        _kg69[_cam_i]  += _kg_u * _be69
                     except Exception:
                         pass
-                if hl_por_cam.empty:
-                    hl_por_cam   = pd.Series(dict(_hl69), dtype=float)
-                if peso_por_cam.empty:
-                    peso_por_cam = pd.Series(dict(_kg69), dtype=float)
-                _car_disponible = True
-            except Exception:
-                pass
 
+                bult_eq_por_cam = pd.Series(dict(_beq69), dtype=float)
+                up_por_cam      = pd.Series(dict(_up69),  dtype=float)   # picking UP (fracción)
+                ae_pall_por_cam = pd.Series(dict(_ae69),  dtype=float)   # paletas AE
+                paletas_por_cam = pd.Series(dict(_pal69), dtype=float)   # TOT PALL
+                hl_por_cam      = pd.Series(dict(_hl69),  dtype=float)
+                peso_por_cam    = pd.Series(dict(_kg69),  dtype=float)
+                _car_disponible = True
+            except Exception as _car_err69:
+                st.warning(f"⚠️ Error calculando UP desde CAR: {_car_err69}")
 
         if not _car_disponible:
             # Fallback: columna UNIDAD PAQUETE del ANR
@@ -11626,301 +11412,370 @@ def render_tab_tablero():
                     from openpyxl import Workbook
                     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
                     from openpyxl.utils import get_column_letter
-                    from openpyxl.chart import BarChart, LineChart, Reference
+                    from openpyxl.chart import BarChart, Reference
                     from openpyxl.worksheet.page import PageMargins
 
                     _wb2 = Workbook()
                     _ws2 = _wb2.active
                     _ws2.title = "Tablero Ruteador"
-                    _ws2.page_setup.orientation = "landscape"
-                    _ws2.page_setup.paperSize   = 9
-                    _ws2.page_setup.fitToPage   = True
-                    _ws2.page_setup.fitToWidth  = 1
-                    _ws2.page_setup.fitToHeight = 0
-                    _ws2.page_margins = PageMargins(left=0.30, right=0.30, top=0.30, bottom=0.30)
 
-                    # ── Paleta colores (= PDF) ──────────────────────────────
-                    _NX  = "1F3864"; _GD  = "C9A84C"
-                    _GR  = "00C853"; _RX  = "FF4B4B"; _AM  = "FFF3CD"; _AMT = "856404"
-                    _LGX = "F2F2F2"; _BL2 = "2E5FA3"; _WH  = "FFFFFF"
+                    # ── Configurar página A4 landscape ──────────────────────────
+                    _ws2.page_setup.orientation    = "landscape"
+                    _ws2.page_setup.paperSize      = 9   # A4
+                    _ws2.page_setup.fitToPage      = True
+                    _ws2.page_setup.fitToWidth     = 1
+                    _ws2.page_setup.fitToHeight    = 0
+                    _ws2.sheet_properties.pageSetUpPr.fitToPage = True
+                    _ws2.page_margins = PageMargins(
+                        left=0.35, right=0.35, top=0.35, bottom=0.35,
+                        header=0.2, footer=0.2
+                    )
 
-                    # Anchos de columna A:Q (17 cols)
-                    for _cl2, _cw2 in zip(
-                        "ABCDEFGHIJKLMNOPQ",
-                        [5,14,6,9,9,7,9,7,9,8,7,12,8,5,5,5,5]
-                    ):
-                        _ws2.column_dimensions[_cl2].width = _cw2
-
-                    def _fx2(h): return PatternFill("solid", fgColor=h)
-                    def _fo2(b=False,c="000000",s=9): return Font(bold=b,color=c,size=s,name="Arial")
-                    def _al2(h="center",v="center",w=False): return Alignment(horizontal=h,vertical=v,wrap_text=w)
-                    def _bd2():
-                        t=Side(style="thin",color="CCCCCC")
-                        return Border(left=t,right=t,top=t,bottom=t)
-                    def _C2(r,c,v,bold=False,fg="000000",sz=9,bg=None,hal="center",wrap=False,brd=True):
-                        _c=_ws2.cell(r,c,v); _c.font=_fo2(bold,fg,sz); _c.alignment=_al2(hal,"center",wrap)
-                        if bg: _c.fill=_fx2(bg)
-                        if brd: _c.border=_bd2()
+                    # ── Helpers ──────────────────────────────────────────────────
+                    _NX  = "1F3864"; _GRX = "00C853"; _RX = "FF4B4B"
+                    _LGX = "F2F2F2"; _BLX = "E8EAF6"; _AX = "FFF3CD"
+                    def _fx(h): return PatternFill("solid", fgColor=h)
+                    def _fo(bold=False, color="000000", sz=9):
+                        return Font(bold=bold, color=color, size=sz, name="Arial")
+                    def _al(h="center", v="center", w=False):
+                        return Alignment(horizontal=h, vertical=v, wrap_text=w)
+                    def _bd():
+                        s = Side(style="thin", color="DDDDDD")
+                        return Border(left=s, right=s, top=s, bottom=s)
+                    def _cell(r, c, val, bold=False, color="000000", sz=9,
+                              bg=None, halign="center", wrap=False, border=True):
+                        _c = _ws2.cell(r, c, val)
+                        _c.font = _fo(bold, color, sz)
+                        _c.alignment = _al(halign, "center", wrap)
+                        if bg: _c.fill = _fx(bg)
+                        if border: _c.border = _bd()
                         return _c
-                    def _M2(r1,c1,r2,c2):
-                        _ws2.merge_cells(start_row=r1,start_column=c1,end_row=r2,end_column=c2)
 
-                    _N2 = 17  # columnas A:Q
-                    _row2 = 1
+                    row = 1
 
-                    # ── 1. TÍTULO PRINCIPAL ─────────────────────────────────
-                    _M2(_row2,1,_row2,_N2)
-                    _C2(_row2,1,
-                        f"TABLERO RUTEADOR — {fecha_dia.strftime('%A').upper()} {fecha_dia.strftime('%d/%m/%Y')}"
-                        f"   ·   Beccacece Hnos SA  ·  DPO 2.1  ·  v{APP_VERSION}"
-                        f"   ·   Prod. Ruteo: {prod_ruteo:.0%}",
-                        bold=True, fg=_WH, sz=11, bg=_NX, hal="left")
-                    _ws2.row_dimensions[_row2].height = 22; _row2 += 1
+                    # ════════════════════════════════════════════════════════
+                    # HOJA 1 — RESUMEN (KPIs · Targets · Totales · Gráfico · Análisis)
+                    # ════════════════════════════════════════════════════════
 
-                    # ── 2. 6 KPI CARDS (3 per row, 2 rows = 6 filas) ──────
-                    _cards2 = [
-                        ("SLA Entrega",     hora_real_str or "— Sin dato",  f"Target: {sla_str}",   sla_ok),
-                        ("T. Ruteo",        ruteo_real_str or "— Sin dato", f"Target: {ruteo_str}", ruteo_ok),
-                        (f"Ocup. Bodega",   f"{'✗' if not ocup_ok else '✓'} {ocup_bodega:.1f} UP", f"Target: ≥{ocup_target} UP", ocup_ok),
-                        ("Fuera de Zona",   f"{'✓' if fz_ok else '✗'} {fuera_zona_real} ({fuera_zona_pct:.1%})", f"Target: ≤{fz_target:.0%}", fz_ok),
-                        ("Util. Vehículos", f"{'✓' if util_ok else '✗'} {util_vehiculos:.0%}",    f"Target: ≥{_TR_TARGET_UTIL_VEH:.0%}", util_ok),
-                        ("Eficiencia",      f"{'✓' if efic_ok else '✗'} {eficiencia:.1%}",        f"Target: ≥{_TR_TARGET_EFICIENCIA:.0%}", efic_ok),
+                    # ── FILA 1: Header título completo ──────────────────────────
+                    _ws2.merge_cells(f"A{row}:N{row}")
+                    _cell(row, 1,
+                        f"TABLERO RUTEADOR — {fecha_dia.strftime('%A %d/%m/%Y').upper()}"
+                        f"   |   Prod. Ruteo: {prod_ruteo:.0%}"
+                        f"   |   Beccacece Hnos SA · DPO 2.1 · v{APP_VERSION}",
+                        bold=True, color="FFFFFF", sz=11, bg=_NX)
+                    _ws2.row_dimensions[row].height = 22; row += 1
+
+                    # ── FILA 2: KPI cards (6 KPIs en 6 columnas, 2 columnas cada una) ──
+                    _kh = ["SLA Entrega", "T. Ruteo", "Ocup. Bodega",
+                           "Fuera Zona", "Util. Veh.", "Eficiencia"]
+                    _kr = [hora_real_str or "—", ruteo_real_str or "—",
+                           f"{ocup_bodega:.1f} UP",
+                           f"{fuera_zona_real} ({fuera_zona_pct:.1%})",
+                           f"{util_vehiculos:.0%}", f"{eficiencia:.1%}"]
+                    _kt = [sla_str, ruteo_str, f"≥{ocup_target}",
+                           f"≤{fz_target:.0%}", f"≥{_TR_TARGET_UTIL_VEH:.0%}",
+                           f"≥{_TR_TARGET_EFICIENCIA:.0%}"]
+                    _ko = [sla_ok, ruteo_ok, ocup_ok, fz_ok, util_ok, efic_ok]
+                    for _ki, (kh2, kr2, kt2, ko2) in enumerate(zip(_kh,_kr,_kt,_ko)):
+                        _bgk = _GRX if ko2 is True else (_RX if ko2 is False else "FFC107")
+                        _c2s = _ki * 2 + 1
+                        _ws2.merge_cells(f"{get_column_letter(_c2s)}{row}:{get_column_letter(_c2s+1)}{row}")
+                        _cell(row, _c2s,
+                              f"{kh2}\n{kr2}\nTarget: {kt2}",
+                              bold=True, color="FFFFFF" if ko2 is not None else "000000",
+                              sz=8, bg=_bgk, wrap=True)
+                    _ws2.row_dimensions[row].height = 40; row += 1
+
+                    # ── TABLA TARGET / AVANCE / STATUS (espejo del PDF) ──────
+                    _ws2.merge_cells(f"A{row}:N{row}")
+                    _cell(row, 1, "OBJETIVOS DEL DÍA", bold=True, color="FFFFFF", sz=9, bg=_NX)
+                    _ws2.row_dimensions[row].height = 15; row += 1
+
+                    _tgt_hdr_xl = ["KPI", "TARGET", "AVANCE", "STATUS"]
+                    _tgt_hdr_widths = [7, 3, 3, 4]  # col spans (total 17 cols = A:Q, but we use A:N=14)
+                    # Header row: cols A-G / H-J / K-M / N
+                    _tgt_col_spans = [(1,7), (8,10), (11,13), (14,14)]  # (start, end) 1-indexed
+                    for (_cs, _ce), _ht in zip(_tgt_col_spans, _tgt_hdr_xl):
+                        if _cs == _ce:
+                            _cell(row, _cs, _ht, bold=True, color="FFFFFF", sz=8, bg="2e5fa3")
+                        else:
+                            _ws2.merge_cells(f"{get_column_letter(_cs)}{row}:{get_column_letter(_ce)}{row}")
+                            _cell(row, _cs, _ht, bold=True, color="FFFFFF", sz=8, bg="2e5fa3")
+                    _ws2.row_dimensions[row].height = 14; row += 1
+
+                    _tgt_data_xl = [
+                        ("Hora entrega ventas (SLA)", sla_str, hora_real_str or "—", sla_ok),
+                        ("Tiempo de ruteo",           ruteo_str, ruteo_real_str or "—", ruteo_ok),
+                        ("Ocupación bodega bultos UP", f"≥{ocup_target}", f"{ocup_bodega:.1f}", ocup_ok),
+                        ("Fuera de zona",             f"≤{fz_target:.0%}", f"{fuera_zona_pct:.1%}", fz_ok),
                     ]
-                    _spans2 = [(1,6),(7,11),(12,17)]
-                    for _roff in range(2):
-                        for _ci2b in range(3):
-                            _kn2,_kv2,_kt2,_ko2 = _cards2[_roff*3+_ci2b]
-                            _cs2,_ce2 = _spans2[_ci2b]
-                            _bg_k2 = _GR if _ko2 is True else (_RX if _ko2 is False else _AM)
-                            _fg_k2 = _WH if _ko2 is not None else _AMT
-                            _M2(_row2+_roff*3,   _cs2, _row2+_roff*3,   _ce2)
-                            _C2(_row2+_roff*3,   _cs2, _kn2, bold=True, fg=_WH,  sz=8,  bg=_NX)
-                            _M2(_row2+_roff*3+1, _cs2, _row2+_roff*3+1, _ce2)
-                            _C2(_row2+_roff*3+1, _cs2, _kv2, bold=True, fg=_fg_k2, sz=12, bg=_bg_k2)
-                            _M2(_row2+_roff*3+2, _cs2, _row2+_roff*3+2, _ce2)
-                            _C2(_row2+_roff*3+2, _cs2, _kt2, bold=False, fg=_fg_k2, sz=7,  bg=_bg_k2)
-                    for _ri2b in range(6):
-                        _ws2.row_dimensions[_row2+_ri2b].height = 13 if _ri2b%3!=1 else 20
-                    _row2 += 7
+                    for _ti6, (_tk, _tt, _ta, _tok) in enumerate(_tgt_data_xl):
+                        _bg6 = _LGX if _ti6 % 2 else "FFFFFF"
+                        _ws2.merge_cells(f"A{row}:G{row}")
+                        _cell(row, 1, _tk, sz=8, bg=_bg6, halign="left")
+                        _ws2.merge_cells(f"H{row}:J{row}")
+                        _cell(row, 8, _tt, sz=8, bg=_bg6)
+                        _ws2.merge_cells(f"K{row}:M{row}")
+                        _cell(row, 11, _ta, bold=True, sz=8, bg=_bg6)
+                        _ok_bg = _GRX if _tok is True else (_RX if _tok is False else "888888")
+                        _ok_txt = "OK" if _tok is True else ("NO OK" if _tok is False else "—")
+                        _cell(row, 14, _ok_txt, bold=True, color="FFFFFF", sz=8, bg=_ok_bg)
+                        _ws2.row_dimensions[row].height = 13; row += 1
 
-                    # ── 3. OBJETIVOS DEL DÍA ───────────────────────────────
-                    _M2(_row2,1,_row2,_N2)
-                    _C2(_row2,1,"OBJETIVOS DEL DÍA",bold=True,fg=_WH,sz=9,bg=_NX)
-                    _ws2.row_dimensions[_row2].height=15; _row2+=1
-                    for (_cs3,_ce3),_ht3 in zip([(1,9),(10,12),(13,15),(16,17)],
-                                                  ["KPI","TARGET","AVANCE","STATUS"]):
-                        _M2(_row2,_cs3,_row2,_ce3)
-                        _C2(_row2,_cs3,_ht3,bold=True,fg=_WH,sz=8,bg=_BL2)
-                    _ws2.row_dimensions[_row2].height=13; _row2+=1
-                    _tgt_xl = [
-                        ("Hora entrega ventas (SLA)", sla_str,            hora_real_str or "—",   sla_ok),
-                        ("Tiempo de ruteo",           ruteo_str,           ruteo_real_str or "—",  ruteo_ok),
-                        ("Ocupación bodega UP",        f"≥{ocup_target}",  f"{ocup_bodega:.1f}",   ocup_ok),
-                        ("Fuera de zona",              f"≤{fz_target:.0%}",f"{fuera_zona_pct:.1%}", fz_ok),
-                    ]
-                    for _ti3,(_tk3,_tt3,_ta3,_tok3) in enumerate(_tgt_xl):
-                        _bgr3=_LGX if _ti3%2==0 else "FFFFFF"
-                        _ok3_bg=_GR if _tok3 is True else (_RX if _tok3 is False else "888888")
-                        _ok3_t="OK" if _tok3 is True else ("NO OK" if _tok3 is False else "—")
-                        _M2(_row2,1,_row2,9);  _C2(_row2,1,_tk3,sz=8,bg=_bgr3,hal="left")
-                        _M2(_row2,10,_row2,12); _C2(_row2,10,_tt3,sz=8,bg=_bgr3)
-                        _M2(_row2,13,_row2,15); _C2(_row2,13,_ta3,bold=True,sz=8,bg=_bgr3)
-                        _M2(_row2,16,_row2,17); _C2(_row2,16,_ok3_t,bold=True,fg=_WH,sz=8,bg=_ok3_bg)
-                        _ws2.row_dimensions[_row2].height=13; _row2+=1
-                    _row2+=1
+                    row += 1  # espacio
 
-                    # ── 4. TOTALES GLOBALES ────────────────────────────────
-                    _M2(_row2,1,_row2,_N2)
-                    _C2(_row2,1,"TOTALES GLOBALES",bold=True,fg=_WH,sz=9,bg=_NX)
-                    _ws2.row_dimensions[_row2].height=15; _row2+=1
-                    _th4=["Cams","PDV","Bultos","Blt.UP","Paletas","HL","Peso(kg)","Drop Size","Rechazos","FZ PDV","FZ%","Prod.Ruteo"]
-                    _tv4=[f"{camiones_en_reparto}/{total_camiones_flota}",str(total_pedidos),
-                          f"{total_bup:,.0f}",f"{total_up:.2f}",f"{paletas_total:.2f}",
-                          f"{total_hl:.2f}",f"{total_peso_kg:,.0f}",f"{drop_size:.2f}",
-                          f"{total_rechazos_up:.1f}",str(fuera_zona_real),
-                          f"{fuera_zona_pct:.1%}",f"{prod_ruteo:.0%}"]
-                    for _i4,(_th4i,_tv4i) in enumerate(zip(_th4,_tv4),1):
-                        _C2(_row2,  _i4,_th4i,bold=True,fg=_NX,sz=7,bg="E3F2FD")
-                        _C2(_row2+1,_i4,_tv4i,bold=True,sz=10)
-                    _ws2.row_dimensions[_row2].height=13
-                    _ws2.row_dimensions[_row2+1].height=18
-                    _row2+=3
+                    # ── TOTALES GLOBALES en franja bicolor ──────────────────
+                    _ws2.merge_cells(f"A{row}:N{row}")
+                    _cell(row, 1, "TOTALES GLOBALES", bold=True, color="FFFFFF", sz=9, bg=_NX)
+                    _ws2.row_dimensions[row].height = 15; row += 1
 
-                    # ── 5. GRÁFICO Bultos UP por Camión ────────────────────
+                    _tl = ["Camiones","PDV","Bultos","Bultos UP","Paletas","HL","Peso(kg)","Drop Size","Rechazos","SV","FZ PDV","FZ %","Prod.Ruteo"]
+                    _tv = [f"{camiones_en_reparto}/{total_camiones_flota}",
+                           str(total_pedidos), f"{total_bup:.0f}", f"{total_up:.2f}", f"{paletas_total:.2f}",
+                           f"{total_hl:.2f}", f"{total_peso_kg:,.0f}",
+                           f"{drop_size:.2f}", f"{total_rechazos_up:.1f}",
+                           str(segundas_vueltas), str(fuera_zona_real),
+                           f"{fuera_zona_pct:.1%}", f"{prod_ruteo:.0%}"]
+                    for _ti, (_tl2, _tv2) in enumerate(zip(_tl, _tv), 1):
+                        _cell(row,   _ti, _tl2, bold=True, color=_NX, sz=8, bg=_BLX)
+                        _cell(row+1, _ti, _tv2, bold=True, sz=10)
+                    _ws2.row_dimensions[row].height   = 14
+                    _ws2.row_dimensions[row+1].height = 18
+                    row += 3
+
+                    # ── GRÁFICO COMBINADO (barras Bultos UP + línea PDV — igual que PDF) ─
                     if tabla_rows:
-                        _gc2=18
-                        ws.cell(_gc2,1,"Camión") if False else None
-                        for _ghi2,_ghn2 in enumerate(["Camión","Bultos UP","PDV"],1):
-                            _ws2.cell(1,_gc2+_ghi2-1,_ghn2)
-                        for _gi2,_gr2b in enumerate(tabla_rows,1):
-                            _ws2.cell(1+_gi2,_gc2,  str(_gr2b["N° Cam"]))
-                            _ws2.cell(1+_gi2,_gc2+1,round(_gr2b.get("Bultos UP",0),1))
-                            _ws2.cell(1+_gi2,_gc2+2,_gr2b.get("PDV",0))
-                        _gd2=1+len(tabla_rows)
-                        for _hc2 in ["R","S","T"]: _ws2.column_dimensions[_hc2].hidden=True
-                        _bc2=BarChart(); _bc2.type="col"; _bc2.grouping="clustered"; _bc2.style=2
-                        _bc2.title=f"Bultos UP por Camión / PDV — {fecha_dia.strftime('%d/%m/%Y')}"
-                        _bc2.y_axis.title="Bultos UP"; _bc2.width=22; _bc2.height=9
-                        _ref_bup2=Reference(_ws2,min_col=_gc2+1,min_row=1,max_row=_gd2)
-                        _ref_cat2=Reference(_ws2,min_col=_gc2,min_row=2,max_row=_gd2)
-                        _bc2.add_data(_ref_bup2,titles_from_data=True)
-                        _bc2.set_categories(_ref_cat2)
-                        _bc2.series[0].graphicalProperties.solidFill=_NX
-                        _lc2=LineChart(); _lc2.y_axis.axId=200; _lc2.y_axis.title="PDV"
-                        _lc2.y_axis.crosses="max"
-                        _ref_pdv2=Reference(_ws2,min_col=_gc2+2,min_row=1,max_row=_gd2)
-                        _lc2.add_data(_ref_pdv2,titles_from_data=True)
-                        _lc2.series[0].graphicalProperties.line.solidFill="FF6600"
-                        _lc2.series[0].graphicalProperties.line.width=20000
-                        _lc2.series[0].marker.symbol="circle"; _lc2.series[0].marker.size=4
-                        _bc2+=_lc2; _bc2.anchor=f"A{_row2}"
-                        _ws2.add_chart(_bc2)
-                        _row2+=18
+                        try:
+                            from openpyxl.chart import BarChart, LineChart, Reference
 
-                    # ── 6. ANÁLISIS OPERATIVO (gold) ────────────────────────
+                            # Datos auxiliares en columnas ocultas (col R=18, fila 1+)
+                            _gd_col = 18  # col R
+                            _gdr = 1
+                            for _ghi, _ghn in enumerate(["Camión", "Bultos UP", "PDV"], 1):
+                                _ws2.cell(_gdr, _gd_col + _ghi - 1, _ghn)
+                            for _gi2, _gr2 in enumerate(tabla_rows, 1):
+                                _ws2.cell(_gdr + _gi2, _gd_col,     str(_gr2["N° Cam"]))
+                                _ws2.cell(_gdr + _gi2, _gd_col + 1, round(_gr2["Bultos UP"], 1))
+                                _ws2.cell(_gdr + _gi2, _gd_col + 2, _gr2["PDV"])
+                            _gd_end = _gdr + len(tabla_rows)
+
+                            # Ocultar columnas auxiliares R, S, T
+                            for _hc in ["R", "S", "T"]:
+                                _ws2.column_dimensions[_hc].hidden = True
+
+                            # Barras — Bultos UP
+                            _bc = BarChart()
+                            _bc.type = "col"; _bc.grouping = "clustered"
+                            _bc.title = f"Bultos UP y PDV por Camión — {fecha_dia.strftime('%d/%m/%Y')}"
+                            _bc.style = 2
+                            _bc.y_axis.title = "Bultos UP"
+                            _bc.width  = 22   # cm
+                            _bc.height = 10   # cm
+                            _ref_bup = Reference(_ws2, min_col=_gd_col + 1, min_row=_gdr, max_row=_gd_end)
+                            _ref_cat = Reference(_ws2, min_col=_gd_col, min_row=_gdr + 1, max_row=_gd_end)
+                            _bc.add_data(_ref_bup, titles_from_data=True)
+                            _bc.set_categories(_ref_cat)
+                            _bc.series[0].graphicalProperties.solidFill = "1F3864"
+
+                            # Línea — PDV (eje secundario)
+                            _lc = LineChart()
+                            _lc.y_axis.axId = 200
+                            _lc.y_axis.title = "PDV"
+                            _lc.y_axis.crosses = "max"
+                            _ref_pdv = Reference(_ws2, min_col=_gd_col + 2, min_row=_gdr, max_row=_gd_end)
+                            _lc.add_data(_ref_pdv, titles_from_data=True)
+                            _lc.series[0].graphicalProperties.line.solidFill = "FF6600"
+                            _lc.series[0].graphicalProperties.line.width = 20000
+                            _lc.series[0].marker.symbol = "circle"
+                            _lc.series[0].marker.size = 5
+
+                            _bc += _lc
+
+                            # Anchor estándar: celda string "A{row}" — método más robusto en openpyxl
+                            _bc.anchor = f"A{row}"
+                            _ws2.add_chart(_bc)
+                            row += 20  # avanzar el cursor de filas debajo del gráfico
+                        except Exception as _ge_xl:
+                            _ws2.cell(row, 1, f"[Gráfico no disponible: {_ge_xl}]")
+                            row += 1
+
+                    # ════════════════════════════════════════════════════════
+                    # TABLA DETALLE POR CAMIÓN — continúa en la misma hoja
+                    # (espejo exacto del PDF, hoja única)
+                    # ════════════════════════════════════════════════════════
                     if tabla_rows:
-                        _cams_ao=[r for r in tabla_rows if r.get("Bultos UP",0)>0]
-                        _prom_ao=sum(r.get("Bultos UP",0) for r in _cams_ao)/max(len(_cams_ao),1)
-                        _may_ao =max(tabla_rows,key=lambda r:r.get("Bultos UP",0),default=None)
-                        _men_ao =min(_cams_ao, key=lambda r:r.get("Bultos UP",999),default=None)
-                        _exc_ao =[r for r in tabla_rows if r.get("_peso_ok") is False]
-                        _M2(_row2,1,_row2,_N2)
-                        _C2(_row2,1,"ANÁLISIS OPERATIVO",bold=True,fg=_WH,sz=9,bg=_GD)
-                        _ws2.row_dimensions[_row2].height=15; _row2+=1
-                        _ao_rows=[
-                            ("Prom. Bultos UP/cam",f"{_prom_ao:.1f} UP",
-                             "Mayor carga",
-                             f"Cam {_may_ao['N° Cam']} — {_may_ao.get('Chofer','?')}: {_may_ao.get('Bultos UP',0):.1f} UP" if _may_ao else "—"),
-                            ("HL Total",f"{total_hl:.2f}",
-                             "Menor carga",
-                             f"Cam {_men_ao['N° Cam']} — {_men_ao.get('Chofer','?')}: {_men_ao.get('Bultos UP',0):.1f} UP" if _men_ao else "—"),
-                            ("Drop Size",f"{drop_size:.2f}",
-                             "Alertas peso excedido",f"{len(_exc_ao)} cam(s)"),
-                        ]
-                        for _ai2,(_lbl1,_v1,_lbl2,_v2) in enumerate(_ao_rows):
-                            _bga="FFF8E1" if _ai2%2==0 else "FFFFFF"
-                            _M2(_row2,1,_row2,3);   _C2(_row2,1, _lbl1,bold=True,fg=_NX,sz=8,bg=_bga,hal="left")
-                            _M2(_row2,4,_row2,7);   _C2(_row2,4, _v1,  bold=True,       sz=9,bg=_bga)
-                            _M2(_row2,8,_row2,12);  _C2(_row2,8, _lbl2,bold=True,fg=_NX,sz=8,bg=_bga,hal="left")
-                            _M2(_row2,13,_row2,_N2)
-                            _v2fg=_RX if "excedido" in _lbl2.lower() and len(_exc_ao)>0 else "000000"
-                            _C2(_row2,13,_v2,bold=len(_exc_ao)>0 and "excedido" in _lbl2.lower(),fg=_v2fg,sz=9,bg=_bga)
-                            _ws2.row_dimensions[_row2].height=14; _row2+=1
-                        _row2+=1
+                        row += 1  # espacio antes de tabla
+                        _ws2.merge_cells(f"A{row}:N{row}")
+                        _cell(row, 1, "DETALLE POR CAMIÓN", bold=True, color="FFFFFF", sz=9, bg=_NX)
+                        _ws2.row_dimensions[row].height = 16; row += 1
 
-                    # ── 7. DETALLE POR CAMIÓN ───────────────────────────────
-                    _M2(_row2,1,_row2,_N2)
-                    _C2(_row2,1,"DETALLE POR CAMIÓN",bold=True,fg=_WH,sz=9,bg=_NX)
-                    _ws2.row_dimensions[_row2].height=16; _row2+=1
-                    _col_h5=["N°","Chofer","PDV","Bultos","Blt.UP","Pal.AE","Patente","HL","Peso(kg)","Peso","Rech.","Venc.Lic.","Lic."]
-                    for _ci5b,_ch5 in enumerate(_col_h5,1):
-                        _c5=_ws2.cell(_row2,_ci5b,_ch5)
-                        _c5.font=_fo2(True,_WH,8); _c5.fill=_fx2(_NX)
-                        _c5.alignment=_al2("center","center",True); _c5.border=_bd2()
-                    _ws2.row_dimensions[_row2].height=22; _row2+=1
+                        _cols_det = ["N°","Chofer","PDV","Bultos\n(eq.)","Bultos\nUP","Pal.\nAE",
+                                     "Patente","HL","Peso\n(kg)","Peso\nOK","Rech.","Venc.\nLic.","Lic."]
+                        # usar 13 cols en A:M
+                        for _ci5, _ch5 in enumerate(_cols_det, 1):
+                            _ws2.cell(row, _ci5, _ch5).font = _fo(True, "FFFFFF", 8)
+                            _ws2.cell(row, _ci5).fill = _fx(_NX)
+                            _ws2.cell(row, _ci5).alignment = _al("center","center", True)
+                            _ws2.cell(row, _ci5).border = _bd()
+                        _ws2.row_dimensions[row].height = 28; row += 1
 
-                    if tabla_rows:
-                        for _ri5,_rr5 in enumerate(tabla_rows):
-                            _bgr5=_LGX if _ri5%2==0 else "FFFFFF"
-                            _lic5=str(_rr5.get("Lic.","—")) or "—"
-                            _lic_xl2="BLOQUEADO" if "BLOQ" in _lic5.upper() else ("OK" if "OK" in _lic5.upper() else "—")
-                            _venc5=_rr5.get("Venc. Lic.","—") or "—"
-                            _pok5=_rr5.get("_peso_ok",None)
-                            _ps5="OK" if _pok5 is True else ("EXCEDE" if _pok5 is False else "—")
-                            _vv5=[str(_rr5["N° Cam"]),_rr5.get("Chofer","—"),_rr5.get("PDV",0),
-                                  round(_rr5.get("Bultos",0),0),round(_rr5.get("Bultos UP",0),2),
-                                  round(_rr5.get("Paletas",0),0),_rr5.get("Patente","—"),
-                                  round(_rr5.get("HL",0),2),round(_rr5.get("Peso(kg)",0),0),
-                                  _ps5,round(_rr5.get("Rechazos",0),1),_venc5,_lic_xl2]
-                            for _ci6,_vv6 in enumerate(_vv5,1):
-                                _c6=_ws2.cell(_row2,_ci6,_vv6)
-                                _c6.font=_fo2(False,"000000",8)
-                                _c6.alignment=_al2("left" if _ci6==2 else "center","center")
-                                _c6.fill=_fx2(_bgr5); _c6.border=_bd2()
-                            if _pok5 is False:
-                                _ws2.cell(_row2,10).fill=_fx2(_RX); _ws2.cell(_row2,10).font=_fo2(True,_WH,8)
-                            elif _pok5 is True:
-                                _ws2.cell(_row2,10).fill=_fx2(_GR); _ws2.cell(_row2,10).font=_fo2(True,_WH,8)
-                            if _lic_xl2=="BLOQUEADO":
-                                _ws2.cell(_row2,13).fill=_fx2(_RX); _ws2.cell(_row2,13).font=_fo2(True,_WH,8)
-                                for _ci_bl2 in range(1,13): _ws2.cell(_row2,_ci_bl2).fill=_fx2("FFE8E8")
-                            elif _lic_xl2=="OK":
-                                _ws2.cell(_row2,13).fill=_fx2(_GR); _ws2.cell(_row2,13).font=_fo2(True,_WH,8)
-                            _ws2.row_dimensions[_row2].height=14; _row2+=1
+                        for _ri2, _rr2 in enumerate(tabla_rows):
+                            _bg2 = _LGX if _ri2 % 2 else "FFFFFF"
+                            _lic_txt2 = _rr2.get("Lic.", "—") or "—"
+                            _lic_xl2  = "BLOQUEADO" if str(_lic_txt2).startswith("🚫") else ("OK" if str(_lic_txt2).startswith("✅") else "—")
+                            _venc_xl2 = _rr2.get("Venc. Lic.", "") or "—"
+                            _peso_ok_xl2 = _rr2.get("_peso_ok", None)
+                            _peso_semaf2 = "OK" if _peso_ok_xl2 is True else ("EXCEDE" if _peso_ok_xl2 is False else "—")
+                            _vv2 = [str(_rr2["N° Cam"]), _rr2["Chofer"] or "—",
+                                    _rr2["PDV"], round(_rr2.get("Bultos", 0), 2),
+                                    round(_rr2.get("Bultos UP", 0), 2), round(_rr2.get("Paletas", 0), 0),
+                                    _rr2["Patente"], round(_rr2.get("HL", 0), 2),
+                                    round(_rr2.get("Peso(kg)", 0), 0), _peso_semaf2,
+                                    _rr2["Rechazos"], _venc_xl2, _lic_xl2]
+                            for _ci6, _vv6 in enumerate(_vv2, 1):
+                                _c6 = _ws2.cell(row, _ci6, _vv6)
+                                _c6.font = _fo(False, "000000", 8)
+                                _c6.alignment = _al("left" if _ci6 == 2 else "center", "center")
+                                _c6.fill = _fx(_bg2)
+                                _c6.border = _bd()
+                            # semáforo peso
+                            if _peso_ok_xl2 is False:
+                                _ws2.cell(row, 10).fill = _fx(_RX); _ws2.cell(row, 10).font = _fo(True,"FFFFFF",8)
+                            elif _peso_ok_xl2 is True:
+                                _ws2.cell(row, 10).fill = _fx(_GRX); _ws2.cell(row, 10).font = _fo(True,"FFFFFF",8)
+                            # semáforo licencia
+                            if _lic_xl2 == "BLOQUEADO":
+                                _ws2.cell(row, 13).fill = _fx(_RX); _ws2.cell(row, 13).font = _fo(True,"FFFFFF",8)
+                                for _ci_bl in range(1, 14):
+                                    if _ci_bl not in (10, 13):
+                                        _ws2.cell(row, _ci_bl).fill = _fx("FFE8E8")
+                            elif _lic_xl2 == "OK":
+                                _ws2.cell(row, 13).fill = _fx(_GRX); _ws2.cell(row, 13).font = _fo(True,"FFFFFF",8)
+                            _ws2.row_dimensions[row].height = 14; row += 1
 
-                        _tot5=["TOTAL","",sum(r.get("PDV",0) for r in tabla_rows),
-                               round(sum(r.get("Bultos",0) for r in tabla_rows),0),
-                               round(sum(r.get("Bultos UP",0) for r in tabla_rows),2),
-                               round(sum(r.get("Paletas",0) for r in tabla_rows),0),
-                               "","",round(sum(r.get("Peso(kg)",0) for r in tabla_rows),0),
-                               "","","",""]
-                        for _ci7,_tv7 in enumerate(_tot5,1):
-                            _ct=_ws2.cell(_row2,_ci7,_tv7)
-                            _ct.font=_fo2(True,_WH,9); _ct.fill=_fx2(_NX)
-                            _ct.alignment=_al2("center","center"); _ct.border=_bd2()
-                        _ws2.row_dimensions[_row2].height=16; _row2+=2
+                        # Fila TOTAL
+                        _totv_d = ["TOTAL", "",
+                                   sum(r["PDV"] for r in tabla_rows),
+                                   round(sum(r.get("Bultos",0) for r in tabla_rows), 0),
+                                   round(sum(r.get("Bultos UP",0) for r in tabla_rows), 2),
+                                   round(sum(r.get("Paletas",0) for r in tabla_rows), 0),
+                                   "", "", round(sum(r.get("Peso(kg)",0) for r in tabla_rows), 0),
+                                   "", round(sum(r.get("Rechazos",0) for r in tabla_rows), 1), "",""]
+                        for _ci7, _tv7 in enumerate(_totv_d, 1):
+                            _ct = _ws2.cell(row, _ci7, _tv7)
+                            _ct.font = _fo(True, _NX, 9); _ct.fill = _fx(_BLX)
+                            _ct.alignment = _al("center","center"); _ct.border = _bd()
+                        _ws2.row_dimensions[row].height = 16; row += 2
 
-                    # ── 8. ALERTAS licencias vencidas ───────────────────────
-                    _bloq5=[r for r in tabla_rows if r.get("_bloqueado",False)]
-                    if _bloq5:
-                        _M2(_row2,1,_row2,_N2)
-                        _C2(_row2,1,"ALERTAS — LICENCIAS VENCIDAS",bold=True,fg=_WH,sz=9,bg=_RX)
-                        _ws2.row_dimensions[_row2].height=15; _row2+=1
-                        for _la5 in _bloq5:
-                            _M2(_row2,1,_row2,_N2)
-                            _C2(_row2,1,
-                                f"CAM {_la5['N° Cam']} — {_la5.get('Chofer','?')} — "
-                                f"LICENCIA VENCIDA ({_la5.get('Venc. Lic.','')}) — NO PUEDE SALIR A REPARTO",
-                                bold=True,fg=_RX,sz=8,bg="FFE8E8",hal="left")
-                            _ws2.row_dimensions[_row2].height=13; _row2+=1
-                        _row2+=1
+                        # Alertas licencias
+                        _lic_alerts2 = [r for r in tabla_rows if str(r.get("Lic.", "")).startswith("🚫")]
+                        if _lic_alerts2:
+                            _ws2.merge_cells(f"A{row}:N{row}")
+                            _cell(row, 1, "ALERTAS — LICENCIAS VENCIDAS", bold=True, color="FFFFFF", sz=9, bg=_RX)
+                            _ws2.row_dimensions[row].height = 16; row += 1
+                            for _la in _lic_alerts2:
+                                _ws2.merge_cells(f"A{row}:N{row}")
+                                _cell(row, 1,
+                                      f"CAM {_la['N° Cam']} — {_la['Chofer'] or 'S/N'}: "
+                                      f"LICENCIA VENCIDA ({_la['Venc. Lic.']}) — NO PUEDE SALIR A REPARTO",
+                                      bold=True, color=_RX, sz=9, bg="FFE8E8")
+                                _ws2.row_dimensions[row].height = 14; row += 1
+                            row += 1
 
-                    # ── 9. FOOTER ──────────────────────────────────────────
-                    _M2(_row2,1,_row2,_N2)
-                    _ws2.cell(_row2,1,
+                    # ── FOOTER (única hoja) ───────────────────────────────────
+                    _ws2.merge_cells(f"A{row}:N{row}")
+                    _ws2.cell(row, 1,
                         f"Generado: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')} · "
                         f"Picking Orchestrator v{APP_VERSION} · Beccacece Hnos SA — DPO 2.1"
-                        + (f" · {causa_demora}" if causa_demora else "")
-                    ).font = _fo2(False,"888888",7)
-                    _ws2.row_dimensions[_row2].height=12
+                        + (f" · Causa demora: {causa_demora}" if causa_demora else "")
+                    ).font = _fo(False, "888888", 7)
+                    _ws2.row_dimensions[row].height = 12
 
-                    # ── HOJA 2: KPIs ──────────────────────────────────────
-                    _ws_kpi5 = _wb2.create_sheet(title="KPIs")
-                    _kpi5_data = [
-                        ("Fecha",              fecha_dia.strftime("%d/%m/%Y")),
-                        ("Camiones reparto",   camiones_en_reparto),
-                        ("Total PDV",          total_pedidos),
-                        ("Bultos UP",          round(total_up,2)),
-                        ("Paletas",            round(paletas_total,2)),
-                        ("HL",                 round(total_hl,2)),
-                        ("Peso(kg)",           round(total_peso_kg,0)),
-                        ("Drop Size",          round(drop_size,2)),
-                        ("Eficiencia",         round(eficiencia,4)),
-                        ("Util. Vehículos",    round(util_vehiculos,4)),
-                        ("Fuera de zona (%)",  round(fuera_zona_pct,4)),
-                        ("Ocup. bodega",       round(ocup_bodega,2)),
-                        ("Prod. Ruteo",        round(prod_ruteo,4)),
-                        ("Causa demora",       causa_demora or ""),
+                    # ── HOJA 2: KPIs (para Histórico Mensual) ────────────────
+                    _ws_kpi = _wb2.create_sheet(title="KPIs")
+                    _kpi_rows_data = [
+                        ("Fecha",               fecha_dia.strftime("%d/%m/%Y")),
+                        ("Camiones reparto",    camiones_en_reparto),
+                        ("Total PDV",           total_pedidos),
+                        ("Bultos UP",           round(total_up, 2)),
+                        ("Paletas",             round(paletas_total, 2)),
+                        ("HL",                  round(total_hl, 2)),
+                        ("Peso(kg)",            round(total_peso_kg, 0)),
+                        ("Drop Size",           round(drop_size, 2)),
+                        ("Eficiencia",          round(eficiencia, 4)),
+                        ("Util. Vehículos",     round(util_vehiculos, 4)),
+                        ("Fuera de zona (%)",   round(fuera_zona_pct, 4)),
+                        ("Ocup. bodega",        round(ocup_bodega, 2)),
+                        ("Productividad ruteo", round(prod_ruteo, 4)),
+                        ("Causa demora",        causa_demora or ""),
                     ]
-                    for _ki5, (_kn5, _kv5) in enumerate(_kpi5_data, 2):
-                        _ws_kpi5.cell(1,1,"KPI").font  = Font(bold=True,color="FFFFFF",size=9,name="Arial")
-                        _ws_kpi5.cell(1,1).fill = _fx2(_NX)
-                        _ws_kpi5.cell(1,2,"Valor").font = Font(bold=True,color="FFFFFF",size=9,name="Arial")
-                        _ws_kpi5.cell(1,2).fill = _fx2(_NX)
-                        _ws_kpi5.cell(_ki5,1,_kn5).font = Font(size=9,name="Arial")
-                        _ws_kpi5.cell(_ki5,2,_kv5).font = Font(size=9,name="Arial")
-                    _ws_kpi5.column_dimensions["A"].width=26
-                    _ws_kpi5.column_dimensions["B"].width=22
+                    _ws_kpi.cell(1, 1, "KPI").font = _fo(True, "FFFFFF", 9)
+                    _ws_kpi.cell(1, 1).fill = _fx(_NX)
+                    _ws_kpi.cell(1, 2, "Valor").font = _fo(True, "FFFFFF", 9)
+                    _ws_kpi.cell(1, 2).fill = _fx(_NX)
+                    for _ki_r, (_kn, _kv) in enumerate(_kpi_rows_data, 2):
+                        _ws_kpi.cell(_ki_r, 1, _kn).font = _fo(False, "000000", 9)
+                        _ws_kpi.cell(_ki_r, 2, _kv).font = _fo(False, "000000", 9)
+                    _ws_kpi.column_dimensions["A"].width = 26
+                    _ws_kpi.column_dimensions["B"].width = 20
+
+                    # Anchos hoja única (A:M detalle + N overflow)
+                    _col_widths_h1 = {
+                        "A": 5,   # N° Cam
+                        "B": 16,  # Chofer
+                        "C": 5,   # PDV
+                        "D": 9,   # Bultos eq.
+                        "E": 9,   # Bultos UP
+                        "F": 7,   # Pal. AE
+                        "G": 9,   # Patente
+                        "H": 7,   # HL
+                        "I": 9,   # Peso kg
+                        "J": 7,   # Peso OK
+                        "K": 6,   # Rechazos
+                        "L": 12,  # Venc. Lic
+                        "M": 10,  # Lic.
+                        "N": 7,
+                    }
+                    for _cl, _cw in _col_widths_h1.items():
+                        _ws2.column_dimensions[_cl].width = _cw
 
                     _buf_xl2 = io.BytesIO(); _wb2.save(_buf_xl2); _buf_xl2.seek(0)
                     ss["tr_xl2_bytes"] = _buf_xl2.getvalue()
                     ss["tr_xl2_fname"] = f"{fecha_dia.strftime('%d-%m-%Y')}_Tablero-Ruteador_BKCC.xlsx"
-                    st.success("✅ Excel Tablero generado — diseño espejo del PDF + hoja KPIs")
+                    st.success("✅ Excel Tablero generado — tabla única espejo del PDF + hoja KPIs para Histórico")
 
                     # v4.99: auto-guardar KPIs del día en Sheets de persistencia
+                    if _SHEETS_ID_PERSISTENCIA and tabla_rows:
+                        try:
+                            _kpis_dia = {
+                                "Camiones reparto":      len([r for r in tabla_rows if r.get("PDV", 0) > 0]),
+                                "Total PDV":             sum(r.get("PDV", 0) for r in tabla_rows),
+                                "Bultos UP":             round(sum(r.get("Bultos UP", 0) for r in tabla_rows), 2),
+                                "Paletas":               round(sum(r.get("Paletas", 0) for r in tabla_rows), 2),
+                                "HL":                    round(sum(r.get("HL", 0) for r in tabla_rows), 2),
+                                "Peso(kg)":              round(sum(r.get("Peso(kg)", 0) for r in tabla_rows), 0),
+                                "Drop Size":             round(
+                                    sum(r.get("PDV", 0) for r in tabla_rows) /
+                                    max(len([r for r in tabla_rows if r.get("PDV", 0) > 0]), 1), 2),
+                                "Eficiencia":            round(ss.get("tr_kpi_eficiencia", 0), 4),
+                                "Util. Vehículos":       round(ss.get("tr_kpi_util_veh", 0), 4),
+                                "Fuera de zona (%)":     round(ss.get("tr_kpi_fz", 0), 4),
+                                "Ocup. bodega":          round(ss.get("tr_kpi_ocup", 0), 2),
+                                "Productividad ruteo":   round(ss.get("tr_kpi_prod_ruteo", 0), 4),
+                                "Causa demora":          ss.get("tr_causa_demora_val", ""),
+                            }
+                            with st.spinner("💾 Guardando KPIs del día en Sheets…"):
+                                _saved_kpi = _guardar_kpis_diarios_sheets(fecha_dia, _kpis_dia)
+                            if _saved_kpi:
+                                st.info("💾 KPIs del día guardados en Sheets (Histórico Mensual actualizado)")
+                                # Invalidar cache del histórico para que recargue
+                                ss.pop("hist_data_loaded_from_sheets", None)
+                        except Exception as _eks:
+                            pass  # No bloquear el flujo principal
                 except Exception as _xe2:
                     import traceback
-                    st.error(f"Error generando Excel: {_xe2}")
+                    st.error(f"Error: {_xe2}")
                     with st.expander("Detalle"): st.code(traceback.format_exc())
             if ss.get("tr_xl2_bytes"):
                 st.download_button("⬇️ Descargar Excel Tablero", data=ss["tr_xl2_bytes"],
