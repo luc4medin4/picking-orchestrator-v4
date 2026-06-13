@@ -1,24 +1,25 @@
 """
-Picking Orchestrator v5.2.2 — Beccacece Hnos SA
+Picking Orchestrator v5.2.4 — Beccacece Hnos SA
+
+CAMBIOS v5.2.4:
+  1. FRESCURA AUTOMÁTICA desde Google Sheets (sin botón):
+     - Al abrir Tab Archivos, la Frescura se sincroniza automáticamente desde
+       el Sheets (ID fijo). No requiere acción del usuario.
+     - Caché por día (clave "frescura_auto_YYYYMMDD"): se carga una sola vez
+       por sesión/día. En rerenders no se vuelve a llamar a la API.
+     - MarcaTemporal (celda AJ2 hoja Frescura):
+         ✅ verde   → fecha coincide con hoy
+         ⚠️ amarillo → fecha distinta a hoy (detalle del motivo)
+         ❌ rojo    → no se pudo leer o parsear (detalle del motivo)
+     - Si el Sheets falla por cualquier causa (credenciales, red, hoja ausente,
+       datos vacíos), muestra ❌ con mensaje descriptivo + expander con stack
+       trace + uploader manual como fallback.
+     - El uploader manual solo aparece si hubo error en la carga automática.
+
+CAMBIOS v5.2.3:
+  (incluye frescura desde sheets con botón manual — reemplazado por v5.2.4)
 
 CAMBIOS v5.2.2:
-  1. FIX TOP CLIENTES (Sección Tops) — lectura robusta de hoja CLIENTES del ANR:
-     - Detección case-insensitive del nombre real de la hoja (acepta "CLIENTES",
-       "Clientes", "clientes", etc. y cualquier variación con "cliente").
-     - Fallback automático a header=0 si con header=1 no se obtienen datos válidos.
-     - Antes: cualquier variación de nombre de hoja o de header causaba excepción
-       silenciosa → df vacío → warning "No se encontraron clientes con ventas > 0".
-  2. FIX AUTOELEVADORES — camiones excluidos aparecían con valores reales en Excel
-     y en envío a Sheets:
-     - ROOT CAUSE: el widget multiselect usa key="tae_p3_cams_excluir" pero el código
-       de zereo leía st.session_state.get("t4_p3_cams_excluir") → keys distintas →
-       set vacío → nunca se aplicaba el zereo.
-     - FIX: el código ahora lee primero "tae_p3_cams_excluir" (key real del widget)
-       con fallback a "t4_p3_cams_excluir" por compatibilidad legacy.
-     - También corregido el default del widget (misma lógica de fallback).
-     - Resultado: camión excluido → columna en 0 en pivot, Excel y Sheets.
-
-CAMBIOS v4.98.0:
   1. CAR Hoja1 — bloque de Ventas Especiales (filas azules) extendido de
      Excel filas 2-41 (índices 1-40) a Excel filas 2-101 (índices 1-100),
      para soportar mayor volumen de venta VE/alternativa.
@@ -1283,63 +1284,84 @@ def load_frescura(file):
       3) Lee el bloque I:M de la misma hoja API (tabla maestra de almacenes):
          I=Nº Almacén | J=Detalle | K=Calibre | L=Apilabilidad | M=Cancha
       4) Mergea SKU → Nº Almacén → Cancha.
+
+    v5.2.2: tolerante a la ausencia de hoja 'API' — cuando Frescura viene
+    del Google Sheets (solo hojas Frescura + DDM), construye api desde la
+    columna CAN del DDM y devuelve api vacío si tampoco existe.
     """
     xls = pd.ExcelFile(file)
+    _has_api = "API" in xls.sheet_names
 
-    # ── HOJA API: lectura completa ──────────────────────────────────────────
-    api_full = pd.read_excel(xls, sheet_name='API', header=0)
+    if _has_api:
+        # ── HOJA API: lectura completa ──────────────────────────────────────────
+        api_full = pd.read_excel(xls, sheet_name='API', header=0)
 
-    # Columna SKU (col A)
-    col_sku = find_col(api_full, 'Artículo', 'Articulo', 'SKU', 'Cód', 'Cod')
-    if col_sku is None:
-        raise ValueError("Hoja API: no se encontró la columna de SKU (Artículo).")
+        # Columna SKU (col A)
+        col_sku = find_col(api_full, 'Artículo', 'Articulo', 'SKU', 'Cód', 'Cod')
+        if col_sku is None:
+            raise ValueError("Hoja API: no se encontró la columna de SKU (Artículo).")
 
-    # Columna almacén por SKU (entre A y H, la que asocia SKU con su almacén)
-    col_alm_sku = find_col(api_full, 'almacén', 'almacen', 'Almacén', 'Almacen', 'Alm')
-    if col_alm_sku is None:
-        raise ValueError("Hoja API: no se encontró la columna 'almacén' que asocia SKU con almacén.")
+        # Columna almacén por SKU (entre A y H, la que asocia SKU con su almacén)
+        col_alm_sku = find_col(api_full, 'almacén', 'almacen', 'Almacén', 'Almacen', 'Alm')
+        if col_alm_sku is None:
+            raise ValueError("Hoja API: no se encontró la columna 'almacén' que asocia SKU con almacén.")
 
-    # Tabla SKU → Nº Almacén
-    sku_alm = api_full[[col_sku, col_alm_sku]].copy()
-    sku_alm.columns = ['sku_raw', 'alm_num_raw']
-    sku_alm['sku'] = sku_alm['sku_raw'].apply(to_int_sku)
-    sku_alm['alm_num'] = pd.to_numeric(sku_alm['alm_num_raw'], errors='coerce')
-    sku_alm = sku_alm.dropna(subset=['sku'])
-    sku_alm['sku'] = sku_alm['sku'].astype(int)
-    # Regla de prevalencia: la última fila con almacén válido prevalece
-    sku_alm = sku_alm.dropna(subset=['alm_num'])
-    sku_alm['alm_num'] = sku_alm['alm_num'].astype(int)
-    sku_alm = sku_alm.drop_duplicates(subset=['sku'], keep='last')[['sku', 'alm_num']]
+        # Tabla SKU → Nº Almacén
+        sku_alm = api_full[[col_sku, col_alm_sku]].copy()
+        sku_alm.columns = ['sku_raw', 'alm_num_raw']
+        sku_alm['sku'] = sku_alm['sku_raw'].apply(to_int_sku)
+        sku_alm['alm_num'] = pd.to_numeric(sku_alm['alm_num_raw'], errors='coerce')
+        sku_alm = sku_alm.dropna(subset=['sku'])
+        sku_alm['sku'] = sku_alm['sku'].astype(int)
+        # Regla de prevalencia: la última fila con almacén válido prevalece
+        sku_alm = sku_alm.dropna(subset=['alm_num'])
+        sku_alm['alm_num'] = sku_alm['alm_num'].astype(int)
+        sku_alm = sku_alm.drop_duplicates(subset=['sku'], keep='last')[['sku', 'alm_num']]
 
-    # ── BLOQUE I:M (tabla maestra de almacenes), header en fila 1 ───────────
-    # usecols='I:M', header=0 → lee solo las cols I-M con su header propio.
-    alm_master = pd.read_excel(
-        xls, sheet_name='API', header=0, usecols='I:M'
-    )
-    # Mapeo posicional según definición del usuario:
-    # I = Nº Almacén | J = Detalle | K = Calibre | L = Apilabilidad | M = Cancha
-    if alm_master.shape[1] < 5:
-        raise ValueError(
-            f"Bloque I:M de la hoja API tiene {alm_master.shape[1]} columnas, se esperaban 5."
+        # ── BLOQUE I:M (tabla maestra de almacenes), header en fila 1 ───────────
+        # usecols='I:M', header=0 → lee solo las cols I-M con su header propio.
+        alm_master = pd.read_excel(
+            xls, sheet_name='API', header=0, usecols='I:M'
         )
-    alm_master = alm_master.iloc[:, :5].copy()
-    alm_master.columns = ['alm_num', 'alm_det', 'calibre', 'apil', 'cancha_raw']
-    alm_master['alm_num'] = pd.to_numeric(alm_master['alm_num'], errors='coerce')
-    alm_master = alm_master.dropna(subset=['alm_num'])
-    alm_master['alm_num'] = alm_master['alm_num'].astype(int)
-    # Prevalece la última definición del almacén
-    alm_master = alm_master.drop_duplicates(subset=['alm_num'], keep='last')
+        # Mapeo posicional según definición del usuario:
+        # I = Nº Almacén | J = Detalle | K = Calibre | L = Apilabilidad | M = Cancha
+        if alm_master.shape[1] < 5:
+            raise ValueError(
+                f"Bloque I:M de la hoja API tiene {alm_master.shape[1]} columnas, se esperaban 5."
+            )
+        alm_master = alm_master.iloc[:, :5].copy()
+        alm_master.columns = ['alm_num', 'alm_det', 'calibre', 'apil', 'cancha_raw']
+        alm_master['alm_num'] = pd.to_numeric(alm_master['alm_num'], errors='coerce')
+        alm_master = alm_master.dropna(subset=['alm_num'])
+        alm_master['alm_num'] = alm_master['alm_num'].astype(int)
+        # Prevalece la última definición del almacén
+        alm_master = alm_master.drop_duplicates(subset=['alm_num'], keep='last')
 
-    # ── MERGE: SKU → Almacén → Cancha ───────────────────────────────────────
-    api = sku_alm.merge(alm_master, on='alm_num', how='left')
-    api['cancha'] = api['cancha_raw'].apply(normalize_cancha)
-    api = api.rename(columns={'alm_num': 'alm_id'})
-    api['alm_det'] = api['alm_det'].fillna('sin datos').astype(str)
-    api = api[['sku', 'cancha', 'alm_id', 'alm_det']]
+        # ── MERGE: SKU → Almacén → Cancha ───────────────────────────────────────
+        api = sku_alm.merge(alm_master, on='alm_num', how='left')
+        api['cancha'] = api['cancha_raw'].apply(normalize_cancha)
+        api = api.rename(columns={'alm_num': 'alm_id'})
+        api['alm_det'] = api['alm_det'].fillna('sin datos').astype(str)
+        api = api[['sku', 'cancha', 'alm_id', 'alm_det']]
+
+        diag = {
+            'api_full_cols': list(api_full.columns),
+            'col_sku_used': col_sku,
+            'col_alm_sku_used': col_alm_sku,
+            'alm_master_cols_raw': list(pd.read_excel(xls, sheet_name='API', header=0, usecols='I:M').columns),
+            'sku_count_api': len(api),
+            'alm_master_count': len(alm_master),
+            'sku_sin_cancha': int((api['cancha'] == 'SIN CANCHA').sum()),
+            'alm_master_preview': alm_master.head(20).to_dict('records'),
+        }
+    else:
+        # Sin hoja API (Frescura viene del Sheets) — construir api desde DDM col CAN
+        api = pd.DataFrame(columns=['sku', 'cancha', 'alm_id', 'alm_det'])
+        diag = {'api_full_cols': [], 'sku_count_api': 0, 'fuente': 'Sheets (sin hoja API)'}
 
     # ── HOJA DDM (Bultos por pallet) ────────────────────────────────────────
     ddm_full = pd.read_excel(xls, sheet_name='DDM')
-    col_ddm_sku = find_col(ddm_full, 'ARTÍCULO', 'ARTICULO', 'Artículo', 'Articulo', 'SKU')
+    col_ddm_sku = find_col(ddm_full, 'ARTÍCULO', 'ARTICULO', 'Artículo', 'Articulo', 'SKU', 'CÓD', 'COD', 'Cód', 'Cod')
     col_bxp     = find_col(ddm_full, 'BULTOS X PALLET', 'BULTOS_X_PALLET', 'BXP')
     if not col_ddm_sku or not col_bxp:
         raise ValueError("Hoja DDM: no se encontraron las columnas ARTÍCULO y/o BULTOS X PALLET.")
@@ -1350,6 +1372,20 @@ def load_frescura(file):
     ddm['sku'] = ddm['sku'].astype(int)
     ddm['bxp'] = pd.to_numeric(ddm['bxp'], errors='coerce')
     ddm = ddm.drop_duplicates(subset=['sku'], keep='last')
+
+    # Si no hay hoja API, construir api desde DDM columna CAN/CANCHA
+    if not _has_api:
+        col_can = find_col(ddm_full, 'CANCHA', 'CAN')
+        if col_can:
+            _api_from_ddm = ddm_full[[col_ddm_sku, col_can]].copy()
+            _api_from_ddm.columns = ['sku', 'cancha_raw']
+            _api_from_ddm['sku'] = _api_from_ddm['sku'].apply(to_int_sku)
+            _api_from_ddm = _api_from_ddm.dropna(subset=['sku'])
+            _api_from_ddm['sku'] = _api_from_ddm['sku'].astype(int)
+            _api_from_ddm['cancha'] = _api_from_ddm['cancha_raw'].apply(normalize_cancha)
+            _api_from_ddm['alm_id'] = None
+            _api_from_ddm['alm_det'] = 'Sheets'
+            api = _api_from_ddm[['sku', 'cancha', 'alm_id', 'alm_det']].drop_duplicates(subset=['sku'], keep='last')
 
     # ── HOJA Frescura ───────────────────────────────────────────────────────
     fr_full = pd.read_excel(xls, sheet_name='Frescura')
@@ -1365,17 +1401,6 @@ def load_frescura(file):
     fr['sku'] = fr['sku'].astype(int)
     fr = fr.sort_values('fecha').drop_duplicates(subset=['sku'], keep='first')
 
-    # Diagnóstico para debug
-    diag = {
-        'api_full_cols': list(api_full.columns),
-        'col_sku_used': col_sku,
-        'col_alm_sku_used': col_alm_sku,
-        'alm_master_cols_raw': list(pd.read_excel(xls, sheet_name='API', header=0, usecols='I:M').columns),
-        'sku_count_api': len(api),
-        'alm_master_count': len(alm_master),
-        'sku_sin_cancha': int((api['cancha'] == 'SIN CANCHA').sum()),
-        'alm_master_preview': alm_master.head(20).to_dict('records'),
-    }
     return api, ddm, fr, diag
 
 def get_lema(transport, idx=0):
@@ -2590,7 +2615,7 @@ def render_tab_archivos():
         else:
             st.warning("Sin archivo")
 
-    # ── COL B — FRESCURA ───────────────────────────────────────────────────
+    # ── COL B — FRESCURA (carga automática desde Sheets) ──────────────────
     with col_b:
         st.markdown(
             "<div class='arch-card'>"
@@ -2600,71 +2625,238 @@ def render_tab_archivos():
             "</div>",
             unsafe_allow_html=True,
         )
-        fr_file = st.file_uploader(
-            "Frescura 3.0.xlsx",
-            type=["xlsx"],
-            key="arch_fr",
-            accept_multiple_files=False,
-            label_visibility="collapsed",
-        )
-        if fr_file:
-            st.session_state["t1_fr"] = fr_file
-            st.session_state["t4_fr"] = fr_file
-            st.session_state["tc_fr"] = fr_file
-            # v4.67: Parsear DDM inmediatamente
-            try:
-                import openpyxl as _ox67
-                _wb67 = _ox67.load_workbook(fr_file, read_only=True, data_only=True)
-                fr_file.seek(0)
-                _ws67 = _wb67["DDM"]
-                _rows67 = list(_ws67.iter_rows(min_row=1, values_only=True))
-                if _rows67:
-                    _hdr67 = [str(v).strip().upper() if v is not None else "" for v in _rows67[0]]
-                    def _ci67(names):
-                        for n in names:
-                            if n in _hdr67:
-                                return _hdr67.index(n)
-                        return -1
-                    _ic   = _ci67(["ARTÍCULO", "ARTICULO"])
-                    _ig   = _ci67(["BULTOS X PALLET"])
-                    _ihl  = _ci67(["VALOR HL"])
-                    _ikg  = _ci67(["PESO KG"])
-                    _ican = _ci67(["CAN", "CANCHA"])
-                    _iun  = _ci67(["UNIDADES", "UN BULTO", "UN/BULTO", "UN X BULTO"])
-                    if _ic  < 0: _ic  = 2
-                    if _ig  < 0: _ig  = 6
-                    if _iun < 0: _iun = 13
-                    if _ihl < 0: _ihl = 15
-                    if _ikg < 0: _ikg = 16
-                    if _ican < 0: _ican = 14
-                    _ddm_dict67 = {}
-                    for _r67 in _rows67[1:]:
-                        try:
-                            _s = _r67[_ic]
-                            if _s is None:
+
+        FRESCURA_SHEET_ID = "1e2KDr4vRKxVBEE9RAXXnhqBupFkrPqaf4ixdnd4mm2c"
+
+        # ── Carga automática: se ejecuta siempre que no haya datos del día ──
+        # Clave de caché: "frescura_auto_YYYYMMDD" — se recarga una vez por día
+        _hoy_str = datetime.now().strftime("%Y%m%d")
+        _fr_cache_key = f"frescura_auto_{_hoy_str}"
+        _fr_needs_load = _fr_cache_key not in st.session_state
+
+        if _fr_needs_load:
+            with st.spinner("📡 Sincronizando Frescura desde Sheets…"):
+                try:
+                    import gspread as _gs_fr
+                    from google.oauth2.service_account import Credentials as _Cred_fr
+                    import openpyxl as _opx_fr
+
+                    _scopes_fr = [
+                        "https://www.googleapis.com/auth/spreadsheets",
+                        "https://www.googleapis.com/auth/drive",
+                    ]
+                    _creds_fr = _Cred_fr.from_service_account_info(
+                        dict(st.secrets["gcp_service_account"]), scopes=_scopes_fr
+                    )
+                    _client_fr = _gs_fr.authorize(_creds_fr)
+                    _ss_fr = _client_fr.open_by_key(FRESCURA_SHEET_ID)
+
+                    # Detectar hojas (case-insensitive)
+                    _ws_frescura = _ws_ddm = None
+                    _hojas_encontradas = [_w.title for _w in _ss_fr.worksheets()]
+                    for _w in _ss_fr.worksheets():
+                        _wt = _w.title.strip().lower()
+                        if _wt == "frescura":
+                            _ws_frescura = _w
+                        elif _wt == "ddm":
+                            _ws_ddm = _w
+
+                    if _ws_frescura is None:
+                        raise ValueError(
+                            f"Hoja 'Frescura' no encontrada. "
+                            f"Hojas disponibles: {_hojas_encontradas}"
+                        )
+                    if _ws_ddm is None:
+                        raise ValueError(
+                            f"Hoja 'DDM' no encontrada. "
+                            f"Hojas disponibles: {_hojas_encontradas}"
+                        )
+
+                    # Leer datos
+                    _fr_data = _ws_frescura.get_all_values()
+                    if not _fr_data or len(_fr_data) < 2:
+                        raise ValueError(
+                            f"Hoja 'Frescura' sin datos (filas leídas: {len(_fr_data)})."
+                        )
+                    _ddm_data = _ws_ddm.get_all_values()
+                    if not _ddm_data or len(_ddm_data) < 2:
+                        raise ValueError(
+                            f"Hoja 'DDM' sin datos (filas leídas: {len(_ddm_data)})."
+                        )
+
+                    # MarcaTemporal: col AJ = índice 35 (0-based), fila 2 (índice 1)
+                    _mt_str = ""
+                    _mt_col_idx = 35   # AJ
+                    _mt_row_idx = 1    # fila 2
+                    try:
+                        if len(_fr_data[_mt_row_idx]) > _mt_col_idx:
+                            _mt_str = str(_fr_data[_mt_row_idx][_mt_col_idx]).strip()
+                    except Exception:
+                        pass
+
+                    # Validar MarcaTemporal vs hoy
+                    _mt_ok = False
+                    _mt_warn_detail = ""
+                    if _mt_str:
+                        from datetime import datetime as _dt_fr
+                        for _fmt in ["%d/%m/%Y %H:%M:%S", "%m/%d/%Y %H:%M:%S",
+                                     "%Y-%m-%d %H:%M:%S", "%d/%m/%Y", "%Y-%m-%d"]:
+                            try:
+                                _mt_dt = _dt_fr.strptime(_mt_str, _fmt)
+                                if _mt_dt.date() == _dt_fr.today().date():
+                                    _mt_ok = True
+                                else:
+                                    _mt_warn_detail = (
+                                        f"MarcaTemporal es **{_mt_str}** "
+                                        f"pero hoy es {_dt_fr.today().strftime('%d/%m/%Y')}. "
+                                        "El Sheets puede no estar actualizado con los datos de hoy."
+                                    )
+                                break
+                            except ValueError:
                                 continue
-                            _sid = int(float(str(_s)))
-                            _ddm_dict67[_sid] = {
-                                "bxp":      float(_r67[_ig])   if _r67[_ig]   else 50.0,
-                                "hl_unit":  float(_r67[_ihl])  if _r67[_ihl]  else 0.0,
-                                "kg_unit":  float(_r67[_ikg])  if _r67[_ikg]  else 0.0,
-                                "un_bulto": float(_r67[_iun])  if _r67[_iun]  else 0.0,
-                                "can":      str(_r67[_ican]).strip() if _r67[_ican] else "",
+                        if not _mt_ok and not _mt_warn_detail:
+                            _mt_warn_detail = (
+                                f"No se pudo interpretar la MarcaTemporal: **'{_mt_str}'**. "
+                                "Verificá la celda AJ2 de la hoja Frescura."
+                            )
+                    else:
+                        _mt_warn_detail = (
+                            "La celda AJ2 (MarcaTemporal) está vacía. "
+                            "No se puede confirmar que los datos sean del día."
+                        )
+
+                    # Construir Excel en memoria (Frescura + DDM)
+                    _wb_new = _opx_fr.Workbook()
+                    _wb_new.remove(_wb_new.active)
+                    for _sname, _sdata in [("Frescura", _fr_data), ("DDM", _ddm_data)]:
+                        _ws_new = _wb_new.create_sheet(title=_sname)
+                        for _srow in _sdata:
+                            _ws_new.append(_srow)
+                    _buf_fr = io.BytesIO()
+                    _wb_new.save(_buf_fr)
+                    _buf_fr.seek(0)
+                    _buf_fr.name = "Frescura_Sheets.xlsx"
+
+                    # Parsear DDM dict
+                    _ddm_dict_auto = {}
+                    _hdr_d = [str(v).strip().upper() if v else "" for v in _ddm_data[0]]
+                    def _ci_d(names):
+                        for n in names:
+                            if n in _hdr_d: return _hdr_d.index(n)
+                        return -1
+                    _ic_d   = _ci_d(["ARTÍCULO", "ARTICULO"]); _ic_d   = _ic_d   if _ic_d   >= 0 else 2
+                    _ig_d   = _ci_d(["BULTOS X PALLET"]);      _ig_d   = _ig_d   if _ig_d   >= 0 else 6
+                    _iun_d  = _ci_d(["UNIDADES","UN BULTO","UN/BULTO","UN X BULTO"]); _iun_d = _iun_d if _iun_d >= 0 else 13
+                    _ihl_d  = _ci_d(["VALOR HL"]);              _ihl_d  = _ihl_d  if _ihl_d  >= 0 else 15
+                    _ikg_d  = _ci_d(["PESO KG"]);               _ikg_d  = _ikg_d  if _ikg_d  >= 0 else 16
+                    _ican_d = _ci_d(["CAN","CANCHA"]);          _ican_d = _ican_d if _ican_d >= 0 else 14
+                    for _row_d in _ddm_data[1:]:
+                        try:
+                            _s_d = _row_d[_ic_d] if len(_row_d) > _ic_d else None
+                            if not _s_d: continue
+                            _sid_d = int(float(str(_s_d)))
+                            _ddm_dict_auto[_sid_d] = {
+                                "bxp":      float(_row_d[_ig_d])   if len(_row_d) > _ig_d   and _row_d[_ig_d]   else 50.0,
+                                "hl_unit":  float(_row_d[_ihl_d])  if len(_row_d) > _ihl_d  and _row_d[_ihl_d]  else 0.0,
+                                "kg_unit":  float(_row_d[_ikg_d])  if len(_row_d) > _ikg_d  and _row_d[_ikg_d]  else 0.0,
+                                "un_bulto": float(_row_d[_iun_d])  if len(_row_d) > _iun_d  and _row_d[_iun_d]  else 0.0,
+                                "can":      str(_row_d[_ican_d]).strip() if len(_row_d) > _ican_d and _row_d[_ican_d] else "",
                             }
                         except Exception:
                             pass
-                    st.session_state["df_ddm_dict"] = _ddm_dict67
-                _wb67.close()
-            except Exception:
-                st.session_state["df_ddm_dict"] = {}
-            st.success(
-                f"✅ {fr_file.name[:14]}… · "
-                f"{len(st.session_state.get('df_ddm_dict', {}))} SKUs"
+
+                    # Guardar en session_state
+                    st.session_state["t1_fr"] = _buf_fr
+                    st.session_state["t4_fr"] = _buf_fr
+                    st.session_state["tc_fr"] = _buf_fr
+                    st.session_state["df_ddm_dict"]       = _ddm_dict_auto
+                    st.session_state["fr_marca_temporal"] = _mt_str
+                    st.session_state["fr_mt_ok"]          = _mt_ok
+                    st.session_state["fr_mt_warn"]        = _mt_warn_detail
+                    st.session_state["fr_fuente"]         = "sheets"
+                    st.session_state["fr_n_skus"]         = len(_ddm_dict_auto)
+                    st.session_state[_fr_cache_key]       = True   # marcar cargado hoy
+
+                except Exception as _ef_auto:
+                    # Guardar el error para mostrarlo abajo (no bloquea el render)
+                    st.session_state["fr_error"] = str(_ef_auto)
+                    import traceback as _tb_fr
+                    st.session_state["fr_error_tb"] = _tb_fr.format_exc()
+
+        # ── Mostrar estado de Frescura ────────────────────────────────────────
+        _fr_error = st.session_state.get("fr_error", "")
+        _fr_mt_ok   = st.session_state.get("fr_mt_ok", False)
+        _fr_mt_warn = st.session_state.get("fr_mt_warn", "")
+        _fr_mt_str  = st.session_state.get("fr_marca_temporal", "")
+        _fr_n_skus  = st.session_state.get("fr_n_skus", 0)
+
+        if _fr_error:
+            st.error(f"❌ Frescura no cargada — {_fr_error}")
+            with st.expander("🔍 Detalle del error"):
+                st.code(st.session_state.get("fr_error_tb", ""))
+            # Ofrecer fallback manual solo si hay error
+            fr_file_fb = st.file_uploader(
+                "Subir Frescura 3.0.xlsx (fallback)",
+                type=["xlsx"], key="arch_fr", accept_multiple_files=False,
             )
+            if fr_file_fb:
+                st.session_state["t1_fr"] = fr_file_fb
+                st.session_state["t4_fr"] = fr_file_fb
+                st.session_state["tc_fr"] = fr_file_fb
+                st.session_state["fr_fuente"] = "upload"
+                st.session_state["fr_error"]  = ""
+                try:
+                    import openpyxl as _ox_fb
+                    _wb_fb = _ox_fb.load_workbook(fr_file_fb, read_only=True, data_only=True)
+                    fr_file_fb.seek(0)
+                    _ws_fb = _wb_fb["DDM"]
+                    _rows_fb = list(_ws_fb.iter_rows(min_row=1, values_only=True))
+                    if _rows_fb:
+                        _hdr_fb = [str(v).strip().upper() if v else "" for v in _rows_fb[0]]
+                        def _ci_fb(ns):
+                            for n in ns:
+                                if n in _hdr_fb: return _hdr_fb.index(n)
+                            return -1
+                        _ic_fb  = _ci_fb(["ARTÍCULO","ARTICULO"]); _ic_fb  = _ic_fb  if _ic_fb  >= 0 else 2
+                        _ig_fb  = _ci_fb(["BULTOS X PALLET"]);     _ig_fb  = _ig_fb  if _ig_fb  >= 0 else 6
+                        _iun_fb = _ci_fb(["UNIDADES","UN BULTO","UN/BULTO","UN X BULTO"]); _iun_fb = _iun_fb if _iun_fb >= 0 else 13
+                        _ihl_fb = _ci_fb(["VALOR HL"]);             _ihl_fb = _ihl_fb if _ihl_fb >= 0 else 15
+                        _ikg_fb = _ci_fb(["PESO KG"]);              _ikg_fb = _ikg_fb if _ikg_fb >= 0 else 16
+                        _ican_fb= _ci_fb(["CAN","CANCHA"]);         _ican_fb= _ican_fb if _ican_fb>= 0 else 14
+                        _ddm_fb = {}
+                        for _r_fb in _rows_fb[1:]:
+                            try:
+                                _s_fb = _r_fb[_ic_fb]
+                                if not _s_fb: continue
+                                _sid_fb = int(float(str(_s_fb)))
+                                _ddm_fb[_sid_fb] = {
+                                    "bxp":      float(_r_fb[_ig_fb])  if len(_r_fb)>_ig_fb  and _r_fb[_ig_fb]  else 50.0,
+                                    "hl_unit":  float(_r_fb[_ihl_fb]) if len(_r_fb)>_ihl_fb and _r_fb[_ihl_fb] else 0.0,
+                                    "kg_unit":  float(_r_fb[_ikg_fb]) if len(_r_fb)>_ikg_fb and _r_fb[_ikg_fb] else 0.0,
+                                    "un_bulto": float(_r_fb[_iun_fb]) if len(_r_fb)>_iun_fb and _r_fb[_iun_fb] else 0.0,
+                                    "can":      str(_r_fb[_ican_fb]).strip() if len(_r_fb)>_ican_fb and _r_fb[_ican_fb] else "",
+                                }
+                            except Exception:
+                                pass
+                        st.session_state["df_ddm_dict"] = _ddm_fb
+                        st.session_state["fr_n_skus"]   = len(_ddm_fb)
+                    _wb_fb.close()
+                except Exception:
+                    st.session_state["df_ddm_dict"] = {}
+                st.success(f"✅ {fr_file_fb.name[:18]} · {st.session_state.get('fr_n_skus',0)} SKUs")
         elif st.session_state.get("t1_fr"):
-            st.info(f"📎 {st.session_state['t1_fr'].name[:16]}…")
+            # Todo OK — mostrar info compacta
+            if _fr_mt_ok:
+                st.success(
+                    f"✅ Sheets · {_fr_n_skus} SKUs DDM"
+                    + (f" · {_fr_mt_str}" if _fr_mt_str else "")
+                )
+            elif _fr_mt_warn:
+                st.warning(f"⚠️ Sheets cargado — {_fr_mt_warn}")
+            else:
+                st.info(f"📎 Sheets · {_fr_n_skus} SKUs DDM")
         else:
-            st.warning("Sin archivo")
+            st.warning("Sin datos de Frescura")
 
     # ── COL C — ANR ────────────────────────────────────────────────────────
     with col_c:
@@ -9316,68 +9508,141 @@ def _build_division_summary_anr(anr_bytes: bytes) -> pd.DataFrame:
     return agg
 
 
-def _build_top10_clientes_anr(anr_bytes: bytes, n: int = 10) -> pd.DataFrame:
-    """Top N clientes por BULTOS desc desde hoja 'CLIENTES' (ya preagregada).
-    Cols: A=Cliente, B=Bultos venta, E=Importe neto, H=Unidad medida (HL).
-    Devuelve: CLIENTE, BULTOS, IMPORTE, HL.
-
-    FIX v5.2.2: lectura robusta — detecta nombre real de la hoja CLIENTES
-    (case-insensitive, acepta variaciones como "Clientes", "CLIENTES", etc.)
-    y prueba header=1 y header=0 como fallback si no hay datos con el primero.
+def _build_top10_clientes_anr(anr_bytes: bytes, n: int = 10) -> tuple:
+    """Top N clientes por BULTOS desc desde el ANR.
+    Estrategia en cascada:
+      1) Hoja BASE — agrupa por columna CLIENTE (o similar) si existe.
+      2) Hoja CLIENTES (preagregada) — prueba cols A/B/E/H, header 1 y 0.
+      3) Hoja CLIENTES — prueba cols por nombre si posición falla.
+    Retorna (df, debug_lines) donde debug_lines es lista de strings para diagnóstico.
     """
+    import io as _io2
     _EMPTY = pd.DataFrame(columns=["CLIENTE", "BULTOS", "IMPORTE", "HL"])
+    _debug = []   # log de pasos para mostrar en UI si falla
 
-    # ── 1. Detectar nombre real de hoja ──────────────────────────────────────
     try:
-        _xl = pd.ExcelFile(io.BytesIO(anr_bytes))
-        _sheet_names = _xl.sheet_names
-    except Exception:
-        return _EMPTY
+        _xl2 = pd.ExcelFile(_io2.BytesIO(anr_bytes))
+        _all_sheets = _xl2.sheet_names
+    except Exception as _xe:
+        return _EMPTY, [f"❌ No se pudo abrir el ANR: {_xe}"]
 
+    _debug.append(f"Hojas encontradas: {_all_sheets}")
+
+    # ── ESTRATEGIA 1: Hoja BASE — cliente por columna ────────────────────────
+    try:
+        _df_base = pd.read_excel(_io2.BytesIO(anr_bytes), sheet_name="BASE", header=1)
+        _debug.append(f"BASE cols ({len(_df_base.columns)}): {list(_df_base.columns[:20])}")
+        _cli_col = None
+        for _c in _df_base.columns:
+            if any(k in str(_c).lower() for k in ["cliente", "razón", "razon", "nombre cliente"]):
+                _cli_col = _c
+                break
+        _blt_col = None
+        for _c in _df_base.columns:
+            if any(k in str(_c).lower() for k in ["bulto", "bult"]):
+                _blt_col = _c
+                break
+        _debug.append(f"BASE → col cliente: {_cli_col} | col bultos: {_blt_col}")
+        if _cli_col and _blt_col:
+            _grp = _df_base.copy()
+            _grp["_cli"] = _grp[_cli_col].astype(str).str.strip()
+            _grp["_blt"] = pd.to_numeric(_grp[_blt_col], errors="coerce").fillna(0)
+            _grp = _grp[_grp["_blt"] > 0]
+            _grp = _grp[~_grp["_cli"].isin(["nan", "-", "", "Total general", "(en blanco)"])]
+            _grp = _grp[~_grp["_cli"].str.lower().str.startswith("total")]
+            if not _grp.empty:
+                _agg = _grp.groupby("_cli")["_blt"].sum().reset_index()
+                _agg.columns = ["CLIENTE", "BULTOS"]
+                _agg["IMPORTE"] = 0.0
+                _agg["HL"] = 0.0
+                # intentar sumar HL si hay columna
+                for _hc in _df_base.columns:
+                    if "hl" == str(_hc).strip().lower() or "hectolitro" in str(_hc).lower():
+                        _grp2 = _df_base.copy()
+                        _grp2["_cli"] = _grp2[_cli_col].astype(str).str.strip()
+                        _grp2["_hl"]  = pd.to_numeric(_grp2[_hc], errors="coerce").fillna(0)
+                        _hl_agg = _grp2.groupby("_cli")["_hl"].sum()
+                        _agg["HL"] = _agg["CLIENTE"].map(_hl_agg).fillna(0)
+                        break
+                _agg = _agg.sort_values("BULTOS", ascending=False).reset_index(drop=True)
+                _debug.append(f"✅ BASE: {len(_agg)} clientes encontrados")
+                return _agg.head(n), _debug
+            else:
+                _debug.append("BASE: col cliente/bultos existen pero sin datos válidos")
+    except Exception as _e1:
+        _debug.append(f"BASE falló: {_e1}")
+
+    # ── ESTRATEGIA 2: Hoja CLIENTES por posición (cols A/B/E/H) ─────────────
     _sheet_cli = None
-    for _s in _sheet_names:
+    for _s in _all_sheets:
         if _s.strip().upper() == "CLIENTES":
             _sheet_cli = _s
             break
-    # Fallback: primera hoja cuyo nombre contenga "cliente"
     if _sheet_cli is None:
-        for _s in _sheet_names:
+        for _s in _all_sheets:
             if "cliente" in _s.strip().lower():
                 _sheet_cli = _s
                 break
 
-    if _sheet_cli is None:
-        return _EMPTY  # Hoja no encontrada
+    _debug.append(f"Hoja CLIENTES detectada: {_sheet_cli}")
 
-    # ── 2. Leer con header=1; si falla o queda vacío, reintentar con header=0 ─
-    def _read_and_parse(header_row: int) -> pd.DataFrame:
-        try:
-            df = pd.read_excel(io.BytesIO(anr_bytes), sheet_name=_sheet_cli, header=header_row)
-        except Exception:
-            return pd.DataFrame()
-        if df.empty or df.shape[1] < 8:
-            return pd.DataFrame()
-        sub = df.iloc[:, [0, 1, 4, 7]].copy()
-        sub.columns = ["CLIENTE", "BULTOS", "IMPORTE", "HL"]
-        sub = sub[sub["CLIENTE"].notna()]
-        sub["CLIENTE"] = sub["CLIENTE"].astype(str).str.strip()
-        sub = sub[~sub["CLIENTE"].isin(["-", "Total general", "(en blanco)", ""])]
-        sub = sub[~sub["CLIENTE"].str.lower().str.startswith("total")]
-        sub["BULTOS"]  = pd.to_numeric(sub["BULTOS"],  errors="coerce").fillna(0)
-        sub["IMPORTE"] = pd.to_numeric(sub["IMPORTE"], errors="coerce").fillna(0)
-        sub["HL"]      = pd.to_numeric(sub["HL"],      errors="coerce").fillna(0)
-        sub = sub[sub["BULTOS"] > 0]
-        return sub
+    if _sheet_cli:
+        for _hdr in [1, 0, 2]:
+            try:
+                _df_c = pd.read_excel(_io2.BytesIO(anr_bytes), sheet_name=_sheet_cli, header=_hdr)
+                _debug.append(f"  header={_hdr}: {_df_c.shape[0]} filas × {_df_c.shape[1]} cols | primeras cols: {list(_df_c.columns[:10])}")
+                if _df_c.empty or _df_c.shape[1] < 2:
+                    continue
 
-    df_out = _read_and_parse(1)
-    if df_out.empty:
-        df_out = _read_and_parse(0)  # fallback header fila 0
+                # Intento posicional A/B/E/H → idx 0/1/4/7
+                if _df_c.shape[1] >= 8:
+                    _sub = _df_c.iloc[:, [0, 1, 4, 7]].copy()
+                    _sub.columns = ["CLIENTE", "BULTOS", "IMPORTE", "HL"]
+                    _sub = _sub[_sub["CLIENTE"].notna()]
+                    _sub["CLIENTE"] = _sub["CLIENTE"].astype(str).str.strip()
+                    _sub = _sub[~_sub["CLIENTE"].isin(["-", "Total general", "(en blanco)", ""])]
+                    _sub = _sub[~_sub["CLIENTE"].str.lower().str.startswith("total")]
+                    _sub["BULTOS"] = pd.to_numeric(_sub["BULTOS"], errors="coerce").fillna(0)
+                    _sub["HL"]     = pd.to_numeric(_sub["HL"],     errors="coerce").fillna(0)
+                    _sub["IMPORTE"]= pd.to_numeric(_sub["IMPORTE"],errors="coerce").fillna(0)
+                    _sub_valid = _sub[_sub["BULTOS"] > 0]
+                    _debug.append(f"  posicional (A/B/E/H): {len(_sub_valid)} filas con bultos>0")
+                    if not _sub_valid.empty:
+                        _sub_valid = _sub_valid.sort_values("BULTOS", ascending=False).reset_index(drop=True)
+                        _debug.append(f"✅ CLIENTES posicional header={_hdr}: {len(_sub_valid)} clientes")
+                        return _sub_valid.head(n), _debug
 
-    if df_out.empty:
-        return _EMPTY
+                # Intento por nombre de columna
+                _cli_c2 = _blt_c2 = _hl_c2 = None
+                for _cc in _df_c.columns:
+                    _cc_l = str(_cc).strip().lower()
+                    if any(k in _cc_l for k in ["cliente","razon","razón","nombre"]) and _cli_c2 is None:
+                        _cli_c2 = _cc
+                    if any(k in _cc_l for k in ["bulto","bult"]) and _blt_c2 is None:
+                        _blt_c2 = _cc
+                    if _cc_l in ("hl","hectolitro","hectolitros") and _hl_c2 is None:
+                        _hl_c2 = _cc
+                _debug.append(f"  nombre cols: cli={_cli_c2} blt={_blt_c2} hl={_hl_c2}")
+                if _cli_c2 and _blt_c2:
+                    _sub2 = _df_c[[_cli_c2, _blt_c2]].copy()
+                    _sub2.columns = ["CLIENTE", "BULTOS"]
+                    _sub2["IMPORTE"] = 0.0
+                    _sub2["HL"] = pd.to_numeric(_df_c[_hl_c2], errors="coerce").fillna(0) if _hl_c2 else 0.0
+                    _sub2 = _sub2[_sub2["CLIENTE"].notna()]
+                    _sub2["CLIENTE"] = _sub2["CLIENTE"].astype(str).str.strip()
+                    _sub2 = _sub2[~_sub2["CLIENTE"].isin(["-","Total general","(en blanco)",""])]
+                    _sub2 = _sub2[~_sub2["CLIENTE"].str.lower().str.startswith("total")]
+                    _sub2["BULTOS"] = pd.to_numeric(_sub2["BULTOS"], errors="coerce").fillna(0)
+                    _sub2 = _sub2[_sub2["BULTOS"] > 0]
+                    if not _sub2.empty:
+                        _sub2 = _sub2.sort_values("BULTOS", ascending=False).reset_index(drop=True)
+                        _debug.append(f"✅ CLIENTES por nombre header={_hdr}: {len(_sub2)} clientes")
+                        return _sub2.head(n), _debug
+            except Exception as _e2:
+                _debug.append(f"  header={_hdr} falló: {_e2}")
 
-    df_out = df_out.sort_values("BULTOS", ascending=False).reset_index(drop=True)
-    return df_out.head(n)
+    _debug.append("❌ Ninguna estrategia encontró datos de clientes")
+    return _EMPTY, _debug
 
 
 def _fmt_money(v: float) -> str:
@@ -10050,13 +10315,20 @@ def render_tab_top_skus():
         anr_bytes = anr_use.getvalue()
         df_top_skus = _build_top10_skus_anr(anr_bytes, n=10)
         df_div      = _build_division_summary_anr(anr_bytes)
-        df_top_cli  = _build_top10_clientes_anr(anr_bytes, n=10)
     except Exception as e:
-        st.error(f"❌ Error procesando ANR: {e}")
+        st.error(f"❌ Error procesando ANR (BASE): {e}")
         with st.expander("Stack trace"):
             import traceback
             st.code(traceback.format_exc())
         return
+
+    # Top Clientes — try separado para no bloquear la sección si falla
+    try:
+        anr_bytes2 = anr_use.getvalue()
+        df_top_cli, _cli_debug = _build_top10_clientes_anr(anr_bytes2, n=10)
+    except Exception as _ec:
+        df_top_cli = pd.DataFrame(columns=["CLIENTE", "BULTOS", "IMPORTE", "HL"])
+        _cli_debug = [f"Excepción inesperada: {_ec}"]
 
     fecha_hoy = datetime.now().strftime("%d/%m/%Y")
 
@@ -10149,6 +10421,9 @@ def render_tab_top_skus():
     st.markdown("### 👥 Sección 3 — Top 10 Clientes")
     if df_top_cli.empty:
         st.warning("No se encontraron clientes con ventas > 0 en el ANR.")
+        with st.expander("🔍 Diagnóstico Top Clientes", expanded=True):
+            for _dl in _cli_debug:
+                st.caption(_dl)
     else:
         df_cli_disp = df_top_cli.copy()
         df_cli_disp = df_cli_disp[["CLIENTE", "BULTOS", "HL"]]
