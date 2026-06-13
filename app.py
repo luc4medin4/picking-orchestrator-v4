@@ -494,7 +494,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "5.2.1"
+APP_VERSION = "5.2.5"
 # ── CHANGELOG v4.99.0 ─────────────────────────────────────────────────────
 # 1. Secciones reordenadas: Camiones T2 → antes de Proyección Picking.
 #    Boletas → antes de Validación + Log. Paso 1 en T2.
@@ -9549,26 +9549,44 @@ def _build_top10_clientes_anr(anr_bytes: bytes, n: int = 10) -> tuple:
                 if _df_c.empty or _df_c.shape[1] < 2:
                     continue
 
-                # Intento posicional A/B/E/H → idx 0/1/4/7
+                # v5.2.5: Intento posicional mejorado.
+                # La hoja CLIENTES del ANR de Chess tiene estructura variable.
+                # Probamos A/B/E/H (idx 0/1/4/7) para código, nombre, bultos, HL.
+                # Si el resultado en col CLIENTE no incluye código, armamos "código — nombre".
                 if _df_c.shape[1] >= 8:
                     _sub = _df_c.iloc[:, [0, 1, 4, 7]].copy()
-                    _sub.columns = ["CLIENTE", "BULTOS", "IMPORTE", "HL"]
+                    _sub.columns = ["COD", "CLIENTE", "BULTOS", "HL"]
                     _sub = _sub[_sub["CLIENTE"].notna()]
                     _sub["CLIENTE"] = _sub["CLIENTE"].astype(str).str.strip()
+                    _sub["COD"]     = _sub["COD"].astype(str).str.strip()
                     _sub = _sub[~_sub["CLIENTE"].isin(["-", "Total general", "(en blanco)", ""])]
                     _sub = _sub[~_sub["CLIENTE"].str.lower().str.startswith("total")]
                     _sub["BULTOS"] = pd.to_numeric(_sub["BULTOS"], errors="coerce").fillna(0)
                     _sub["HL"]     = pd.to_numeric(_sub["HL"],     errors="coerce").fillna(0)
-                    _sub["IMPORTE"]= pd.to_numeric(_sub["IMPORTE"],errors="coerce").fillna(0)
-                    _sub_valid = _sub[_sub["BULTOS"] > 0]
+                    _sub_valid = _sub[_sub["BULTOS"] > 0].copy()
                     _debug.append(f"  posicional (A/B/E/H): {len(_sub_valid)} filas con bultos>0")
                     if not _sub_valid.empty:
+                        # Armar columna CLIENTE con formato "CÓDIGO - NOMBRE" si el código es numérico
+                        def _fmt_cli(row):
+                            cod = str(row["COD"]).strip()
+                            nom = str(row["CLIENTE"]).strip()
+                            # Si ya contiene el código en el nombre, no duplicar
+                            if cod and cod not in ("nan", "") and not nom.startswith(cod):
+                                try:
+                                    int(float(cod))
+                                    return f"{int(float(cod)):06d} - {nom}"
+                                except Exception:
+                                    pass
+                            return nom
+                        _sub_valid["CLIENTE"] = _sub_valid.apply(_fmt_cli, axis=1)
+                        _sub_valid = _sub_valid[["CLIENTE", "BULTOS", "HL"]].copy()
+                        _sub_valid["IMPORTE"] = 0.0
                         _sub_valid = _sub_valid.sort_values("BULTOS", ascending=False).reset_index(drop=True)
                         _debug.append(f"✅ CLIENTES posicional header={_hdr}: {len(_sub_valid)} clientes")
                         return _sub_valid.head(n), _debug
 
                 # Intento por nombre de columna
-                _cli_c2 = _blt_c2 = _hl_c2 = None
+                _cli_c2 = _blt_c2 = _hl_c2 = _cod_c2 = None
                 for _cc in _df_c.columns:
                     _cc_l = str(_cc).strip().lower()
                     if any(k in _cc_l for k in ["cliente","razon","razón","nombre"]) and _cli_c2 is None:
@@ -9577,19 +9595,39 @@ def _build_top10_clientes_anr(anr_bytes: bytes, n: int = 10) -> tuple:
                         _blt_c2 = _cc
                     if _cc_l in ("hl","hectolitro","hectolitros") and _hl_c2 is None:
                         _hl_c2 = _cc
-                _debug.append(f"  nombre cols: cli={_cli_c2} blt={_blt_c2} hl={_hl_c2}")
+                    if any(k in _cc_l for k in ["cod","código","codigo"]) and _cod_c2 is None:
+                        _cod_c2 = _cc
+                _debug.append(f"  nombre cols: cli={_cli_c2} blt={_blt_c2} hl={_hl_c2} cod={_cod_c2}")
                 if _cli_c2 and _blt_c2:
                     _sub2 = _df_c[[_cli_c2, _blt_c2]].copy()
                     _sub2.columns = ["CLIENTE", "BULTOS"]
                     _sub2["IMPORTE"] = 0.0
                     _sub2["HL"] = pd.to_numeric(_df_c[_hl_c2], errors="coerce").fillna(0) if _hl_c2 else 0.0
+                    if _cod_c2:
+                        _sub2["COD"] = _df_c[_cod_c2].astype(str).str.strip()
+                    else:
+                        _sub2["COD"] = ""
                     _sub2 = _sub2[_sub2["CLIENTE"].notna()]
                     _sub2["CLIENTE"] = _sub2["CLIENTE"].astype(str).str.strip()
                     _sub2 = _sub2[~_sub2["CLIENTE"].isin(["-","Total general","(en blanco)",""])]
                     _sub2 = _sub2[~_sub2["CLIENTE"].str.lower().str.startswith("total")]
                     _sub2["BULTOS"] = pd.to_numeric(_sub2["BULTOS"], errors="coerce").fillna(0)
-                    _sub2 = _sub2[_sub2["BULTOS"] > 0]
+                    _sub2 = _sub2[_sub2["BULTOS"] > 0].copy()
                     if not _sub2.empty:
+                        # v5.2.5: armar CLIENTE con "CÓDIGO - NOMBRE" si hay columna COD
+                        if "COD" in _sub2.columns:
+                            def _fmt_cli2(row):
+                                cod = str(row.get("COD","")).strip()
+                                nom = str(row["CLIENTE"]).strip()
+                                if cod and cod not in ("nan","") and not nom.startswith(cod):
+                                    try:
+                                        int(float(cod))
+                                        return f"{int(float(cod)):06d} - {nom}"
+                                    except Exception:
+                                        pass
+                                return nom
+                            _sub2["CLIENTE"] = _sub2.apply(_fmt_cli2, axis=1)
+                        _sub2 = _sub2[["CLIENTE","BULTOS","IMPORTE","HL"]]
                         _sub2 = _sub2.sort_values("BULTOS", ascending=False).reset_index(drop=True)
                         _debug.append(f"✅ CLIENTES por nombre header={_hdr}: {len(_sub2)} clientes")
                         return _sub2.head(n), _debug
@@ -11369,10 +11407,19 @@ def render_tab_tablero():
             help="Presioná después de completar todos los campos del día"
         )
         if _btn_calcular:
-            ss["tr_calculado"] = True
+            # v5.2.5: validar campos obligatorios antes de calcular
+            _campos_faltantes = []
+            if not hora_real_str.strip():
+                _campos_faltantes.append("Hora entrega real")
+            if not ruteo_real_str.strip():
+                _campos_faltantes.append("T. ruteo real")
+            if _campos_faltantes:
+                st.warning(f"⚠️ Completá los campos obligatorios antes de calcular: **{', '.join(_campos_faltantes)}**")
+            else:
+                ss["tr_calculado"] = True
 
         if not ss.get("tr_calculado", False):
-            st.info("📋 Completá los campos del día y presioná **⚡ Calcular Tablero** para generar el informe.")
+            st.info("📋 Completá **Hora entrega real** y **T. ruteo real**, luego presioná **⚡ Calcular Tablero**.")
             return
 
         # ── REQUIERE ANR ────────────────────────────────────────────────────────
@@ -11999,7 +12046,8 @@ def render_tab_tablero():
                     _M2(_row2,1,_row2,_N2)
                     _C2(_row2,1,"OBJETIVOS DEL DÍA",bold=True,fg=_WH,sz=9,bg=_NX)
                     _ws2.row_dimensions[_row2].height=15; _row2+=1
-                    for (_cs3,_ce3),_ht3 in zip([(1,9),(10,12),(13,15),(16,17)],
+                    # v5.2.5: columna KPI más angosta (cols 1-6 en lugar de 1-9) para replicar diseño PDF
+                    for (_cs3,_ce3),_ht3 in zip([(1,6),(7,11),(12,14),(15,17)],
                                                   ["KPI","TARGET","AVANCE","STATUS"]):
                         _M2(_row2,_cs3,_row2,_ce3)
                         _C2(_row2,_cs3,_ht3,bold=True,fg=_WH,sz=8,bg=_BL2)
@@ -12014,10 +12062,10 @@ def render_tab_tablero():
                         _bgr3=_LGX if _ti3%2==0 else "FFFFFF"
                         _ok3_bg=_GR if _tok3 is True else (_RX if _tok3 is False else "888888")
                         _ok3_t="OK" if _tok3 is True else ("NO OK" if _tok3 is False else "—")
-                        _M2(_row2,1,_row2,9);  _C2(_row2,1,_tk3,sz=8,bg=_bgr3,hal="left")
-                        _M2(_row2,10,_row2,12); _C2(_row2,10,_tt3,sz=8,bg=_bgr3)
-                        _M2(_row2,13,_row2,15); _C2(_row2,13,_ta3,bold=True,sz=8,bg=_bgr3)
-                        _M2(_row2,16,_row2,17); _C2(_row2,16,_ok3_t,bold=True,fg=_WH,sz=8,bg=_ok3_bg)
+                        _M2(_row2,1,_row2,6);  _C2(_row2,1,_tk3,sz=8,bg=_bgr3,hal="left",wrap=True)
+                        _M2(_row2,7,_row2,11); _C2(_row2,7,_tt3,sz=8,bg=_bgr3)
+                        _M2(_row2,12,_row2,14); _C2(_row2,12,_ta3,bold=True,sz=8,bg=_bgr3)
+                        _M2(_row2,15,_row2,17); _C2(_row2,15,_ok3_t,bold=True,fg=_WH,sz=8,bg=_ok3_bg)
                         _ws2.row_dimensions[_row2].height=13; _row2+=1
                     _row2+=1
 
@@ -12040,34 +12088,48 @@ def render_tab_tablero():
 
                     # ── 5. GRÁFICO Bultos UP por Camión ────────────────────
                     if tabla_rows:
-                        _gc2=18
-                        ws.cell(_gc2,1,"Camión") if False else None
-                        for _ghi2,_ghn2 in enumerate(["Camión","Bultos UP","PDV"],1):
-                            _ws2.cell(1,_gc2+_ghi2-1,_ghn2)
-                        for _gi2,_gr2b in enumerate(tabla_rows,1):
-                            _ws2.cell(1+_gi2,_gc2,  str(_gr2b["N° Cam"]))
-                            _ws2.cell(1+_gi2,_gc2+1,round(_gr2b.get("Bultos UP",0),1))
-                            _ws2.cell(1+_gi2,_gc2+2,_gr2b.get("PDV",0))
-                        _gd2=1+len(tabla_rows)
-                        for _hc2 in ["R","S","T"]: _ws2.column_dimensions[_hc2].hidden=True
-                        _bc2=BarChart(); _bc2.type="col"; _bc2.grouping="clustered"; _bc2.style=2
-                        _bc2.title=f"Bultos UP por Camión / PDV — {fecha_dia.strftime('%d/%m/%Y')}"
-                        _bc2.y_axis.title="Bultos UP"; _bc2.width=22; _bc2.height=9
-                        _ref_bup2=Reference(_ws2,min_col=_gc2+1,min_row=1,max_row=_gd2)
-                        _ref_cat2=Reference(_ws2,min_col=_gc2,min_row=2,max_row=_gd2)
-                        _bc2.add_data(_ref_bup2,titles_from_data=True)
+                        # v5.2.5: fix definitivo gráfico — columnas R/S/T (18/19/20) en _ws2
+                        _gc2 = 18  # col R
+                        # Escribir headers y datos en _ws2 (era bug: usaba 'ws' variable no definida)
+                        _ws2.cell(1, _gc2,   "Camión")
+                        _ws2.cell(1, _gc2+1, "Bultos UP")
+                        _ws2.cell(1, _gc2+2, "PDV")
+                        for _gi2, _gr2b in enumerate(tabla_rows, 1):
+                            _ws2.cell(1+_gi2, _gc2,   str(_gr2b["N° Cam"]))
+                            _ws2.cell(1+_gi2, _gc2+1, round(_gr2b.get("Bultos UP", 0), 1))
+                            _ws2.cell(1+_gi2, _gc2+2, _gr2b.get("PDV", 0))
+                        _gd2 = 1 + len(tabla_rows)
+                        # Ocultar columnas auxiliares R/S/T
+                        for _hc2 in ["R", "S", "T"]:
+                            _ws2.column_dimensions[_hc2].hidden = True
+                        # Gráfico combinado: barras Bultos UP + línea PDV
+                        _bc2 = BarChart()
+                        _bc2.type = "col"
+                        _bc2.grouping = "clustered"
+                        _bc2.style = 2
+                        _bc2.title = f"Bultos UP por Camión / PDV — {fecha_dia.strftime('%d/%m/%Y')}"
+                        _bc2.y_axis.title = "Bultos UP"
+                        _bc2.width = 22
+                        _bc2.height = 9
+                        _ref_bup2 = Reference(_ws2, min_col=_gc2+1, min_row=1, max_row=_gd2)
+                        _ref_cat2 = Reference(_ws2, min_col=_gc2,   min_row=2, max_row=_gd2)
+                        _bc2.add_data(_ref_bup2, titles_from_data=True)
                         _bc2.set_categories(_ref_cat2)
-                        _bc2.series[0].graphicalProperties.solidFill=_NX
-                        _lc2=LineChart(); _lc2.y_axis.axId=200; _lc2.y_axis.title="PDV"
-                        _lc2.y_axis.crosses="max"
-                        _ref_pdv2=Reference(_ws2,min_col=_gc2+2,min_row=1,max_row=_gd2)
-                        _lc2.add_data(_ref_pdv2,titles_from_data=True)
-                        _lc2.series[0].graphicalProperties.line.solidFill="FF6600"
-                        _lc2.series[0].graphicalProperties.line.width=20000
-                        _lc2.series[0].marker.symbol="circle"; _lc2.series[0].marker.size=4
-                        _bc2+=_lc2; _bc2.anchor=f"A{_row2}"
+                        _bc2.series[0].graphicalProperties.solidFill = _NX
+                        _lc2 = LineChart()
+                        _lc2.y_axis.axId = 200
+                        _lc2.y_axis.title = "PDV"
+                        _lc2.y_axis.crosses = "max"
+                        _ref_pdv2 = Reference(_ws2, min_col=_gc2+2, min_row=1, max_row=_gd2)
+                        _lc2.add_data(_ref_pdv2, titles_from_data=True)
+                        _lc2.series[0].graphicalProperties.line.solidFill = "00796B"
+                        _lc2.series[0].graphicalProperties.line.width = 20000
+                        _lc2.series[0].marker.symbol = "circle"
+                        _lc2.series[0].marker.size = 4
+                        _bc2 += _lc2
+                        _bc2.anchor = f"A{_row2}"
                         _ws2.add_chart(_bc2)
-                        _row2+=18
+                        _row2 += 18
 
                     # ── 6. ANÁLISIS OPERATIVO (gold) ────────────────────────
                     if tabla_rows:
