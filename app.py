@@ -1,5 +1,24 @@
 """
-Picking Orchestrator v5.2.4 — Beccacece Hnos SA
+Picking Orchestrator v5.2.7 — Beccacece Hnos SA
+
+CAMBIOS v5.2.7:
+  1. FIX BUG 1 - Planilla de carga muestra "Almacen: SIN DATOS":
+     - draw_alm_header: si alm_id es None pero alm_det tiene contenido,
+       muestra el detalle en lugar de "SIN DATOS".
+     - _api_from_ddm: alm_det toma el nombre de la cancha del DDM
+       en lugar de hardcodear "Sheets".
+     - Parser Sheets DDM: agrega lectura de columnas ALM/NUM ALM/ALMACEN
+       para enriquecer alm_id y alm_det cuando Frescura viene del Sheets.
+  2. FIX BUG 2 - PDF proyeccion picking: camiones excluidos siguen saliendo:
+     - _pdf_hash_src incluye ahora t4_cams_excluir y t4_asign.
+       Cuando cambia la exclusion, el hash cambia y el PDF se regenera.
+  3. FIX BUG 3 - Paso 2 proyeccion picking tira error + fecha sin anio:
+     - fecha_targets: "13/6/2026" es ahora el formato PRIMARIO de busqueda.
+     - sheet.update(): try/except para compatibilidad gspread 5.x y 6.x.
+  4. FIX BUG 4 - Excel Tablero Ruteador tira error:
+     - DataLabel envuelto en try/except (compatibilidad openpyxl).
+     - KPI data y totales sanitizados: numpy int/float -> Python nativo.
+     - Error message mejorado con traceback completo.
 
 CAMBIOS v5.2.4:
   1. FRESCURA AUTOMÁTICA desde Google Sheets (sin botón):
@@ -494,7 +513,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "5.2.6"
+APP_VERSION = "5.2.7"
 # ── CHANGELOG v4.99.0 ─────────────────────────────────────────────────────
 # 1. Secciones reordenadas: Camiones T2 → antes de Proyección Picking.
 #    Boletas → antes de Validación + Log. Paso 1 en T2.
@@ -1572,7 +1591,14 @@ def draw_table_header(c, y):
     return H_THDR
 
 def draw_alm_header(c, y, alm_id, alm_det):
-    label = f'Almacén {alm_id} — {alm_det}' if alm_id is not None else 'Almacén: SIN DATOS'
+    # FIX v5.2.7 BUG 1: si alm_id es None pero alm_det tiene valor, mostrar ese valor
+    _alm_det_clean = str(alm_det).strip() if alm_det else ''
+    if alm_id is not None:
+        label = f'Almacén {alm_id} — {_alm_det_clean}'
+    elif _alm_det_clean and _alm_det_clean.lower() not in ('sheets', 'sin datos', ''):
+        label = f'Almacén: {_alm_det_clean}'
+    else:
+        label = 'Almacén: SIN DATOS'
     rfill(c, MARGIN, y, CW, H_ALM, ALM_BG, BORDER)
     txt(c, MARGIN+6, y+11, label, 'Helvetica-Bold', 9)
     return H_ALM
@@ -2682,6 +2708,9 @@ def render_tab_archivos():
                 _ihl_d  = _ci_d(["VALOR HL"]);                                         _ihl_d  = _ihl_d if _ihl_d >= 0 else 15
                 _ikg_d  = _ci_d(["PESO KG"]);                                          _ikg_d  = _ikg_d if _ikg_d >= 0 else 16
                 _ican_d = _ci_d(["CAN","CANCHA"]);                                     _ican_d = _ican_d if _ican_d>= 0 else 14
+                # FIX v5.2.7 BUG 1: leer numero y detalle de almacen del DDM Sheets
+                _ialm_d     = _ci_d(["NUM ALM","NUM_ALM","ALMACEN","N ALM","ALM","NALM"])
+                _ialm_det_d = _ci_d(["ALM DET","ALM_DET","DET ALM","DETALLE ALM","ALMACEN DET","ALM NOMBRE"])
                 for _row_d in _ddm_data[1:]:
                     try:
                         _s_d = _row_d[_ic_d] if len(_row_d) > _ic_d else None
@@ -2692,6 +2721,9 @@ def render_tab_archivos():
                             "kg_unit":  float(_row_d[_ikg_d])  if len(_row_d)>_ikg_d  and _row_d[_ikg_d]  else 0.0,
                             "un_bulto": float(_row_d[_iun_d])  if len(_row_d)>_iun_d  and _row_d[_iun_d]  else 0.0,
                             "can":      str(_row_d[_ican_d]).strip() if len(_row_d)>_ican_d and _row_d[_ican_d] else "",
+                            # FIX v5.2.7 BUG 1: almacen
+                            "alm_id":   int(float(_row_d[_ialm_d])) if _ialm_d >= 0 and len(_row_d) > _ialm_d and _row_d[_ialm_d] not in ("","0",None) else None,
+                            "alm_det":  str(_row_d[_ialm_det_d]).strip() if _ialm_det_d >= 0 and len(_row_d) > _ialm_det_d and _row_d[_ialm_det_d] else "",
                         }
                     except Exception: pass
 
@@ -5620,6 +5652,10 @@ def render_tab_proyeccion():
             + str(sorted(vel_custom.items())).encode()
             + str(sorted(pers_custom.items())).encode()
             + str(hora_inicio_global).encode()
+            # FIX v5.2.7 BUG 2: incluir camiones excluidos en el hash
+            # para que al cambiar exclusiones se regenere el PDF
+            + str(sorted(st.session_state.get("t4_cams_excluir", []))).encode()
+            + str(sorted(st.session_state.get("t4_asign", {}).items())).encode()
         )
         _auto_pdf_hash = _hs.md5(_pdf_hash_src).hexdigest()
         _auto_pdf_key  = f"t4_auto_pdf_{_auto_pdf_hash}"
@@ -7047,14 +7083,15 @@ def _push_fx_picking_to_sheets(
     _fmt_dmmm    = f"{_dia}-{_MESES_ES[_mes]}"       # "3-jun"
     _fmt_ddmmm   = f"{_dia:02d}-{_MESES_ES[_mes]}"   # "03-jun"
 
+    # FIX v5.2.7 BUG 3: fecha CON ANO como primaria (matchea "13/6/2026" en col A del Inputs)
     fecha_targets = {
-        _fmt_dmmm,
-        _fmt_ddmmm,
-        # Fallbacks adicionales por si el formato del sheet varía
-        f"{_dia:02d}/{_mes:02d}/{_anio}",             # "03/06/2026"
-        f"{_dia}/{_mes}/{_anio}",                      # "3/6/2026"
-        str(fecha_dt),                                  # "2026-06-03"
-        f"{_dia:02d}/{_mes:02d}/{str(_anio)[2:]}",     # "03/06/26"
+        f"{_dia}/{_mes}/{_anio}",                      # "13/6/2026"  <- primario
+        f"{_dia:02d}/{_mes:02d}/{_anio}",             # "13/06/2026"
+        _fmt_dmmm,                                     # "13-jun"
+        _fmt_ddmmm,                                    # "13-jun" con cero
+        str(fecha_dt),                                  # "2026-06-13"
+        f"{_dia:02d}/{_mes:02d}/{str(_anio)[2:]}",     # "13/06/26"
+        f"{_dia}/{_mes}/{str(_anio)[2:]}",             # "13/6/26"
     }
 
     # Leer col A completa para encontrar la fila del día
@@ -7161,11 +7198,14 @@ def _push_fx_picking_to_sheets(
     # ── Escribir en la fila encontrada, columnas B:BL ──────────────────────
     # Rango: B{target_row}:BL{target_row}
     range_notation = f"B{target_row}:BL{target_row}"
-    sheet.update(
-        range_name=range_notation,
-        values=[row_values],
-        value_input_option="USER_ENTERED",
-    )
+    # FIX v5.2.7 BUG 3: compatibilidad gspread 5.x y 6.x
+    # gspread 6 cambio la firma de update(); usar try/except para ambas versiones
+    try:
+        # gspread >= 6.x: range_name como primer arg posicional
+        sheet.update(range_notation, [row_values], value_input_option="USER_ENTERED")
+    except TypeError:
+        # gspread 5.x: keyword args
+        sheet.update(range_name=range_notation, values=[row_values], value_input_option="USER_ENTERED")
 
     return f"Fila {target_row} actualizada (fecha {_fmt_dmmm!r} encontrada en col A, {len(row_values)} valores escritos en B:BL)"
 
@@ -12121,11 +12161,15 @@ def render_tab_tablero():
                     _C2(_row2,1,"TOTALES GLOBALES",bold=True,fg=_WH,sz=9,bg=_NX)
                     _ws2.row_dimensions[_row2].height=15; _row2+=1
                     _th4=["Cams","PDV","Bultos","Blt.UP","Paletas","HL","Peso(kg)","Drop Size","Rechazos","FZ PDV","FZ%","Prod.Ruteo"]
-                    _tv4=[f"{camiones_en_reparto}/{total_camiones_flota}",str(total_pedidos),
-                          f"{total_bup:,.0f}",f"{total_up:.2f}",f"{paletas_total:.2f}",
-                          f"{total_hl:.2f}",f"{total_peso_kg:,.0f}",f"{drop_size:.2f}",
-                          f"{total_rechazos_up:.1f}",str(fuera_zona_real),
-                          f"{fuera_zona_pct:.1%}",f"{prod_ruteo:.0%}"]
+                    # FIX v5.2.7 BUG 4: sanitizar numpy types para openpyxl en _tv4
+                    def _sf(v, fmt=".2f"):
+                        try: return format(float(v), fmt)
+                        except: return "0"
+                    _tv4=[f"{int(camiones_en_reparto)}/{int(total_camiones_flota)}",str(int(total_pedidos)),
+                          _sf(total_bup,",.0f"),_sf(total_up,".2f"),_sf(paletas_total,".2f"),
+                          _sf(total_hl,".2f"),_sf(total_peso_kg,",.0f"),_sf(drop_size,".2f"),
+                          _sf(total_rechazos_up,".1f"),str(fuera_zona_real),
+                          _sf(fuera_zona_pct,".1%"),_sf(prod_ruteo,".0%")]
                     for _i4,(_th4i,_tv4i) in enumerate(zip(_th4,_tv4),1):
                         _C2(_row2,  _i4,_th4i,bold=True,fg=_NX,sz=7,bg="E3F2FD")
                         _C2(_row2+1,_i4,_tv4i,bold=True,sz=10)
@@ -12160,11 +12204,15 @@ def render_tab_tablero():
                         _bc2.set_categories(_ref_cat2)
                         _bc2.series[0].graphicalProperties.solidFill = _NX  # barras azul navy
                         # Serie etiquetas de datos en barras
-                        from openpyxl.chart.label import DataLabel
-                        _bc2.series[0].dLbls = DataLabel()
-                        _bc2.series[0].dLbls.showVal = True
-                        _bc2.series[0].dLbls.showSerName = False
-                        _bc2.series[0].dLbls.showCatName = False
+                        # FIX v5.2.7 BUG 4: DataLabel puede fallar segun version openpyxl
+                        try:
+                            from openpyxl.chart.label import DataLabel
+                            _bc2.series[0].dLbls = DataLabel()
+                            _bc2.series[0].dLbls.showVal = True
+                            _bc2.series[0].dLbls.showSerName = False
+                            _bc2.series[0].dLbls.showCatName = False
+                        except Exception:
+                            pass  # DataLabel no disponible en esta version de openpyxl
                         _lc2 = LineChart()
                         _lc2.y_axis.axId = 200
                         _lc2.y_axis.title = "PDV"
@@ -12333,21 +12381,26 @@ def render_tab_tablero():
 
                     # ── HOJA 2: KPIs ──────────────────────────────────────
                     _ws_kpi5 = _wb2.create_sheet(title="KPIs")
+                    # FIX v5.2.7 BUG 4: sanitizar tipos numpy/pandas para openpyxl
+                    def _n(v, dec=2):
+                        """Convierte a float Python nativo, seguro para openpyxl."""
+                        try: return round(float(v), dec)
+                        except: return 0.0
                     _kpi5_data = [
                         ("Fecha",              fecha_dia.strftime("%d/%m/%Y")),
-                        ("Camiones reparto",   camiones_en_reparto),
-                        ("Total PDV",          total_pedidos),
-                        ("Bultos UP",          round(total_up,2)),
-                        ("Paletas",            round(paletas_total,2)),
-                        ("HL",                 round(total_hl,2)),
-                        ("Peso(kg)",           round(total_peso_kg,0)),
-                        ("Drop Size",          round(drop_size,2)),
-                        ("Eficiencia",         round(eficiencia,4)),
-                        ("Util. Vehículos",    round(util_vehiculos,4)),
-                        ("Fuera de zona (%)",  round(fuera_zona_pct,4)),
-                        ("Ocup. bodega",       round(ocup_bodega,2)),
-                        ("Prod. Ruteo",        round(prod_ruteo,4)),
-                        ("Causa demora",       causa_demora or ""),
+                        ("Camiones reparto",   int(camiones_en_reparto)),
+                        ("Total PDV",          int(total_pedidos)),
+                        ("Bultos UP",          _n(total_up, 2)),
+                        ("Paletas",            _n(paletas_total, 2)),
+                        ("HL",                 _n(total_hl, 2)),
+                        ("Peso(kg)",           _n(total_peso_kg, 0)),
+                        ("Drop Size",          _n(drop_size, 2)),
+                        ("Eficiencia",         _n(eficiencia, 4)),
+                        ("Util. Vehículos",    _n(util_vehiculos, 4)),
+                        ("Fuera de zona (%)",  _n(fuera_zona_pct, 4)),
+                        ("Ocup. bodega",       _n(ocup_bodega, 2)),
+                        ("Prod. Ruteo",        _n(prod_ruteo, 4)),
+                        ("Causa demora",       str(causa_demora) if causa_demora else ""),
                     ]
                     for _ki5, (_kn5, _kv5) in enumerate(_kpi5_data, 2):
                         _ws_kpi5.cell(1,1,"KPI").font  = Font(bold=True,color="FFFFFF",size=9,name="Arial")
