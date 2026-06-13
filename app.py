@@ -2766,18 +2766,23 @@ def render_tab_archivos():
     elif _fr_mt_ok:
         st.markdown(
             f"<div style='background:#1a3a1a;border:1px solid #2d6a2d;border-radius:6px;"
-            f"padding:6px 14px;font-size:13px;color:#7ec87e;margin-bottom:8px'>"
-            f"✅ &nbsp;<b>Frescura</b> — Sheets sincronizado · {_fr_n_skus} SKUs"
+            f"padding:7px 16px;font-size:13px;color:#7ec87e;margin-bottom:10px'>"
+            f"✅ &nbsp;<b>Frescura</b>"
+            f" &nbsp;·&nbsp; Planilla de Carga · Proyección Picking · Clasificación"
+            f" &nbsp;·&nbsp; {_fr_n_skus} SKUs DDM"
             + (f" &nbsp;·&nbsp; 🕐 {_fr_mt_str}" if _fr_mt_str else "")
             + "</div>",
             unsafe_allow_html=True,
         )
     elif _fr_mt_warn:
-        st.warning(f"⚠️ **Frescura** — {_fr_mt_warn}")
+        st.warning(
+            f"⚠️ **Frescura** · Planilla de Carga · Proyección · Clasificación"
+            f" · {_fr_n_skus} SKUs DDM — {_fr_mt_warn}"
+        )
     elif st.session_state.get("t1_fr"):
-        st.info(f"📎 Frescura (Sheets) · {_fr_n_skus} SKUs")
+        st.info(f"📎 **Frescura** (Sheets) · {_fr_n_skus} SKUs DDM")
 
-    col_a, col_b, col_c, col_d, col_e, col_f = st.columns(6)
+    col_a, col_c, col_d, col_e, col_f = st.columns(5)
 
     # ── COL A — CAR ────────────────────────────────────────────────────────
     with col_a:
@@ -2807,17 +2812,6 @@ def render_tab_archivos():
             st.info(f"📎 {st.session_state['t1_car'].name}")
         else:
             st.warning("Sin archivo")
-
-    # ── COL B — FRESCURA (solo card visual — estado arriba en banner) ─────
-    with col_b:
-        st.markdown(
-            "<div class='arch-card'>"
-            "<div class='arch-title'>🌿 Frescura</div>"
-            "<span class='arch-badge badge-miss'>Requerido</span>"
-            "<div class='arch-desc'>Planilla de Carga · Proyección Picking · Clasificación</div>"
-            "</div>",
-            unsafe_allow_html=True,
-        )
 
     # ── COL C — ANR ────────────────────────────────────────────────────────
     with col_c:
