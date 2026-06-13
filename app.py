@@ -494,7 +494,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "5.2.5"
+APP_VERSION = "5.2.6"
 # ── CHANGELOG v4.99.0 ─────────────────────────────────────────────────────
 # 1. Secciones reordenadas: Camiones T2 → antes de Proyección Picking.
 #    Boletas → antes de Validación + Log. Paso 1 en T2.
@@ -6449,8 +6449,9 @@ def render_tab_ae():
                             _rows_final3.append(_row3)
 
                         _df_final3 = pd.DataFrame(_rows_final3)
-                        # Guardar para Paso 4 (AE Puras por SKU)
+                        # Guardar para Paso 4 (AE Puras por SKU) y para botón Enviar todo
                         st.session_state["_df_final3_paso3"] = _df_final3
+                        st.session_state["_df_final3_cache"] = _df_final3
 
                         if _skus_sin_bxp3:
                             st.warning(f"⚠️ SKUs sin BXP en DDM (excluidos): {_skus_sin_bxp3}")
@@ -6496,167 +6497,9 @@ def render_tab_ae():
                         except Exception as _ep3x:
                             st.warning(f"⚠️ No se pudo generar Excel: {_ep3x}")
 
-                        # ── 9. Botón unificado: Enviar todo a Sheets (v4.99) ─────────────
-                        _GAS_URL_AE = st.secrets.get(
-                            "GAS_AGREGADOS_AE_URL",
-                            "https://script.google.com/macros/s/AKfycbyYlGl92yGUE2HznznsL4CrACgUR-R3juNQF0Fejra9gd0igz2_FLO30VAC1eKlMyd0/exec"
-                        )
-                        _SPREADSHEET_ID_REPOS = "1OjIhtpzwV-MpnBWu09lKyguit2iKR-nCFG9g5MOd-mM"
-                        _SHEET_REPOSICION_NAME = "reposición ae"
-                        _SHEET_HISTORICO_NAME  = "Rep AE Histórico"
-
-                        def _ser3(v):
-                            if v is None or (isinstance(v, float) and v != v):
-                                return ""
-                            try:
-                                import numpy as _np3s
-                                if isinstance(v, (_np3s.integer,)):  return int(v)
-                                if isinstance(v, (_np3s.floating,)): return float(v)
-                            except ImportError: pass
-                            if hasattr(v, "item"): return v.item()
-                            return v
-
-                        def _sanitize_for_gspread_p3(v):
-                            if v is None: return ""
-                            try:
-                                import numpy as _np_g
-                                if isinstance(v, _np_g.integer): return int(v)
-                                if isinstance(v, _np_g.floating):
-                                    return "" if _np_g.isnan(v) else round(float(v), 4)
-                            except ImportError: pass
-                            if isinstance(v, float):
-                                import math as _m_g
-                                if _m_g.isnan(v) or _m_g.isinf(v): return ""
-                                return round(v, 4)
-                            if isinstance(v, int): return v
-                            if hasattr(v, "item"): return v.item()
-                            return str(v) if v != "" else ""
-
-                        def _build_matrix_repos_p3(df_in, col_order):
-                            df_loc = df_in.reset_index(drop=True).copy()
-                            matrix = []
-                            for i in range(len(df_loc)):
-                                row = []
-                                for cc in col_order:
-                                    try:
-                                        vv = df_loc.at[i, cc] if cc in df_loc.columns else ""
-                                        row.append(_sanitize_for_gspread_p3(vv))
-                                    except Exception: row.append("")
-                                matrix.append(row)
-                            return matrix
-
-                        st.markdown("---")
-                        st.markdown("##### 📤 Enviar todo a Sheets")
-                        st.caption("Ejecuta los 3 envíos en una sola operación: Agregados AE (GAS) + Reposición AE (gspread) + Append Histórico (gspread).")
-
-                        if st.button(
-                            "📤 Enviar todo a Sheets  (Agregados AE + Reposición AE + Histórico)",
-                            key="tae_send_all_sheets",
-                            use_container_width=True,
-                            type="primary",
-                            help="1) GAS: Agregados AE → 2) gspread: Reposición AE → 3) gspread: Append Histórico"
-                        ):
-                            _ok_ae = _ok_rep = _ok_hist = False
-
-                            # ── 1. Agregados AE (GAS) ─────────────────────────────────────
-                            try:
-                                import requests as _rq3s, json as _js3s
-                                _headers3s = list(_df_final3.columns)
-                                _rows3s = [[_ser3(v) for v in row]
-                                           for row in _df_final3.itertuples(index=False, name=None)]
-                                _payload3s = {"action": "limpiarYCargar", "headers": _headers3s, "rows": _rows3s}
-                                with st.spinner("1/3 — Enviando Agregados AE…"):
-                                    _resp3s = _rq3s.post(
-                                        _GAS_URL_AE,
-                                        data=_js3s.dumps(_payload3s),
-                                        headers={"Content-Type": "application/json"},
-                                        timeout=60,
-                                    )
-                                if _resp3s.status_code == 200:
-                                    try: _r3s_json = _resp3s.json()
-                                    except Exception: _r3s_json = {"ok": True}
-                                    _ok_ae = bool(_r3s_json.get("ok"))
-                                    if not _ok_ae:
-                                        st.warning(f"⚠️ Agregados AE: {_r3s_json.get('msg','error desconocido')}")
-                                else:
-                                    st.warning(f"⚠️ Agregados AE HTTP {_resp3s.status_code}")
-                            except Exception as _esp3:
-                                st.warning(f"⚠️ Agregados AE: {_esp3}")
-
-                            # ── 2 + 3. gspread (Reposición + Histórico) ───────────────────
-                            _col_order_rep = [
-                                "Fecha", "Almacén", "Descripción", "Cancha",
-                                "bxp", "Posiciones", "Stock", "En Cancha",
-                                "Carga", "AE Puras", "Reposición Pall",
-                            ]
-                            # Recuperar _df_repos_neg del session_state si existe
-                            _df_repos_neg_u = st.session_state.get("_df_repos_neg_cache")
-                            if _df_repos_neg_u is None or _df_repos_neg_u.empty:
-                                st.info("ℹ️ No hay datos de Reposición AE calculados aún (Paso 4 pendiente).")
-                            else:
-                                _matrix_rep = _build_matrix_repos_p3(_df_repos_neg_u, _col_order_rep)
-                                try:
-                                    import gspread as _gs_u
-                                    from google.oauth2.service_account import Credentials as _Cred_u
-                                    _scopes_u = ["https://www.googleapis.com/auth/spreadsheets"]
-                                    _creds_u = _Cred_u.from_service_account_info(
-                                        dict(st.secrets["gcp_service_account"]), scopes=_scopes_u)
-                                    _client_u = _gs_u.authorize(_creds_u)
-                                    _ss_u = _client_u.open_by_key(_SPREADSHEET_ID_REPOS)
-
-                                    # Buscar hojas case-insensitive
-                                    _ws_rep_u = _ws_hist_u = None
-                                    for _w_it in _ss_u.worksheets():
-                                        _wt = _w_it.title.strip().lower()
-                                        if _wt == _SHEET_REPOSICION_NAME.strip().lower():
-                                            _ws_rep_u = _w_it
-                                        if _wt == _SHEET_HISTORICO_NAME.strip().lower():
-                                            _ws_hist_u = _w_it
-
-                                    # 2. Reposición AE
-                                    if _ws_rep_u:
-                                        with st.spinner("2/3 — Reposición AE…"):
-                                            _lr = len(_ws_rep_u.col_values(1))
-                                            if _lr >= 2:
-                                                _ws_rep_u.batch_clear([f"A2:K{_lr}"])
-                                            if _matrix_rep:
-                                                _ws_rep_u.update(
-                                                    range_name=f"A2:K{1+len(_matrix_rep)}",
-                                                    values=_matrix_rep,
-                                                    value_input_option="USER_ENTERED",
-                                                )
-                                        _ok_rep = True
-                                    else:
-                                        st.warning(f"⚠️ Hoja '{_SHEET_REPOSICION_NAME}' no encontrada")
-
-                                    # 3. Append Histórico
-                                    if _ws_hist_u and _matrix_rep:
-                                        with st.spinner("3/3 — Append Histórico…"):
-                                            _ws_hist_u.append_rows(
-                                                _matrix_rep,
-                                                value_input_option="USER_ENTERED",
-                                                insert_data_option="INSERT_ROWS",
-                                                table_range="A1",
-                                            )
-                                        _ok_hist = True
-                                    elif not _ws_hist_u:
-                                        st.warning(f"⚠️ Hoja '{_SHEET_HISTORICO_NAME}' no encontrada")
-
-                                except Exception as _esp_u:
-                                    st.error(f"❌ Error gspread: {_esp_u}")
-                                    with st.expander("Detalle"):
-                                        import traceback as _tb_u
-                                        st.code(_tb_u.format_exc())
-
-                            # Resultado final
-                            _results = []
-                            if _ok_ae:   _results.append("✅ Agregados AE")
-                            if _ok_rep:  _results.append("✅ Reposición AE")
-                            if _ok_hist: _results.append("✅ Histórico")
-                            if _results:
-                                st.success("  |  ".join(_results))
-                                log_event("info", f"Envío Sheets unificado: {', '.join(_results)}")
-
+                        # ── 9. Botón unificado: Enviar todo a Sheets movido al final de Paso 4 ──
+                        # v5.2.6: el bloque "Enviar todo" se mueve debajo del Paso 4 para que
+                        # el usuario ejecute primero ambos pasos y luego envíe en una sola operación.
         except Exception as _ep3:
             st.error(f"❌ Error en Paso 3: {_ep3}")
             with st.expander("Stack trace"):
@@ -6892,11 +6735,11 @@ def render_tab_ae():
                         except Exception as _er4x:
                             st.warning(f"⚠️ No se pudo generar Excel reposición: {_er4x}")
 
-                        # v4.99: guardar _df_repos_neg en session_state para el botón unificado (Paso 3)
+                        # v4.99: guardar _df_repos_neg en session_state para el botón unificado
                         st.session_state["_df_repos_neg_cache"] = _df_repos_neg.copy() if _df_repos_neg is not None else pd.DataFrame()
                         st.caption(
                             f"ℹ️ {len(_df_repos_neg) if _df_repos_neg is not None else 0} filas calculadas. "
-                            "Usá el botón **📤 Enviar todo a Sheets** en el Paso 3 para enviar."
+                            "Usá el botón **📤 Enviar todo a Sheets** a continuación para enviar."
                         )
 
         except Exception as _ep4:
@@ -6904,6 +6747,154 @@ def render_tab_ae():
             with st.expander("Stack trace"):
                 import traceback
                 st.code(traceback.format_exc())
+
+    # ── ENVIAR TODO A SHEETS — al final de AE (post Paso 4) ─────────────────
+    # v5.2.6: movido aquí para que el usuario complete Paso 3 + Paso 4 primero
+    st.divider()
+    with st.container(border=True):
+        st.markdown("##### 📤 Enviar todo a Sheets")
+        st.caption("Ejecuta los 3 envíos en una sola operación: Agregados AE (GAS) + Reposición AE (gspread) + Append Histórico (gspread).")
+
+        _GAS_URL_AE = st.secrets.get(
+            "GAS_AGREGADOS_AE_URL",
+            "https://script.google.com/macros/s/AKfycbyYlGl92yGUE2HznznsL4CrACgUR-R3juNQF0Fejra9gd0igz2_FLO30VAC1eKlMyd0/exec"
+        )
+        _SPREADSHEET_ID_REPOS = "1OjIhtpzwV-MpnBWu09lKyguit2iKR-nCFG9g5MOd-mM"
+        _SHEET_REPOSICION_NAME = "reposición ae"
+        _SHEET_HISTORICO_NAME  = "Rep AE Histórico"
+
+        def _ser3(v):
+            if v is None or (isinstance(v, float) and v != v): return ""
+            try:
+                import numpy as _np3s
+                if isinstance(v, (_np3s.integer,)):  return int(v)
+                if isinstance(v, (_np3s.floating,)): return float(v)
+            except ImportError: pass
+            if hasattr(v, "item"): return v.item()
+            return v
+
+        def _sanitize_for_gspread_p3(v):
+            if v is None: return ""
+            try:
+                import numpy as _np_g
+                if isinstance(v, _np_g.integer): return int(v)
+                if isinstance(v, _np_g.floating):
+                    return "" if _np_g.isnan(v) else round(float(v), 4)
+            except ImportError: pass
+            if isinstance(v, float):
+                import math as _m_g
+                if _m_g.isnan(v) or _m_g.isinf(v): return ""
+                return round(v, 4)
+            if isinstance(v, int): return v
+            if hasattr(v, "item"): return v.item()
+            return str(v) if v != "" else ""
+
+        def _build_matrix_repos_p3(df_in, col_order):
+            df_loc = df_in.reset_index(drop=True).copy()
+            matrix = []
+            for i in range(len(df_loc)):
+                row = []
+                for cc in col_order:
+                    try:
+                        vv = df_loc.at[i, cc] if cc in df_loc.columns else ""
+                        row.append(_sanitize_for_gspread_p3(vv))
+                    except Exception: row.append("")
+                matrix.append(row)
+            return matrix
+
+        _df_final3_send = st.session_state.get("_df_final3_cache")
+        _df_repos_neg_send = st.session_state.get("_df_repos_neg_cache")
+
+        if st.button(
+            "📤 Enviar todo a Sheets  (Agregados AE + Reposición AE + Histórico)",
+            key="tae_send_all_sheets",
+            use_container_width=True,
+            type="primary",
+            help="1) GAS: Agregados AE → 2) gspread: Reposición AE → 3) gspread: Append Histórico"
+        ):
+            _ok_ae = _ok_rep = _ok_hist = False
+
+            # ── 1. Agregados AE (GAS) ────────────────────────────────────────
+            if _df_final3_send is not None and not _df_final3_send.empty:
+                try:
+                    import requests as _rq3s, json as _js3s
+                    _headers3s = list(_df_final3_send.columns)
+                    _rows3s = [[_ser3(v) for v in row]
+                               for row in _df_final3_send.itertuples(index=False, name=None)]
+                    _payload3s = {"action": "limpiarYCargar", "headers": _headers3s, "rows": _rows3s}
+                    with st.spinner("1/3 — Enviando Agregados AE…"):
+                        _resp3s = _rq3s.post(
+                            _GAS_URL_AE,
+                            data=_js3s.dumps(_payload3s),
+                            headers={"Content-Type": "application/json"},
+                            timeout=60,
+                        )
+                    if _resp3s.status_code == 200:
+                        try: _r3s_json = _resp3s.json()
+                        except Exception: _r3s_json = {"ok": True}
+                        _ok_ae = bool(_r3s_json.get("ok"))
+                        if not _ok_ae:
+                            st.warning(f"⚠️ Agregados AE: {_r3s_json.get('msg','error desconocido')}")
+                    else:
+                        st.warning(f"⚠️ Agregados AE HTTP {_resp3s.status_code}")
+                except Exception as _esp3:
+                    st.warning(f"⚠️ Agregados AE: {_esp3}")
+            else:
+                st.info("ℹ️ Completá el Paso 3 (AE Pallets) antes de enviar Agregados AE.")
+
+            # ── 2 + 3. gspread (Reposición + Histórico) ──────────────────────
+            _col_order_rep = [
+                "Fecha", "Almacén", "Descripción", "Cancha",
+                "bxp", "Posiciones", "Stock", "En Cancha",
+                "Carga", "AE Puras", "Reposición Pall",
+            ]
+            if _df_repos_neg_send is None or _df_repos_neg_send.empty:
+                st.info("ℹ️ Completá el Paso 4 (Reposición Cancha) antes de enviar Reposición AE.")
+            else:
+                _matrix_rep = _build_matrix_repos_p3(_df_repos_neg_send, _col_order_rep)
+                try:
+                    import gspread as _gs_u
+                    from google.oauth2.service_account import Credentials as _Cred_u
+                    _scopes_u = ["https://www.googleapis.com/auth/spreadsheets"]
+                    _creds_u = _Cred_u.from_service_account_info(
+                        dict(st.secrets["gcp_service_account"]), scopes=_scopes_u)
+                    _client_u = _gs_u.authorize(_creds_u)
+                    _ss_u = _client_u.open_by_key(_SPREADSHEET_ID_REPOS)
+                    _ws_rep_u = _ws_hist_u = None
+                    for _w_it in _ss_u.worksheets():
+                        _wt = _w_it.title.strip().lower()
+                        if _wt == _SHEET_REPOSICION_NAME.strip().lower(): _ws_rep_u = _w_it
+                        if _wt == _SHEET_HISTORICO_NAME.strip().lower():  _ws_hist_u = _w_it
+                    if _ws_rep_u:
+                        with st.spinner("2/3 — Reposición AE…"):
+                            _lr = len(_ws_rep_u.col_values(1))
+                            if _lr >= 2: _ws_rep_u.batch_clear([f"A2:K{_lr}"])
+                            if _matrix_rep:
+                                _ws_rep_u.update(range_name=f"A2:K{1+len(_matrix_rep)}",
+                                                 values=_matrix_rep, value_input_option="USER_ENTERED")
+                        _ok_rep = True
+                    else:
+                        st.warning(f"⚠️ Hoja '{_SHEET_REPOSICION_NAME}' no encontrada")
+                    if _ws_hist_u and _matrix_rep:
+                        with st.spinner("3/3 — Append Histórico…"):
+                            _ws_hist_u.append_rows(_matrix_rep, value_input_option="USER_ENTERED",
+                                                   insert_data_option="INSERT_ROWS", table_range="A1")
+                        _ok_hist = True
+                    elif not _ws_hist_u:
+                        st.warning(f"⚠️ Hoja '{_SHEET_HISTORICO_NAME}' no encontrada")
+                except Exception as _esp_u:
+                    st.error(f"❌ Error gspread: {_esp_u}")
+                    with st.expander("Detalle"):
+                        import traceback as _tb_u
+                        st.code(_tb_u.format_exc())
+
+            _results = []
+            if _ok_ae:   _results.append("✅ Agregados AE")
+            if _ok_rep:  _results.append("✅ Reposición AE")
+            if _ok_hist: _results.append("✅ Histórico")
+            if _results:
+                st.success("  |  ".join(_results))
+                log_event("info", f"Envío Sheets unificado: {', '.join(_results)}")
 
 
 # ── HELPER: (fx) Picking — Paso 2 ─────────────────────────────────────────
@@ -8163,6 +8154,22 @@ def render_tab_validacion():
                 log_event("info", f"Informe Final del Día generado: {_fname_cd} ({len(_pdf_cd_bytes)//1024} KB)")
                 st.success(f"✅ Informe Final generado: {_fname_cd}")
 
+                # v5.2.6: auto-guardar snapshot del día en histórico validación
+                _val_snap = {
+                    "fecha":       _today.strftime("%d/%m/%Y"),
+                    "fecha_key":   str(_today),
+                    "camiones":    _n_cams if isinstance(_n_cams, int) else 0,
+                    "pdv":         _n_pdv if isinstance(_n_pdv, int) else 0,
+                    "bultos_up":   float(_blt_up) if _blt_up != "—" else 0.0,
+                    "hl":          float(_hlr) if _hlr != "—" else 0.0,
+                    "alertas":     len(_alertas_cd),
+                    "pdfs_gen":    len(_pdfs_gen),
+                    "fname_pdf":   _fname_cd,
+                }
+                if "val_hist_data" not in ss:
+                    ss["val_hist_data"] = {}
+                ss["val_hist_data"][str(_today)] = _val_snap
+
             except Exception as _ecd:
                 st.error(f"❌ Error generando informe: {_ecd}")
                 with st.expander("Detalle"):
@@ -8180,6 +8187,52 @@ def render_tab_validacion():
                 key="dl_cierre_dia",
                 type="primary",
             )
+
+    # ── HISTÓRICO VALIDACIÓN + LOG (v5.2.6) ────────────────────────────────
+    st.divider()
+    with st.expander("📚 Histórico Validación + Cierres", expanded=False):
+        ss = st.session_state
+        import pandas as pd
+
+        _val_hist = ss.get("val_hist_data", {})
+        st.markdown("#### 🗂️ Histórico de Cierres del Día")
+        st.caption(
+            "Cada vez que generás el **Informe Final PDF**, el resumen del día se guarda aquí automáticamente. "
+            "Los datos persisten durante la sesión."
+        )
+
+        if not _val_hist:
+            st.info("📋 Aún no hay cierres registrados. Generá el Informe Final PDF para guardar automáticamente.")
+        else:
+            _val_dias = sorted(_val_hist.keys())
+            _val_col_map = [
+                ("Fecha",     "fecha"),
+                ("Camiones",  "camiones"),
+                ("PDV",       "pdv"),
+                ("Bultos UP", "bultos_up"),
+                ("HL",        "hl"),
+                ("Alertas",   "alertas"),
+                ("PDFs gen.", "pdfs_gen"),
+                ("Archivo",   "fname_pdf"),
+            ]
+            _val_rows = []
+            for _vd in _val_dias:
+                _row_v = {}
+                for _lbl_v, _key_v in _val_col_map:
+                    _vv = _val_hist[_vd].get(_key_v, "")
+                    if isinstance(_vv, float):
+                        _vv = f"{_vv:.2f}"
+                    _row_v[_lbl_v] = str(_vv)
+                _val_rows.append(_row_v)
+
+            _df_val_hist = pd.DataFrame(_val_rows)
+            st.dataframe(_df_val_hist, use_container_width=True, hide_index=True)
+
+            _hv1, _hv2 = st.columns([4,1])
+            _hv1.metric("📅 Días cerrados", len(_val_dias))
+            if _hv2.button("🗑️ Limpiar", key="val_hist_clear", use_container_width=True):
+                ss["val_hist_data"] = {}
+                st.rerun()
 
 
 # ── MAIN ────────────────────────────────────────────────────────────────────
@@ -9483,49 +9536,43 @@ def _build_top10_clientes_anr(anr_bytes: bytes, n: int = 10) -> tuple:
 
     _debug.append(f"Hojas encontradas: {_all_sheets}")
 
-    # ── ESTRATEGIA 1: Hoja BASE — cliente por columna ────────────────────────
+    # ── ESTRATEGIA 1 NUEVA (v5.2.6): Hoja BASE — col Y (idx 24) = "CÓDIGO - NOMBRE" ──
+    # La col Y del ANR Chess trae "018987 - ALMEIRA GUSTAVO ALBERTO" directamente.
+    # Col W (idx 22) = código numérico, Col Y (idx 24) = descripción detallada cliente.
+    # Col K (idx 10) = BULTOS, Col O (idx 14) = HL.
     try:
         _df_base = pd.read_excel(_io2.BytesIO(anr_bytes), sheet_name="BASE", header=1)
-        _debug.append(f"BASE cols ({len(_df_base.columns)}): {list(_df_base.columns[:20])}")
-        _cli_col = None
-        for _c in _df_base.columns:
-            if any(k in str(_c).lower() for k in ["cliente", "razón", "razon", "nombre cliente"]):
-                _cli_col = _c
-                break
-        _blt_col = None
-        for _c in _df_base.columns:
-            if any(k in str(_c).lower() for k in ["bulto", "bult"]):
-                _blt_col = _c
-                break
-        _debug.append(f"BASE → col cliente: {_cli_col} | col bultos: {_blt_col}")
-        if _cli_col and _blt_col:
-            _grp = _df_base.copy()
-            _grp["_cli"] = _grp[_cli_col].astype(str).str.strip()
-            _grp["_blt"] = pd.to_numeric(_grp[_blt_col], errors="coerce").fillna(0)
-            _grp = _grp[_grp["_blt"] > 0]
-            _grp = _grp[~_grp["_cli"].isin(["nan", "-", "", "Total general", "(en blanco)"])]
-            _grp = _grp[~_grp["_cli"].str.lower().str.startswith("total")]
-            if not _grp.empty:
-                _agg = _grp.groupby("_cli")["_blt"].sum().reset_index()
-                _agg.columns = ["CLIENTE", "BULTOS"]
-                _agg["IMPORTE"] = 0.0
-                _agg["HL"] = 0.0
-                # intentar sumar HL si hay columna
-                for _hc in _df_base.columns:
-                    if "hl" == str(_hc).strip().lower() or "hectolitro" in str(_hc).lower():
-                        _grp2 = _df_base.copy()
-                        _grp2["_cli"] = _grp2[_cli_col].astype(str).str.strip()
-                        _grp2["_hl"]  = pd.to_numeric(_grp2[_hc], errors="coerce").fillna(0)
-                        _hl_agg = _grp2.groupby("_cli")["_hl"].sum()
-                        _agg["HL"] = _agg["CLIENTE"].map(_hl_agg).fillna(0)
-                        break
-                _agg = _agg.sort_values("BULTOS", ascending=False).reset_index(drop=True)
-                _debug.append(f"✅ BASE: {len(_agg)} clientes encontrados")
-                return _agg.head(n), _debug
+        _debug.append(f"BASE shape: {_df_base.shape} | cols: {list(_df_base.columns[:26])}")
+        if _df_base.shape[1] >= 25:
+            # Usar col Y (idx 24) = DESCRIPCIÓN DETALLADA CLIENTE ("018987 - ALMEIRA GUSTAVO ALBERTO")
+            _cli_det_col = _df_base.columns[24]   # Y
+            _blt_col_b   = _df_base.columns[10]   # K = BULTOS
+            _hl_col_b    = _df_base.columns[14]   # O = HL (unidad de medida)
+            _debug.append(f"Usando col Y={_cli_det_col}, K={_blt_col_b}, O={_hl_col_b}")
+
+            _sub_b = _df_base[[_cli_det_col, _blt_col_b, _hl_col_b]].copy()
+            _sub_b.columns = ["CLIENTE", "BULTOS", "HL"]
+            _sub_b["CLIENTE"] = _sub_b["CLIENTE"].astype(str).str.strip()
+            _sub_b["BULTOS"]  = pd.to_numeric(_sub_b["BULTOS"], errors="coerce").fillna(0)
+            _sub_b["HL"]      = pd.to_numeric(_sub_b["HL"],     errors="coerce").fillna(0)
+            # Filtrar filas inválidas
+            _sub_b = _sub_b[_sub_b["BULTOS"] > 0]
+            _sub_b = _sub_b[~_sub_b["CLIENTE"].isin(["nan", "-", "", "Total general", "(en blanco)"])]
+            _sub_b = _sub_b[~_sub_b["CLIENTE"].str.lower().str.startswith("total")]
+            if not _sub_b.empty:
+                _agg_b = _sub_b.groupby("CLIENTE", as_index=False).agg(
+                    BULTOS=("BULTOS", "sum"), HL=("HL", "sum")
+                )
+                _agg_b["IMPORTE"] = 0.0
+                _agg_b = _agg_b.sort_values("BULTOS", ascending=False).reset_index(drop=True)
+                _debug.append(f"✅ BASE col Y: {len(_agg_b)} clientes encontrados")
+                return _agg_b[["CLIENTE","BULTOS","IMPORTE","HL"]].head(n), _debug
             else:
-                _debug.append("BASE: col cliente/bultos existen pero sin datos válidos")
+                _debug.append("BASE col Y: sin filas válidas con BULTOS>0")
+        else:
+            _debug.append(f"BASE tiene menos de 25 cols ({_df_base.shape[1]}), skip estrategia Y")
     except Exception as _e1:
-        _debug.append(f"BASE falló: {_e1}")
+        _debug.append(f"BASE col Y falló: {_e1}")
 
     # ── ESTRATEGIA 2: Hoja CLIENTES por posición (cols A/B/E/H) ─────────────
     _sheet_cli = None
@@ -11038,7 +11085,7 @@ def _safe_float(v):
 
 def render_tab_tablero():
     import io
-    _tr_subtabs = st.tabs(["📊 Tablero del día", "📅 Histórico Mensual", "📆 Histórico Anual", "📍 Distancias & Costos"])
+    _tr_subtabs = st.tabs(["📊 Tablero del día", "📅 Histórico Mensual", "🗂️ Histórico Detalle", "📆 Histórico Anual", "📍 Distancias & Costos"])
 
     # ══════════════════════════════════════════════════════════════════
     # TAB 1 — TABLERO DEL DÍA
@@ -12088,9 +12135,9 @@ def render_tab_tablero():
 
                     # ── 5. GRÁFICO Bultos UP por Camión ────────────────────
                     if tabla_rows:
-                        # v5.2.5: fix definitivo gráfico — columnas R/S/T (18/19/20) en _ws2
+                        # v5.2.6: fix definitivo — datos en cols R/S/T (18/19/20) en _ws2
+                        # El gráfico se ancla en A{_row2} para quedar debajo de totales
                         _gc2 = 18  # col R
-                        # Escribir headers y datos en _ws2 (era bug: usaba 'ws' variable no definida)
                         _ws2.cell(1, _gc2,   "Camión")
                         _ws2.cell(1, _gc2+1, "Bultos UP")
                         _ws2.cell(1, _gc2+2, "PDV")
@@ -12099,37 +12146,40 @@ def render_tab_tablero():
                             _ws2.cell(1+_gi2, _gc2+1, round(_gr2b.get("Bultos UP", 0), 1))
                             _ws2.cell(1+_gi2, _gc2+2, _gr2b.get("PDV", 0))
                         _gd2 = 1 + len(tabla_rows)
-                        # Ocultar columnas auxiliares R/S/T
                         for _hc2 in ["R", "S", "T"]:
                             _ws2.column_dimensions[_hc2].hidden = True
                         # Gráfico combinado: barras Bultos UP + línea PDV
                         _bc2 = BarChart()
-                        _bc2.type = "col"
-                        _bc2.grouping = "clustered"
-                        _bc2.style = 2
+                        _bc2.type = "col"; _bc2.grouping = "clustered"; _bc2.style = 2
                         _bc2.title = f"Bultos UP por Camión / PDV — {fecha_dia.strftime('%d/%m/%Y')}"
                         _bc2.y_axis.title = "Bultos UP"
-                        _bc2.width = 22
-                        _bc2.height = 9
+                        _bc2.width = 24; _bc2.height = 12  # más grande para mejor visibilidad
                         _ref_bup2 = Reference(_ws2, min_col=_gc2+1, min_row=1, max_row=_gd2)
                         _ref_cat2 = Reference(_ws2, min_col=_gc2,   min_row=2, max_row=_gd2)
                         _bc2.add_data(_ref_bup2, titles_from_data=True)
                         _bc2.set_categories(_ref_cat2)
-                        _bc2.series[0].graphicalProperties.solidFill = _NX
+                        _bc2.series[0].graphicalProperties.solidFill = _NX  # barras azul navy
+                        # Serie etiquetas de datos en barras
+                        from openpyxl.chart.label import DataLabel
+                        _bc2.series[0].dLbls = DataLabel()
+                        _bc2.series[0].dLbls.showVal = True
+                        _bc2.series[0].dLbls.showSerName = False
+                        _bc2.series[0].dLbls.showCatName = False
                         _lc2 = LineChart()
                         _lc2.y_axis.axId = 200
                         _lc2.y_axis.title = "PDV"
                         _lc2.y_axis.crosses = "max"
                         _ref_pdv2 = Reference(_ws2, min_col=_gc2+2, min_row=1, max_row=_gd2)
                         _lc2.add_data(_ref_pdv2, titles_from_data=True)
-                        _lc2.series[0].graphicalProperties.line.solidFill = "00796B"
-                        _lc2.series[0].graphicalProperties.line.width = 20000
-                        _lc2.series[0].marker.symbol = "circle"
-                        _lc2.series[0].marker.size = 4
+                        _lc2.series[0].graphicalProperties.line.solidFill = "00796B"  # verde oscuro
+                        _lc2.series[0].graphicalProperties.line.width = 25000
+                        _lc2.series[0].marker.symbol = "square"
+                        _lc2.series[0].marker.size = 5
+                        _lc2.series[0].marker.graphicalProperties.solidFill = "00796B"
                         _bc2 += _lc2
                         _bc2.anchor = f"A{_row2}"
                         _ws2.add_chart(_bc2)
-                        _row2 += 18
+                        _row2 += 22  # más espacio para el gráfico más grande
 
                     # ── 6. ANÁLISIS OPERATIVO (gold) ────────────────────────
                     if tabla_rows:
@@ -12162,16 +12212,34 @@ def render_tab_tablero():
                             _ws2.row_dimensions[_row2].height=14; _row2+=1
                         _row2+=1
 
-                    # ── 7. DETALLE POR CAMIÓN ───────────────────────────────
+                    # ── 7. DETALLE POR CAMIÓN — 17 cols (A:Q) simétrico ──────
                     _M2(_row2,1,_row2,_N2)
                     _C2(_row2,1,"DETALLE POR CAMIÓN",bold=True,fg=_WH,sz=9,bg=_NX)
                     _ws2.row_dimensions[_row2].height=16; _row2+=1
-                    _col_h5=["N°","Chofer","PDV","Bultos","Blt.UP","Pal.AE","Patente","HL","Peso(kg)","Peso","Rech.","Venc.Lic.","Lic."]
-                    for _ci5b,_ch5 in enumerate(_col_h5,1):
-                        _c5=_ws2.cell(_row2,_ci5b,_ch5)
-                        _c5.font=_fo2(True,_WH,8); _c5.fill=_fx2(_NX)
-                        _c5.alignment=_al2("center","center",True); _c5.border=_bd2()
-                    _ws2.row_dimensions[_row2].height=22; _row2+=1
+                    # Cabecera: 13 campos → comprimidos a 17 cols con merge en Chofer
+                    # N°(1) | Chofer(2-4) | PDV(5) | Bultos(6) | Blt.UP(7) | Pal.AE(8) |
+                    # Patente(9-10) | HL(11) | Peso(kg)(12) | Peso✓(13) | Rech.(14) | Venc.Lic(15-16) | Lic.(17)
+                    _hdr_det = [
+                        (1,1,  "N°"),
+                        (2,4,  "Chofer"),
+                        (5,5,  "PDV"),
+                        (6,6,  "Bultos"),
+                        (7,7,  "Blt.UP"),
+                        (8,8,  "Pal.AE"),
+                        (9,10, "Patente"),
+                        (11,11,"HL"),
+                        (12,12,"Peso(kg)"),
+                        (13,13,"Peso"),
+                        (14,14,"Rech."),
+                        (15,16,"Venc.Lic."),
+                        (17,17,"Lic."),
+                    ]
+                    for _hcs,_hce,_hn in _hdr_det:
+                        _M2(_row2,_hcs,_row2,_hce)
+                        _c_h=_ws2.cell(_row2,_hcs,_hn)
+                        _c_h.font=_fo2(True,_WH,8); _c_h.fill=_fx2(_NX)
+                        _c_h.alignment=_al2("center","center",True); _c_h.border=_bd2()
+                    _ws2.row_dimensions[_row2].height=20; _row2+=1
 
                     if tabla_rows:
                         for _ri5,_rr5 in enumerate(tabla_rows):
@@ -12181,37 +12249,62 @@ def render_tab_tablero():
                             _venc5=_rr5.get("Venc. Lic.","—") or "—"
                             _pok5=_rr5.get("_peso_ok",None)
                             _ps5="OK" if _pok5 is True else ("EXCEDE" if _pok5 is False else "—")
-                            _vv5=[str(_rr5["N° Cam"]),_rr5.get("Chofer","—"),_rr5.get("PDV",0),
-                                  round(_rr5.get("Bultos",0),0),round(_rr5.get("Bultos UP",0),2),
-                                  round(_rr5.get("Paletas",0),0),_rr5.get("Patente","—"),
-                                  round(_rr5.get("HL",0),2),round(_rr5.get("Peso(kg)",0),0),
-                                  _ps5,round(_rr5.get("Rechazos",0),1),_venc5,_lic_xl2]
-                            for _ci6,_vv6 in enumerate(_vv5,1):
-                                _c6=_ws2.cell(_row2,_ci6,_vv6)
-                                _c6.font=_fo2(False,"000000",8)
-                                _c6.alignment=_al2("left" if _ci6==2 else "center","center")
-                                _c6.fill=_fx2(_bgr5); _c6.border=_bd2()
+                            # Mapeo de valores a columnas con merge
+                            _det_vals = [
+                                (1,1,  str(_rr5["N° Cam"]),              "center"),
+                                (2,4,  _rr5.get("Chofer","—"),           "left"),
+                                (5,5,  _rr5.get("PDV",0),               "center"),
+                                (6,6,  round(_rr5.get("Bultos",0),0),   "center"),
+                                (7,7,  round(_rr5.get("Bultos UP",0),2),"center"),
+                                (8,8,  round(_rr5.get("Paletas",0),0),  "center"),
+                                (9,10, _rr5.get("Patente","—"),          "center"),
+                                (11,11,round(_rr5.get("HL",0),2),       "center"),
+                                (12,12,round(_rr5.get("Peso(kg)",0),0), "center"),
+                                (13,13,_ps5,                             "center"),
+                                (14,14,round(_rr5.get("Rechazos",0),1), "center"),
+                                (15,16,_venc5,                           "center"),
+                                (17,17,_lic_xl2,                         "center"),
+                            ]
+                            for _dcs,_dce,_dv,_dhal in _det_vals:
+                                if _dcs != _dce: _M2(_row2,_dcs,_row2,_dce)
+                                _cd=_ws2.cell(_row2,_dcs,_dv)
+                                _cd.font=_fo2(False,"000000",8)
+                                _cd.alignment=_al2(_dhal,"center")
+                                _cd.fill=_fx2(_bgr5); _cd.border=_bd2()
+                            # Semáforo peso
                             if _pok5 is False:
-                                _ws2.cell(_row2,10).fill=_fx2(_RX); _ws2.cell(_row2,10).font=_fo2(True,_WH,8)
-                            elif _pok5 is True:
-                                _ws2.cell(_row2,10).fill=_fx2(_GR); _ws2.cell(_row2,10).font=_fo2(True,_WH,8)
-                            if _lic_xl2=="BLOQUEADO":
                                 _ws2.cell(_row2,13).fill=_fx2(_RX); _ws2.cell(_row2,13).font=_fo2(True,_WH,8)
-                                for _ci_bl2 in range(1,13): _ws2.cell(_row2,_ci_bl2).fill=_fx2("FFE8E8")
-                            elif _lic_xl2=="OK":
+                            elif _pok5 is True:
                                 _ws2.cell(_row2,13).fill=_fx2(_GR); _ws2.cell(_row2,13).font=_fo2(True,_WH,8)
+                            # Semáforo licencia
+                            if _lic_xl2=="BLOQUEADO":
+                                _ws2.cell(_row2,17).fill=_fx2(_RX); _ws2.cell(_row2,17).font=_fo2(True,_WH,8)
+                                for _ci_bl2 in range(1,17): _ws2.cell(_row2,_ci_bl2).fill=_fx2("FFE8E8")
+                            elif _lic_xl2=="OK":
+                                _ws2.cell(_row2,17).fill=_fx2(_GR); _ws2.cell(_row2,17).font=_fo2(True,_WH,8)
                             _ws2.row_dimensions[_row2].height=14; _row2+=1
 
-                        _tot5=["TOTAL","",sum(r.get("PDV",0) for r in tabla_rows),
-                               round(sum(r.get("Bultos",0) for r in tabla_rows),0),
-                               round(sum(r.get("Bultos UP",0) for r in tabla_rows),2),
-                               round(sum(r.get("Paletas",0) for r in tabla_rows),0),
-                               "","",round(sum(r.get("Peso(kg)",0) for r in tabla_rows),0),
-                               "","","",""]
-                        for _ci7,_tv7 in enumerate(_tot5,1):
-                            _ct=_ws2.cell(_row2,_ci7,_tv7)
+                        # Fila TOTAL
+                        _tot5_vals = [
+                            (1,1,  "TOTAL",                                                        "center"),
+                            (2,4,  "",                                                              "center"),
+                            (5,5,  sum(r.get("PDV",0) for r in tabla_rows),                       "center"),
+                            (6,6,  round(sum(r.get("Bultos",0) for r in tabla_rows),0),           "center"),
+                            (7,7,  round(sum(r.get("Bultos UP",0) for r in tabla_rows),2),        "center"),
+                            (8,8,  round(sum(r.get("Paletas",0) for r in tabla_rows),0),          "center"),
+                            (9,10, "",                                                              "center"),
+                            (11,11,"",                                                              "center"),
+                            (12,12,round(sum(r.get("Peso(kg)",0) for r in tabla_rows),0),         "center"),
+                            (13,13,"",                                                              "center"),
+                            (14,14,"",                                                              "center"),
+                            (15,16,"",                                                              "center"),
+                            (17,17,"",                                                              "center"),
+                        ]
+                        for _tcs,_tce,_tv,_thal in _tot5_vals:
+                            if _tcs != _tce: _M2(_row2,_tcs,_row2,_tce)
+                            _ct=_ws2.cell(_row2,_tcs,_tv)
                             _ct.font=_fo2(True,_WH,9); _ct.fill=_fx2(_NX)
-                            _ct.alignment=_al2("center","center"); _ct.border=_bd2()
+                            _ct.alignment=_al2(_thal,"center"); _ct.border=_bd2()
                         _ws2.row_dimensions[_row2].height=16; _row2+=2
 
                     # ── 8. ALERTAS licencias vencidas ───────────────────────
@@ -12270,6 +12363,47 @@ def render_tab_tablero():
                     ss["tr_xl2_bytes"] = _buf_xl2.getvalue()
                     ss["tr_xl2_fname"] = f"{fecha_dia.strftime('%d-%m-%Y')}_Tablero-Ruteador_BKCC.xlsx"
                     st.success("✅ Excel Tablero generado — diseño espejo del PDF + hoja KPIs")
+
+                    # v5.2.6: auto-guardar datos del día en histórico tablero (por camión)
+                    _fecha_hist_key = str(fecha_dia)
+                    if "tr_hist_detalle" not in ss:
+                        ss["tr_hist_detalle"] = {}
+                    _hist_dia = {
+                        "fecha":       fecha_dia.strftime("%d/%m/%Y"),
+                        "fecha_key":   _fecha_hist_key,
+                        "camiones":    camiones_en_reparto,
+                        "pdv":         total_pedidos,
+                        "bultos_up":   round(total_up, 2),
+                        "paletas":     round(paletas_total, 2),
+                        "hl":          round(total_hl, 2),
+                        "peso_kg":     round(total_peso_kg, 0),
+                        "drop_size":   round(drop_size, 2),
+                        "eficiencia":  round(eficiencia, 4),
+                        "util_veh":    round(util_vehiculos, 4),
+                        "fz_pct":      round(fuera_zona_pct, 4),
+                        "ocup_bodega": round(ocup_bodega, 2),
+                        "prod_ruteo":  round(prod_ruteo, 4),
+                        "causa_demora": causa_demora or "",
+                        "detalle_cams": [
+                            {
+                                "cam": r.get("N° Cam",""),
+                                "chofer": r.get("Chofer",""),
+                                "pdv": r.get("PDV",0),
+                                "bultos": r.get("Bultos",0),
+                                "blt_up": round(r.get("Bultos UP",0),2),
+                                "paletas": round(r.get("Paletas",0),0),
+                                "hl": round(r.get("HL",0),2),
+                                "peso_kg": round(r.get("Peso(kg)",0),0),
+                                "rechazos": round(r.get("Rechazos",0),1),
+                                "patente": r.get("Patente",""),
+                                "venc_lic": r.get("Venc. Lic.",""),
+                                "lic_ok": r.get("Lic.",""),
+                            }
+                            for r in tabla_rows
+                        ],
+                    }
+                    ss["tr_hist_detalle"][_fecha_hist_key] = _hist_dia
+                    log_event("info", f"Histórico tablero: guardado día {fecha_dia.strftime('%d/%m/%Y')} ({len(tabla_rows)} camiones)")
 
                     # v4.99: auto-guardar KPIs del día en Sheets de persistencia
                 except Exception as _xe2:
@@ -12683,6 +12817,135 @@ def render_tab_tablero():
                     file_name=ss.get("tr_pdf_fname","tablero.pdf"),
                     mime="application/pdf", key="tr_dl_pdf",
                     use_container_width=True)
+
+    # ══════════════════════════════════════════════════════════════════
+    # TAB 2 — HISTÓRICO DETALLE (v5.2.6) — datos por camión por día
+    # ══════════════════════════════════════════════════════════════════
+    with _tr_subtabs[2]:
+        import pandas as pd
+        ss = st.session_state
+        st.markdown("## 🗂️ Histórico Detalle Tablero")
+        st.caption(
+            "Cada vez que generás el **Excel Tablero**, los datos del día se guardan automáticamente aquí. "
+            "Scroll horizontal para navegar entre fechas. Los datos persisten durante la sesión."
+        )
+
+        _hist_det = ss.get("tr_hist_detalle", {})
+
+        if not _hist_det:
+            st.info("📋 Aún no hay datos. Generá el Excel Tablero del día para guardar automáticamente.")
+        else:
+            # Ordenar días cronológicamente
+            _dias_ord = sorted(_hist_det.keys())
+            _n_dias = len(_dias_ord)
+
+            _hd1, _hd2, _hd3 = st.columns([2,2,1])
+            _hd1.metric("📅 Días registrados", _n_dias)
+            _hd2.metric("🚛 Último día", _hist_det[_dias_ord[-1]]["fecha"] if _dias_ord else "—")
+            if _hd3.button("🗑️ Limpiar histórico detalle", key="tr_hist_det_clear", use_container_width=True):
+                ss["tr_hist_detalle"] = {}
+                st.rerun()
+
+            st.divider()
+
+            # ── TABLA KPIs DIARIOS (una columna por día, scroll horizontal) ──
+            st.markdown("### 📊 KPIs Diarios — Vista comparativa")
+            _kpi_labels = [
+                ("Fecha",        "fecha"),
+                ("Camiones",     "camiones"),
+                ("PDV",          "pdv"),
+                ("Bultos UP",    "bultos_up"),
+                ("Paletas",      "paletas"),
+                ("HL",           "hl"),
+                ("Peso (kg)",    "peso_kg"),
+                ("Drop Size",    "drop_size"),
+                ("Eficiencia",   "eficiencia"),
+                ("Util. Veh.",   "util_veh"),
+                ("FZ%",          "fz_pct"),
+                ("Ocup. Bodega", "ocup_bodega"),
+                ("Prod. Ruteo",  "prod_ruteo"),
+                ("Causa demora", "causa_demora"),
+            ]
+            _kpi_rows = {}
+            for _lbl, _key in _kpi_labels:
+                _kpi_rows[_lbl] = []
+                for _dk in _dias_ord:
+                    _v = _hist_det[_dk].get(_key, "")
+                    if isinstance(_v, float):
+                        if _key in ("eficiencia","util_veh","fz_pct","prod_ruteo"):
+                            _v = f"{_v:.1%}"
+                        elif _key == "drop_size":
+                            _v = f"{_v:.2f}"
+                        elif _key == "peso_kg":
+                            _v = f"{int(_v):,}"
+                        else:
+                            _v = f"{_v:.2f}"
+                    _kpi_rows[_lbl].append(str(_v))
+
+            _fechas_labels = [_hist_det[_dk]["fecha"] for _dk in _dias_ord]
+            _df_kpi_hist = pd.DataFrame(_kpi_rows, index=_fechas_labels).T
+            _df_kpi_hist.index.name = "KPI"
+            st.dataframe(_df_kpi_hist, use_container_width=True)
+
+            st.divider()
+
+            # ── TABLA DETALLE POR CAMIÓN (selector de día) ──
+            st.markdown("### 🚛 Detalle por Camión")
+            _dia_sel = st.selectbox(
+                "Seleccioná el día:",
+                options=_dias_ord,
+                format_func=lambda d: _hist_det[d]["fecha"],
+                index=len(_dias_ord)-1,
+                key="tr_hist_det_dia_sel"
+            )
+            if _dia_sel and _dia_sel in _hist_det:
+                _det_cams = _hist_det[_dia_sel].get("detalle_cams", [])
+                if _det_cams:
+                    _df_det = pd.DataFrame(_det_cams)
+                    _df_det.rename(columns={
+                        "cam":"N° Cam","chofer":"Chofer","pdv":"PDV",
+                        "bultos":"Bultos","blt_up":"Blt.UP","paletas":"Paletas",
+                        "hl":"HL","peso_kg":"Peso(kg)","rechazos":"Rechazos",
+                        "patente":"Patente","venc_lic":"Venc.Lic.","lic_ok":"Lic."
+                    }, inplace=True)
+                    st.dataframe(_df_det, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Sin detalle por camión para este día.")
+
+            st.divider()
+
+            # Exportar histórico detalle como Excel
+            if st.button("⬇️ Exportar histórico detalle (Excel)", key="tr_hist_det_export", use_container_width=True):
+                try:
+                    import io as _io_hd
+                    from openpyxl import Workbook as _WBhd
+                    from openpyxl.styles import Font as _Fhd, PatternFill as _PFhd, Alignment as _Ahd
+                    _wb_hd = _WBhd()
+                    _ws_hd = _wb_hd.active; _ws_hd.title = "KPIs Histórico"
+                    # Hoja 1: KPIs
+                    _ws_hd.cell(1,1,"KPI")
+                    for _ci_hd, _dk_hd in enumerate(_dias_ord, 2):
+                        _ws_hd.cell(1,_ci_hd, _hist_det[_dk_hd]["fecha"])
+                    for _ri_hd,(_lbl_hd,_key_hd) in enumerate(_kpi_labels,2):
+                        _ws_hd.cell(_ri_hd,1,_lbl_hd)
+                        for _ci_hd,_dk_hd in enumerate(_dias_ord,2):
+                            _ws_hd.cell(_ri_hd,_ci_hd, _hist_det[_dk_hd].get(_key_hd,""))
+                    # Hoja 2+: una por día con detalle cams
+                    for _dk_hd in _dias_ord:
+                        _ws_d = _wb_hd.create_sheet(title=_hist_det[_dk_hd]["fecha"].replace("/","-"))
+                        _cams_hd = _hist_det[_dk_hd].get("detalle_cams",[])
+                        if _cams_hd:
+                            _hdrs_hd = list(_cams_hd[0].keys())
+                            for _ci_hd,_h in enumerate(_hdrs_hd,1): _ws_d.cell(1,_ci_hd,_h)
+                            for _ri_hd,_r in enumerate(_cams_hd,2):
+                                for _ci_hd,_h in enumerate(_hdrs_hd,1): _ws_d.cell(_ri_hd,_ci_hd,_r.get(_h,""))
+                    _buf_hd = _io_hd.BytesIO(); _wb_hd.save(_buf_hd); _buf_hd.seek(0)
+                    st.download_button("⬇️ Descargar Excel histórico detalle", data=_buf_hd.getvalue(),
+                        file_name=f"Historico_Tablero_BKCC_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="tr_hist_det_dl")
+                except Exception as _ehd:
+                    st.error(f"❌ Error exportando: {_ehd}")
 
     # ══════════════════════════════════════════════════════════════════
     # TAB 2 — HISTÓRICO MENSUAL
@@ -13296,9 +13559,9 @@ def render_tab_tablero():
                     mime="application/pdf", key="hist_dl_pdf", use_container_width=True)
 
     # ══════════════════════════════════════════════════════════════════
-    # TAB 3 — HISTÓRICO ANUAL
+    # TAB 4 — HISTÓRICO ANUAL
     # ══════════════════════════════════════════════════════════════════
-    with _tr_subtabs[2]:
+    with _tr_subtabs[3]:
         import pandas as pd
         import io
         ss = st.session_state
@@ -13527,9 +13790,9 @@ def render_tab_tablero():
                         key="hist_anual_dl_xl", use_container_width=True)
 
     # ══════════════════════════════════════════════════════════════════
-    # TAB 4 — DISTANCIAS & COSTOS (v4.99)
+    # TAB 5 — DISTANCIAS & COSTOS (v4.99)
     # ══════════════════════════════════════════════════════════════════
-    with _tr_subtabs[3]:
+    with _tr_subtabs[4]:
         import datetime as _dt_dist
         ss = st.session_state
 
