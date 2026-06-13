@@ -2699,29 +2699,47 @@ def render_tab_archivos():
                     _mt_warn_detail = ""
                     if _mt_str:
                         from datetime import datetime as _dt_fr
-                        for _fmt in ["%d/%m/%Y %H:%M:%S", "%m/%d/%Y %H:%M:%S",
-                                     "%Y-%m-%d %H:%M:%S", "%d/%m/%Y", "%Y-%m-%d"]:
+                        # Intentar todos los formatos posibles incluyendo d/m/yyyy sin cero
+                        _fmts = [
+                            "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y",
+                            "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M", "%m/%d/%Y",
+                            "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d",
+                            "%-d/%-m/%Y %H:%M:%S",  # Linux sin ceros
+                        ]
+                        _parsed_mt = None
+                        for _fmt in _fmts:
                             try:
-                                _mt_dt = _dt_fr.strptime(_mt_str, _fmt)
-                                if _mt_dt.date() == _dt_fr.today().date():
-                                    _mt_ok = True
-                                else:
-                                    _mt_warn_detail = (
-                                        f"MarcaTemporal es **{_mt_str}** "
-                                        f"pero hoy es {_dt_fr.today().strftime('%d/%m/%Y')}. "
-                                        "El Sheets puede no estar actualizado con los datos de hoy."
-                                    )
+                                _parsed_mt = _dt_fr.strptime(_mt_str, _fmt)
                                 break
                             except ValueError:
                                 continue
-                        if not _mt_ok and not _mt_warn_detail:
+                        # Fallback: extraer fecha con regex si strptime no matcheó
+                        if _parsed_mt is None:
+                            import re as _re_mt
+                            _m = _re_mt.search(r'(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})', _mt_str)
+                            if _m:
+                                try:
+                                    _d, _mo, _y = int(_m.group(1)), int(_m.group(2)), int(_m.group(3))
+                                    _parsed_mt = _dt_fr(_y, _mo, _d)
+                                except Exception:
+                                    pass
+                        if _parsed_mt is not None:
+                            if _parsed_mt.date() == _dt_fr.today().date():
+                                _mt_ok = True
+                            else:
+                                _mt_warn_detail = (
+                                    f"MarcaTemporal **{_mt_str}** — "
+                                    f"no es de hoy ({_dt_fr.today().strftime('%d/%m/%Y')}). "
+                                    "El Sheets puede no estar actualizado."
+                                )
+                        else:
                             _mt_warn_detail = (
                                 f"No se pudo interpretar la MarcaTemporal: **'{_mt_str}'**. "
                                 "Verificá la celda AJ2 de la hoja Frescura."
                             )
                     else:
                         _mt_warn_detail = (
-                            "La celda AJ2 (MarcaTemporal) está vacía. "
+                            "Celda AJ2 (MarcaTemporal) vacía. "
                             "No se puede confirmar que los datos sean del día."
                         )
 
@@ -2845,16 +2863,14 @@ def render_tab_archivos():
                     st.session_state["df_ddm_dict"] = {}
                 st.success(f"✅ {fr_file_fb.name[:18]} · {st.session_state.get('fr_n_skus',0)} SKUs")
         elif st.session_state.get("t1_fr"):
-            # Todo OK — mostrar info compacta
             if _fr_mt_ok:
-                st.success(
-                    f"✅ Sheets · {_fr_n_skus} SKUs DDM"
-                    + (f" · {_fr_mt_str}" if _fr_mt_str else "")
-                )
+                st.success(f"✅ Sheets · {_fr_n_skus} SKUs")
+                if _fr_mt_str:
+                    st.caption(f"🕐 Actualizado: {_fr_mt_str}")
             elif _fr_mt_warn:
-                st.warning(f"⚠️ Sheets cargado — {_fr_mt_warn}")
+                st.warning(f"⚠️ {_fr_mt_warn}")
             else:
-                st.info(f"📎 Sheets · {_fr_n_skus} SKUs DDM")
+                st.info(f"📎 Sheets · {_fr_n_skus} SKUs")
         else:
             st.warning("Sin datos de Frescura")
 
