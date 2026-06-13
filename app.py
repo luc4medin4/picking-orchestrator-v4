@@ -12084,9 +12084,13 @@ def render_tab_tablero():
                     _LGX = "F2F2F2"; _BL2 = "2E5FA3"; _WH  = "FFFFFF"
 
                     # Anchos de columna A:Q (17 cols)
+                    # v5.2.8: anchos ajustados para espejo del PDF
+                    # A=N°(3.5) B-D=Chofer(16 merge) E=PDV(5) F=Bultos(7)
+                    # G=Blt.UP(7) H=Pal.(5) I-J=Patente(9 merge)
+                    # K=HL(6) L=Peso(7) M=Peso✓(5) N=Rech(5) O-P=Venc(10 merge) Q=Lic(5)
                     for _cl2, _cw2 in zip(
                         "ABCDEFGHIJKLMNOPQ",
-                        [5,14,6,9,9,7,9,7,9,8,7,12,8,5,5,5,5]
+                        [3.5,5,5,6,5,7,7,5,5,4,6,7,5,5,5,5,5]
                     ):
                         _ws2.column_dimensions[_cl2].width = _cw2
 
@@ -12208,41 +12212,60 @@ def render_tab_tablero():
                         _wb2.active = _ws2  # volver a la hoja principal
                         _gd2 = 1 + len(tabla_rows)
                         # Gráfico combinado: barras Bultos UP + línea PDV
+                        # v5.2.8 GRAFICO: estilo espejo del PDF
+                        # Ancho = 17 cols (mismo que el tablero), alto = 14 filas
+                        # Etiquetas de valor encima de barras, eje PDV a la derecha
                         _bc2 = BarChart()
-                        _bc2.type = "col"; _bc2.grouping = "clustered"; _bc2.style = 2
-                        _bc2.title = f"Bultos UP por Camión / PDV — {fecha_dia.strftime('%d/%m/%Y')}"
-                        _bc2.y_axis.title = "Bultos UP"
-                        _bc2.width = 24; _bc2.height = 12  # más grande para mejor visibilidad
+                        _bc2.type = "col"
+                        _bc2.grouping = "clustered"
+                        _bc2.style = 2
+                        _bc2.title = (
+                            f"TABLERO RUTEADOR — {fecha_dia.strftime('%d/%m/%Y')}"
+                            f"  |  Bultos UP por Camión / PDV"
+                        )
+                        _bc2.y_axis.title = None       # sin titulo eje Y (igual al PDF)
+                        _bc2.x_axis.title = None       # sin titulo eje X
+                        _bc2.legend.position = "t"     # leyenda arriba
+                        # Dimensiones: ancho 17 cols * ~0.64cm/col = ~10.88cm -> usar cm
+                        # openpyxl usa EMU internamente; width/height en cm
+                        _bc2.width  = 23.5  # cm  (cubre las 17 cols del tablero)
+                        _bc2.height = 11.0  # cm  (~17 filas de 0.65 cm/fila)
                         _ref_bup2 = Reference(_ws_grf, min_col=2, min_row=1, max_row=_gd2)
                         _ref_cat2 = Reference(_ws_grf, min_col=1, min_row=2, max_row=_gd2)
                         _bc2.add_data(_ref_bup2, titles_from_data=True)
                         _bc2.set_categories(_ref_cat2)
+                        # Barras: azul navy con etiquetas encima
                         _bc2.series[0].graphicalProperties.solidFill = _NX
-                        # Serie etiquetas de datos en barras
-                        # FIX v5.2.7 BUG 4: DataLabel puede fallar segun version openpyxl
+                        _bc2.series[0].graphicalProperties.ln.solidFgClr = _NX
                         try:
                             from openpyxl.chart.label import DataLabel
-                            _bc2.series[0].dLbls = DataLabel()
-                            _bc2.series[0].dLbls.showVal = True
-                            _bc2.series[0].dLbls.showSerName = False
-                            _bc2.series[0].dLbls.showCatName = False
+                            _dls = DataLabel()
+                            _dls.showVal      = True
+                            _dls.showSerName  = False
+                            _dls.showCatName  = False
+                            _dls.showLegendKey= False
+                            _dls.position     = "outEnd"  # encima de la barra
+                            _bc2.series[0].dLbls = _dls
                         except Exception:
-                            pass  # DataLabel no disponible en esta version de openpyxl
+                            pass
+                        # Linea PDV: verde oscuro, eje Y secundario a la derecha
                         _lc2 = LineChart()
-                        _lc2.y_axis.axId = 200
-                        _lc2.y_axis.title = "PDV"
-                        _lc2.y_axis.crosses = "max"
+                        _lc2.y_axis.axId     = 200
+                        _lc2.y_axis.title    = "PDV"
+                        _lc2.y_axis.crosses  = "max"      # eje PDV a la derecha
                         _ref_pdv2 = Reference(_ws_grf, min_col=3, min_row=1, max_row=_gd2)
                         _lc2.add_data(_ref_pdv2, titles_from_data=True)
-                        _lc2.series[0].graphicalProperties.line.solidFill = "00796B"  # verde oscuro
-                        _lc2.series[0].graphicalProperties.line.width = 25000
-                        _lc2.series[0].marker.symbol = "square"
-                        _lc2.series[0].marker.size = 5
+                        _lc2.series[0].graphicalProperties.line.solidFill  = "00796B"
+                        _lc2.series[0].graphicalProperties.line.width      = 20000  # 2pt
+                        _lc2.series[0].marker.symbol                        = "square"
+                        _lc2.series[0].marker.size                          = 4
                         _lc2.series[0].marker.graphicalProperties.solidFill = "00796B"
+                        _lc2.series[0].marker.graphicalProperties.ln.solidFgClr = "00796B"
                         _bc2 += _lc2
+                        # Anclar el grafico desde A{_row2}, ancho de tabla completo
                         _bc2.anchor = f"A{_row2}"
                         _ws2.add_chart(_bc2)
-                        _row2 += 22  # más espacio para el gráfico más grande
+                        _row2 += 18  # filas que ocupa el grafico (~11cm / 0.63cm por fila)
 
                     # ── 6. ANÁLISIS OPERATIVO (gold) ────────────────────────
                     if tabla_rows:
@@ -12282,19 +12305,21 @@ def render_tab_tablero():
                     # Cabecera: 13 campos → comprimidos a 17 cols con merge en Chofer
                     # N°(1) | Chofer(2-4) | PDV(5) | Bultos(6) | Blt.UP(7) | Pal.AE(8) |
                     # Patente(9-10) | HL(11) | Peso(kg)(12) | Peso✓(13) | Rech.(14) | Venc.Lic(15-16) | Lic.(17)
+                    # v5.2.8: tabla espejo del PDF (sin col "Bultos", Chofer mas ancho)
+                    # N°(1)|Chofer(2-5)|PDV(6)|Blt.UP(7)|Pal.(8)|Patente(9-10)|
+                    # HL(11)|Peso(kg)(12)|Peso✓(13)|Rech.(14)|Venc.Lic.(15-16)|Lic.(17)
                     _hdr_det = [
                         (1,1,  "N°"),
-                        (2,4,  "Chofer"),
-                        (5,5,  "PDV"),
-                        (6,6,  "Bultos"),
+                        (2,5,  "Chofer"),
+                        (6,6,  "PDV"),
                         (7,7,  "Blt.UP"),
-                        (8,8,  "Pal.AE"),
+                        (8,8,  "Pal."),
                         (9,10, "Patente"),
                         (11,11,"HL"),
-                        (12,12,"Peso(kg)"),
-                        (13,13,"Peso"),
+                        (12,12,"Peso kg"),
+                        (13,13,"Peso✓"),
                         (14,14,"Rech."),
-                        (15,16,"Venc.Lic."),
+                        (15,16,"Venc. Lic."),
                         (17,17,"Lic."),
                     ]
                     for _hcs,_hce,_hn in _hdr_det:
@@ -12313,11 +12338,11 @@ def render_tab_tablero():
                             _pok5=_rr5.get("_peso_ok",None)
                             _ps5="OK" if _pok5 is True else ("EXCEDE" if _pok5 is False else "—")
                             # Mapeo de valores a columnas con merge
+                            # v5.2.8: columnas espejo PDF (sin Bultos, Chofer col 2-5)
                             _det_vals = [
                                 (1,1,  str(_rr5["N° Cam"]),              "center"),
-                                (2,4,  _rr5.get("Chofer","—"),           "left"),
-                                (5,5,  _rr5.get("PDV",0),               "center"),
-                                (6,6,  round(_rr5.get("Bultos",0),0),   "center"),
+                                (2,5,  _rr5.get("Chofer","—"),           "left"),
+                                (6,6,  _rr5.get("PDV",0),               "center"),
                                 (7,7,  round(_rr5.get("Bultos UP",0),2),"center"),
                                 (8,8,  round(_rr5.get("Paletas",0),0),  "center"),
                                 (9,10, _rr5.get("Patente","—"),          "center"),
@@ -12325,7 +12350,7 @@ def render_tab_tablero():
                                 (12,12,round(_rr5.get("Peso(kg)",0),0), "center"),
                                 (13,13,_ps5,                             "center"),
                                 (14,14,round(_rr5.get("Rechazos",0),1), "center"),
-                                (15,16,_venc5,                           "center"),
+                                (15,16,str(_venc5),                      "center"),
                                 (17,17,_lic_xl2,                         "center"),
                             ]
                             for _dcs,_dce,_dv,_dhal in _det_vals:
@@ -12342,17 +12367,17 @@ def render_tab_tablero():
                             # Semáforo licencia
                             if _lic_xl2=="BLOQUEADO":
                                 _ws2.cell(_row2,17).fill=_fx2(_RX); _ws2.cell(_row2,17).font=_fo2(True,_WH,8)
-                                for _ci_bl2 in range(1,17): _ws2.cell(_row2,_ci_bl2).fill=_fx2("FFE8E8")
+                                for _ci_bl2 in range(1,18): _ws2.cell(_row2,_ci_bl2).fill=_fx2("FFE8E8")
                             elif _lic_xl2=="OK":
                                 _ws2.cell(_row2,17).fill=_fx2(_GR); _ws2.cell(_row2,17).font=_fo2(True,_WH,8)
                             _ws2.row_dimensions[_row2].height=14; _row2+=1
 
                         # Fila TOTAL
                         _tot5_vals = [
+                            # v5.2.8: fila total sin col Bultos (igual al PDF)
                             (1,1,  "TOTAL",                                                        "center"),
-                            (2,4,  "",                                                              "center"),
-                            (5,5,  sum(r.get("PDV",0) for r in tabla_rows),                       "center"),
-                            (6,6,  round(sum(r.get("Bultos",0) for r in tabla_rows),0),           "center"),
+                            (2,5,  "",                                                              "center"),
+                            (6,6,  sum(r.get("PDV",0) for r in tabla_rows),                       "center"),
                             (7,7,  round(sum(r.get("Bultos UP",0) for r in tabla_rows),2),        "center"),
                             (8,8,  round(sum(r.get("Paletas",0) for r in tabla_rows),0),          "center"),
                             (9,10, "",                                                              "center"),
