@@ -513,7 +513,7 @@ except ImportError:
     _PYPDF_AVAILABLE = False
 
 # ─── VERSIÓN Y CONFIG GLOBAL ────────────────────────────────────────────────
-APP_VERSION = "5.2.7"
+APP_VERSION = "5.2.8"
 # ── CHANGELOG v4.99.0 ─────────────────────────────────────────────────────
 # 1. Secciones reordenadas: Camiones T2 → antes de Proyección Picking.
 #    Boletas → antes de Validación + Log. Paso 1 en T2.
@@ -1392,9 +1392,11 @@ def load_frescura(file):
     ddm['bxp'] = pd.to_numeric(ddm['bxp'], errors='coerce')
     ddm = ddm.drop_duplicates(subset=['sku'], keep='last')
 
-    # Si no hay hoja API, construir api desde DDM columna CAN/CANCHA
+    # FIX v5.2.8 BUG 1: construir api desde DDM. Lee col A(num) y col K(det) del DDM.
     if not _has_api:
-        col_can = find_col(ddm_full, 'CANCHA', 'CAN')
+        col_can     = find_col(ddm_full, 'CANCHA', 'CAN')
+        col_alm_num = find_col(ddm_full, 'ALMACÉN', 'ALMACEN', 'NUM ALM', 'N ALM', 'ALM')
+        col_alm_det = find_col(ddm_full, 'ALMACÉN DET', 'ALMACEN DET', 'ALM DET', 'ALM_DET', 'DETALLE ALM')
         if col_can:
             _api_from_ddm = ddm_full[[col_ddm_sku, col_can]].copy()
             _api_from_ddm.columns = ['sku', 'cancha_raw']
@@ -1402,8 +1404,17 @@ def load_frescura(file):
             _api_from_ddm = _api_from_ddm.dropna(subset=['sku'])
             _api_from_ddm['sku'] = _api_from_ddm['sku'].astype(int)
             _api_from_ddm['cancha'] = _api_from_ddm['cancha_raw'].apply(normalize_cancha)
-            _api_from_ddm['alm_id'] = None
-            _api_from_ddm['alm_det'] = 'Sheets'
+            # alm_id desde col A del DDM (num almacen)
+            if col_alm_num:
+                _raw_alm = pd.to_numeric(ddm_full[col_alm_num], errors='coerce').reindex(_api_from_ddm.index)
+                _api_from_ddm['alm_id'] = _raw_alm.apply(lambda v: int(v) if pd.notna(v) else None)
+            else:
+                _api_from_ddm['alm_id'] = None
+            # alm_det desde col K del DDM (detalle almacen)
+            if col_alm_det:
+                _api_from_ddm['alm_det'] = ddm_full[col_alm_det].reindex(_api_from_ddm.index).fillna('').astype(str)
+            else:
+                _api_from_ddm['alm_det'] = _api_from_ddm['cancha_raw'].apply(lambda v: str(v).strip() if v else '')
             api = _api_from_ddm[['sku', 'cancha', 'alm_id', 'alm_det']].drop_duplicates(subset=['sku'], keep='last')
 
     # ── HOJA Frescura ───────────────────────────────────────────────────────
@@ -2708,9 +2719,12 @@ def render_tab_archivos():
                 _ihl_d  = _ci_d(["VALOR HL"]);                                         _ihl_d  = _ihl_d if _ihl_d >= 0 else 15
                 _ikg_d  = _ci_d(["PESO KG"]);                                          _ikg_d  = _ikg_d if _ikg_d >= 0 else 16
                 _ican_d = _ci_d(["CAN","CANCHA"]);                                     _ican_d = _ican_d if _ican_d>= 0 else 14
-                # FIX v5.2.7 BUG 1: leer numero y detalle de almacen del DDM Sheets
-                _ialm_d     = _ci_d(["NUM ALM","NUM_ALM","ALMACEN","N ALM","ALM","NALM"])
-                _ialm_det_d = _ci_d(["ALM DET","ALM_DET","DET ALM","DETALLE ALM","ALMACEN DET","ALM NOMBRE"])
+                # FIX v5.2.8 BUG 1: col A=num almacen (idx 0), col K=det almacen (idx 10)
+                # Confirmado por imagen DDM Sheets: A=ALMACEN, K=ALMACEN DET
+                _ialm_d     = _ci_d(["ALMACÉN","ALMACEN","NUM ALM","N ALM","ALM","NALM"])  # col A (idx 0)
+                _ialm_d     = _ialm_d if _ialm_d >= 0 else 0                           # fallback: col A
+                _ialm_det_d = _ci_d(["ALMACÉN DET","ALMACEN DET","ALM DET","ALM_DET","DET ALM","DETALLE ALM","ALM NOMBRE"])  # col K (idx 10)
+                _ialm_det_d = _ialm_det_d if _ialm_det_d >= 0 else 10                  # fallback: col K
                 for _row_d in _ddm_data[1:]:
                     try:
                         _s_d = _row_d[_ic_d] if len(_row_d) > _ic_d else None
@@ -7058,13 +7072,12 @@ def _push_fx_picking_to_sheets(
     client = gspread.authorize(creds)
     sheet  = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
-    # Fecha a buscar en col A
-    if hasattr(fecha, "strftime"):
-        fecha_dt = fecha
-    elif hasattr(fecha, "year"):
-        fecha_dt = fecha
-    else:
-        fecha_dt = _dt.date.fromisoformat(str(fecha))
+    # FIX v5.2.8 BUG 3: la fila a buscar en (fx) Picking es SIEMPRE HOY.
+    # pdata["fecha"] es la fecha de ENTREGA (manana o siguiente habil),
+    # pero el picking ocurre hoy y la hoja (fx) Picking tiene la fila de hoy.
+    fecha_dt = _dt.date.today()
+    # (el parametro "fecha" se conserva por firma pero no se usa para busqueda)
+    _ = fecha  # silenciar linter
 
     # ── Normalizar fecha del día al formato "d-mmm" que usa el sheet ──────
     # gspread devuelve las celdas con fórmulas =Picking!Axxx como strings
@@ -12179,30 +12192,32 @@ def render_tab_tablero():
 
                     # ── 5. GRÁFICO Bultos UP por Camión ────────────────────
                     if tabla_rows:
-                        # v5.2.6: fix definitivo — datos en cols R/S/T (18/19/20) en _ws2
-                        # El gráfico se ancla en A{_row2} para quedar debajo de totales
-                        _gc2 = 18  # col R
-                        _ws2.cell(1, _gc2,   "Camión")
-                        _ws2.cell(1, _gc2+1, "Bultos UP")
-                        _ws2.cell(1, _gc2+2, "PDV")
+                        # FIX v5.2.8 GRAFICO: hoja auxiliar oculta para datos del grafico.
+                        # openpyxl no puede graficar desde columnas hidden de la misma hoja.
+                        # Solucion: crear hoja '_Grafico' con state='hidden', referenciarla.
+                        _ws_grf = _wb2.create_sheet(title='_Grafico')
+                        _wb2.active = _ws_grf  # necesario para que openpyxl la registre
+                        _ws_grf.sheet_state = 'hidden'
+                        _ws_grf.cell(1, 1, 'Camión')
+                        _ws_grf.cell(1, 2, 'Bultos UP')
+                        _ws_grf.cell(1, 3, 'PDV')
                         for _gi2, _gr2b in enumerate(tabla_rows, 1):
-                            _ws2.cell(1+_gi2, _gc2,   str(_gr2b["N° Cam"]))
-                            _ws2.cell(1+_gi2, _gc2+1, round(_gr2b.get("Bultos UP", 0), 1))
-                            _ws2.cell(1+_gi2, _gc2+2, _gr2b.get("PDV", 0))
+                            _ws_grf.cell(1+_gi2, 1, str(_gr2b['N° Cam']))
+                            _ws_grf.cell(1+_gi2, 2, float(round(_gr2b.get('Bultos UP', 0), 1)))
+                            _ws_grf.cell(1+_gi2, 3, int(_gr2b.get('PDV', 0)))
+                        _wb2.active = _ws2  # volver a la hoja principal
                         _gd2 = 1 + len(tabla_rows)
-                        for _hc2 in ["R", "S", "T"]:
-                            _ws2.column_dimensions[_hc2].hidden = True
                         # Gráfico combinado: barras Bultos UP + línea PDV
                         _bc2 = BarChart()
                         _bc2.type = "col"; _bc2.grouping = "clustered"; _bc2.style = 2
                         _bc2.title = f"Bultos UP por Camión / PDV — {fecha_dia.strftime('%d/%m/%Y')}"
                         _bc2.y_axis.title = "Bultos UP"
                         _bc2.width = 24; _bc2.height = 12  # más grande para mejor visibilidad
-                        _ref_bup2 = Reference(_ws2, min_col=_gc2+1, min_row=1, max_row=_gd2)
-                        _ref_cat2 = Reference(_ws2, min_col=_gc2,   min_row=2, max_row=_gd2)
+                        _ref_bup2 = Reference(_ws_grf, min_col=2, min_row=1, max_row=_gd2)
+                        _ref_cat2 = Reference(_ws_grf, min_col=1, min_row=2, max_row=_gd2)
                         _bc2.add_data(_ref_bup2, titles_from_data=True)
                         _bc2.set_categories(_ref_cat2)
-                        _bc2.series[0].graphicalProperties.solidFill = _NX  # barras azul navy
+                        _bc2.series[0].graphicalProperties.solidFill = _NX
                         # Serie etiquetas de datos en barras
                         # FIX v5.2.7 BUG 4: DataLabel puede fallar segun version openpyxl
                         try:
@@ -12217,7 +12232,7 @@ def render_tab_tablero():
                         _lc2.y_axis.axId = 200
                         _lc2.y_axis.title = "PDV"
                         _lc2.y_axis.crosses = "max"
-                        _ref_pdv2 = Reference(_ws2, min_col=_gc2+2, min_row=1, max_row=_gd2)
+                        _ref_pdv2 = Reference(_ws_grf, min_col=3, min_row=1, max_row=_gd2)
                         _lc2.add_data(_ref_pdv2, titles_from_data=True)
                         _lc2.series[0].graphicalProperties.line.solidFill = "00796B"  # verde oscuro
                         _lc2.series[0].graphicalProperties.line.width = 25000
@@ -12379,43 +12394,11 @@ def render_tab_tablero():
                     ).font = _fo2(False,"888888",7)
                     _ws2.row_dimensions[_row2].height=12
 
-                    # ── HOJA 2: KPIs ──────────────────────────────────────
-                    _ws_kpi5 = _wb2.create_sheet(title="KPIs")
-                    # FIX v5.2.7 BUG 4: sanitizar tipos numpy/pandas para openpyxl
-                    def _n(v, dec=2):
-                        """Convierte a float Python nativo, seguro para openpyxl."""
-                        try: return round(float(v), dec)
-                        except: return 0.0
-                    _kpi5_data = [
-                        ("Fecha",              fecha_dia.strftime("%d/%m/%Y")),
-                        ("Camiones reparto",   int(camiones_en_reparto)),
-                        ("Total PDV",          int(total_pedidos)),
-                        ("Bultos UP",          _n(total_up, 2)),
-                        ("Paletas",            _n(paletas_total, 2)),
-                        ("HL",                 _n(total_hl, 2)),
-                        ("Peso(kg)",           _n(total_peso_kg, 0)),
-                        ("Drop Size",          _n(drop_size, 2)),
-                        ("Eficiencia",         _n(eficiencia, 4)),
-                        ("Util. Vehículos",    _n(util_vehiculos, 4)),
-                        ("Fuera de zona (%)",  _n(fuera_zona_pct, 4)),
-                        ("Ocup. bodega",       _n(ocup_bodega, 2)),
-                        ("Prod. Ruteo",        _n(prod_ruteo, 4)),
-                        ("Causa demora",       str(causa_demora) if causa_demora else ""),
-                    ]
-                    for _ki5, (_kn5, _kv5) in enumerate(_kpi5_data, 2):
-                        _ws_kpi5.cell(1,1,"KPI").font  = Font(bold=True,color="FFFFFF",size=9,name="Arial")
-                        _ws_kpi5.cell(1,1).fill = _fx2(_NX)
-                        _ws_kpi5.cell(1,2,"Valor").font = Font(bold=True,color="FFFFFF",size=9,name="Arial")
-                        _ws_kpi5.cell(1,2).fill = _fx2(_NX)
-                        _ws_kpi5.cell(_ki5,1,_kn5).font = Font(size=9,name="Arial")
-                        _ws_kpi5.cell(_ki5,2,_kv5).font = Font(size=9,name="Arial")
-                    _ws_kpi5.column_dimensions["A"].width=26
-                    _ws_kpi5.column_dimensions["B"].width=22
-
+                                        # FIX v5.2.8: hoja KPIs eliminada a pedido del usuario.
                     _buf_xl2 = io.BytesIO(); _wb2.save(_buf_xl2); _buf_xl2.seek(0)
                     ss["tr_xl2_bytes"] = _buf_xl2.getvalue()
                     ss["tr_xl2_fname"] = f"{fecha_dia.strftime('%d-%m-%Y')}_Tablero-Ruteador_BKCC.xlsx"
-                    st.success("✅ Excel Tablero generado — diseño espejo del PDF + hoja KPIs")
+                    st.success("✅ Excel Tablero generado — diseño espejo del PDF con gráfico")
 
                     # v5.2.6: auto-guardar datos del día en histórico tablero (por camión)
                     _fecha_hist_key = str(fecha_dia)
