@@ -2584,6 +2584,199 @@ def render_tab_archivos():
         unsafe_allow_html=True,
     )
 
+    # ── FRESCURA: carga automática desde Sheets (antes de las columnas) ───────
+    FRESCURA_SHEET_ID = "1e2KDr4vRKxVBEE9RAXXnhqBupFkrPqaf4ixdnd4mm2c"
+    _hoy_str      = datetime.now().strftime("%Y%m%d")
+    _fr_cache_key = f"frescura_auto_{_hoy_str}"
+
+    if _fr_cache_key not in st.session_state:
+        with st.spinner("📡 Sincronizando Frescura desde Sheets…"):
+            try:
+                import gspread as _gs_fr
+                from google.oauth2.service_account import Credentials as _Cred_fr
+                import openpyxl as _opx_fr
+
+                _creds_fr = _Cred_fr.from_service_account_info(
+                    dict(st.secrets["gcp_service_account"]),
+                    scopes=["https://www.googleapis.com/auth/spreadsheets",
+                            "https://www.googleapis.com/auth/drive"],
+                )
+                _ss_fr = _gs_fr.authorize(_creds_fr).open_by_key(FRESCURA_SHEET_ID)
+
+                _ws_frescura = _ws_ddm = None
+                _hojas_fr = [_w.title for _w in _ss_fr.worksheets()]
+                for _w in _ss_fr.worksheets():
+                    _wt = _w.title.strip().lower()
+                    if _wt == "frescura": _ws_frescura = _w
+                    elif _wt == "ddm":   _ws_ddm = _w
+
+                if _ws_frescura is None:
+                    raise ValueError(f"Hoja 'Frescura' no encontrada. Disponibles: {_hojas_fr}")
+                if _ws_ddm is None:
+                    raise ValueError(f"Hoja 'DDM' no encontrada. Disponibles: {_hojas_fr}")
+
+                _fr_data  = _ws_frescura.get_all_values()
+                _ddm_data = _ws_ddm.get_all_values()
+
+                if not _fr_data or len(_fr_data) < 2:
+                    raise ValueError(f"Hoja 'Frescura' sin datos (filas: {len(_fr_data)}).")
+                if not _ddm_data or len(_ddm_data) < 2:
+                    raise ValueError(f"Hoja 'DDM' sin datos (filas: {len(_ddm_data)}).")
+
+                # MarcaTemporal — col AJ (idx 35), fila 2 (idx 1)
+                _mt_str = ""
+                try:
+                    if len(_fr_data[1]) > 35:
+                        _mt_str = str(_fr_data[1][35]).strip()
+                except Exception:
+                    pass
+
+                # Parsear y validar fecha
+                _mt_ok, _mt_warn_detail = False, ""
+                if _mt_str:
+                    import re as _re_mt
+                    _parsed_mt = None
+                    for _fmt in ["%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y",
+                                 "%m/%d/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]:
+                        try:
+                            _parsed_mt = datetime.strptime(_mt_str, _fmt); break
+                        except ValueError:
+                            pass
+                    if _parsed_mt is None:
+                        _m = _re_mt.search(r'(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})', _mt_str)
+                        if _m:
+                            try: _parsed_mt = datetime(int(_m.group(3)), int(_m.group(2)), int(_m.group(1)))
+                            except Exception: pass
+                    if _parsed_mt:
+                        if _parsed_mt.date() == datetime.today().date():
+                            _mt_ok = True
+                        else:
+                            _mt_warn_detail = (
+                                f"MarcaTemporal {_mt_str} — "
+                                f"no es de hoy ({datetime.today().strftime('%d/%m/%Y')}). "
+                                "El Sheets puede no estar actualizado."
+                            )
+                    else:
+                        _mt_warn_detail = f"No se pudo interpretar la MarcaTemporal: '{_mt_str}'."
+                else:
+                    _mt_warn_detail = "Celda AJ2 (MarcaTemporal) vacía — no se puede confirmar que los datos sean de hoy."
+
+                # Construir Excel en memoria
+                _wb_new = _opx_fr.Workbook(); _wb_new.remove(_wb_new.active)
+                for _sn, _sd in [("Frescura", _fr_data), ("DDM", _ddm_data)]:
+                    _ws_n = _wb_new.create_sheet(title=_sn)
+                    for _sr in _sd: _ws_n.append(_sr)
+                _buf_fr = io.BytesIO(); _wb_new.save(_buf_fr); _buf_fr.seek(0)
+                _buf_fr.name = "Frescura_Sheets.xlsx"
+
+                # Parsear DDM dict
+                _ddm_d = {}
+                _hdr_d = [str(v).strip().upper() if v else "" for v in _ddm_data[0]]
+                def _ci_d(ns):
+                    for n in ns:
+                        if n in _hdr_d: return _hdr_d.index(n)
+                    return -1
+                _ic_d   = _ci_d(["ARTÍCULO","ARTICULO"]);                              _ic_d   = max(_ic_d, 0) if _ic_d  >= 0 else 2
+                _ig_d   = _ci_d(["BULTOS X PALLET"]);                                  _ig_d   = _ig_d  if _ig_d  >= 0 else 6
+                _iun_d  = _ci_d(["UNIDADES","UN BULTO","UN/BULTO","UN X BULTO"]);      _iun_d  = _iun_d if _iun_d >= 0 else 13
+                _ihl_d  = _ci_d(["VALOR HL"]);                                         _ihl_d  = _ihl_d if _ihl_d >= 0 else 15
+                _ikg_d  = _ci_d(["PESO KG"]);                                          _ikg_d  = _ikg_d if _ikg_d >= 0 else 16
+                _ican_d = _ci_d(["CAN","CANCHA"]);                                     _ican_d = _ican_d if _ican_d>= 0 else 14
+                for _row_d in _ddm_data[1:]:
+                    try:
+                        _s_d = _row_d[_ic_d] if len(_row_d) > _ic_d else None
+                        if not _s_d: continue
+                        _ddm_d[int(float(str(_s_d)))] = {
+                            "bxp":      float(_row_d[_ig_d])   if len(_row_d)>_ig_d   and _row_d[_ig_d]   else 50.0,
+                            "hl_unit":  float(_row_d[_ihl_d])  if len(_row_d)>_ihl_d  and _row_d[_ihl_d]  else 0.0,
+                            "kg_unit":  float(_row_d[_ikg_d])  if len(_row_d)>_ikg_d  and _row_d[_ikg_d]  else 0.0,
+                            "un_bulto": float(_row_d[_iun_d])  if len(_row_d)>_iun_d  and _row_d[_iun_d]  else 0.0,
+                            "can":      str(_row_d[_ican_d]).strip() if len(_row_d)>_ican_d and _row_d[_ican_d] else "",
+                        }
+                    except Exception: pass
+
+                st.session_state.update({
+                    "t1_fr": _buf_fr, "t4_fr": _buf_fr, "tc_fr": _buf_fr,
+                    "df_ddm_dict": _ddm_d,
+                    "fr_marca_temporal": _mt_str,
+                    "fr_mt_ok":  _mt_ok,
+                    "fr_mt_warn": _mt_warn_detail,
+                    "fr_fuente": "sheets",
+                    "fr_n_skus": len(_ddm_d),
+                    "fr_error":  "",
+                    _fr_cache_key: True,
+                })
+
+            except Exception as _ef_auto:
+                import traceback as _tb_fr
+                st.session_state["fr_error"]    = str(_ef_auto)
+                st.session_state["fr_error_tb"] = _tb_fr.format_exc()
+                st.session_state[_fr_cache_key] = True   # no reintentar en esta sesión
+
+    # ── Banner de estado Frescura (ancho completo, ANTES de las cards) ────────
+    _fr_error   = st.session_state.get("fr_error", "")
+    _fr_mt_ok   = st.session_state.get("fr_mt_ok", False)
+    _fr_mt_warn = st.session_state.get("fr_mt_warn", "")
+    _fr_mt_str  = st.session_state.get("fr_marca_temporal", "")
+    _fr_n_skus  = st.session_state.get("fr_n_skus", 0)
+
+    if _fr_error:
+        st.error(f"❌ **Frescura** — {_fr_error}")
+        with st.expander("🔍 Detalle del error"):
+            st.code(st.session_state.get("fr_error_tb", ""))
+        # Uploader fallback solo cuando hay error
+        _fr_fb = st.file_uploader("📂 Frescura 3.0.xlsx (fallback)", type=["xlsx"], key="arch_fr_fb")
+        if _fr_fb:
+            st.session_state.update({"t1_fr": _fr_fb, "t4_fr": _fr_fb, "tc_fr": _fr_fb,
+                                     "fr_fuente": "upload", "fr_error": ""})
+            try:
+                import openpyxl as _ox_fb
+                _wb_fb = _ox_fb.load_workbook(_fr_fb, read_only=True, data_only=True)
+                _fr_fb.seek(0)
+                _rows_fb = list(_wb_fb["DDM"].iter_rows(min_row=1, values_only=True))
+                _hdr_fb  = [str(v).strip().upper() if v else "" for v in _rows_fb[0]] if _rows_fb else []
+                def _ci_fb(ns):
+                    for n in ns:
+                        if n in _hdr_fb: return _hdr_fb.index(n)
+                    return -1
+                _ic_fb  = _ci_fb(["ARTÍCULO","ARTICULO"]);                          _ic_fb  = _ic_fb  if _ic_fb  >= 0 else 2
+                _ig_fb  = _ci_fb(["BULTOS X PALLET"]);                              _ig_fb  = _ig_fb  if _ig_fb  >= 0 else 6
+                _iun_fb = _ci_fb(["UNIDADES","UN BULTO","UN/BULTO","UN X BULTO"]); _iun_fb = _iun_fb if _iun_fb >= 0 else 13
+                _ihl_fb = _ci_fb(["VALOR HL"]);                                     _ihl_fb = _ihl_fb if _ihl_fb >= 0 else 15
+                _ikg_fb = _ci_fb(["PESO KG"]);                                      _ikg_fb = _ikg_fb if _ikg_fb >= 0 else 16
+                _ican_fb= _ci_fb(["CAN","CANCHA"]);                                 _ican_fb= _ican_fb if _ican_fb>= 0 else 14
+                _ddm_fb = {}
+                for _r_fb in _rows_fb[1:]:
+                    try:
+                        _s_fb = _r_fb[_ic_fb]
+                        if not _s_fb: continue
+                        _ddm_fb[int(float(str(_s_fb)))] = {
+                            "bxp":      float(_r_fb[_ig_fb])  if len(_r_fb)>_ig_fb  and _r_fb[_ig_fb]  else 50.0,
+                            "hl_unit":  float(_r_fb[_ihl_fb]) if len(_r_fb)>_ihl_fb and _r_fb[_ihl_fb] else 0.0,
+                            "kg_unit":  float(_r_fb[_ikg_fb]) if len(_r_fb)>_ikg_fb and _r_fb[_ikg_fb] else 0.0,
+                            "un_bulto": float(_r_fb[_iun_fb]) if len(_r_fb)>_iun_fb and _r_fb[_iun_fb] else 0.0,
+                            "can":      str(_r_fb[_ican_fb]).strip() if len(_r_fb)>_ican_fb and _r_fb[_ican_fb] else "",
+                        }
+                    except Exception: pass
+                st.session_state["df_ddm_dict"] = _ddm_fb
+                st.session_state["fr_n_skus"]   = len(_ddm_fb)
+                _wb_fb.close()
+            except Exception: st.session_state["df_ddm_dict"] = {}
+            st.success(f"✅ Frescura fallback cargada · {st.session_state.get('fr_n_skus',0)} SKUs")
+    elif _fr_mt_ok:
+        st.markdown(
+            f"<div style='background:#1a3a1a;border:1px solid #2d6a2d;border-radius:6px;"
+            f"padding:6px 14px;font-size:13px;color:#7ec87e;margin-bottom:8px'>"
+            f"✅ &nbsp;<b>Frescura</b> — Sheets sincronizado · {_fr_n_skus} SKUs"
+            + (f" &nbsp;·&nbsp; 🕐 {_fr_mt_str}" if _fr_mt_str else "")
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+    elif _fr_mt_warn:
+        st.warning(f"⚠️ **Frescura** — {_fr_mt_warn}")
+    elif st.session_state.get("t1_fr"):
+        st.info(f"📎 Frescura (Sheets) · {_fr_n_skus} SKUs")
+
     col_a, col_b, col_c, col_d, col_e, col_f = st.columns(6)
 
     # ── COL A — CAR ────────────────────────────────────────────────────────
@@ -2615,7 +2808,7 @@ def render_tab_archivos():
         else:
             st.warning("Sin archivo")
 
-    # ── COL B — FRESCURA (carga automática desde Sheets) ──────────────────
+    # ── COL B — FRESCURA (solo card visual — estado arriba en banner) ─────
     with col_b:
         st.markdown(
             "<div class='arch-card'>"
@@ -2625,254 +2818,6 @@ def render_tab_archivos():
             "</div>",
             unsafe_allow_html=True,
         )
-
-        FRESCURA_SHEET_ID = "1e2KDr4vRKxVBEE9RAXXnhqBupFkrPqaf4ixdnd4mm2c"
-
-        # ── Carga automática: se ejecuta siempre que no haya datos del día ──
-        # Clave de caché: "frescura_auto_YYYYMMDD" — se recarga una vez por día
-        _hoy_str = datetime.now().strftime("%Y%m%d")
-        _fr_cache_key = f"frescura_auto_{_hoy_str}"
-        _fr_needs_load = _fr_cache_key not in st.session_state
-
-        if _fr_needs_load:
-            with st.spinner("📡 Sincronizando Frescura desde Sheets…"):
-                try:
-                    import gspread as _gs_fr
-                    from google.oauth2.service_account import Credentials as _Cred_fr
-                    import openpyxl as _opx_fr
-
-                    _scopes_fr = [
-                        "https://www.googleapis.com/auth/spreadsheets",
-                        "https://www.googleapis.com/auth/drive",
-                    ]
-                    _creds_fr = _Cred_fr.from_service_account_info(
-                        dict(st.secrets["gcp_service_account"]), scopes=_scopes_fr
-                    )
-                    _client_fr = _gs_fr.authorize(_creds_fr)
-                    _ss_fr = _client_fr.open_by_key(FRESCURA_SHEET_ID)
-
-                    # Detectar hojas (case-insensitive)
-                    _ws_frescura = _ws_ddm = None
-                    _hojas_encontradas = [_w.title for _w in _ss_fr.worksheets()]
-                    for _w in _ss_fr.worksheets():
-                        _wt = _w.title.strip().lower()
-                        if _wt == "frescura":
-                            _ws_frescura = _w
-                        elif _wt == "ddm":
-                            _ws_ddm = _w
-
-                    if _ws_frescura is None:
-                        raise ValueError(
-                            f"Hoja 'Frescura' no encontrada. "
-                            f"Hojas disponibles: {_hojas_encontradas}"
-                        )
-                    if _ws_ddm is None:
-                        raise ValueError(
-                            f"Hoja 'DDM' no encontrada. "
-                            f"Hojas disponibles: {_hojas_encontradas}"
-                        )
-
-                    # Leer datos
-                    _fr_data = _ws_frescura.get_all_values()
-                    if not _fr_data or len(_fr_data) < 2:
-                        raise ValueError(
-                            f"Hoja 'Frescura' sin datos (filas leídas: {len(_fr_data)})."
-                        )
-                    _ddm_data = _ws_ddm.get_all_values()
-                    if not _ddm_data or len(_ddm_data) < 2:
-                        raise ValueError(
-                            f"Hoja 'DDM' sin datos (filas leídas: {len(_ddm_data)})."
-                        )
-
-                    # MarcaTemporal: col AJ = índice 35 (0-based), fila 2 (índice 1)
-                    _mt_str = ""
-                    _mt_col_idx = 35   # AJ
-                    _mt_row_idx = 1    # fila 2
-                    try:
-                        if len(_fr_data[_mt_row_idx]) > _mt_col_idx:
-                            _mt_str = str(_fr_data[_mt_row_idx][_mt_col_idx]).strip()
-                    except Exception:
-                        pass
-
-                    # Validar MarcaTemporal vs hoy
-                    _mt_ok = False
-                    _mt_warn_detail = ""
-                    if _mt_str:
-                        from datetime import datetime as _dt_fr
-                        # Intentar todos los formatos posibles incluyendo d/m/yyyy sin cero
-                        _fmts = [
-                            "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y",
-                            "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M", "%m/%d/%Y",
-                            "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d",
-                            "%-d/%-m/%Y %H:%M:%S",  # Linux sin ceros
-                        ]
-                        _parsed_mt = None
-                        for _fmt in _fmts:
-                            try:
-                                _parsed_mt = _dt_fr.strptime(_mt_str, _fmt)
-                                break
-                            except ValueError:
-                                continue
-                        # Fallback: extraer fecha con regex si strptime no matcheó
-                        if _parsed_mt is None:
-                            import re as _re_mt
-                            _m = _re_mt.search(r'(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})', _mt_str)
-                            if _m:
-                                try:
-                                    _d, _mo, _y = int(_m.group(1)), int(_m.group(2)), int(_m.group(3))
-                                    _parsed_mt = _dt_fr(_y, _mo, _d)
-                                except Exception:
-                                    pass
-                        if _parsed_mt is not None:
-                            if _parsed_mt.date() == _dt_fr.today().date():
-                                _mt_ok = True
-                            else:
-                                _mt_warn_detail = (
-                                    f"MarcaTemporal **{_mt_str}** — "
-                                    f"no es de hoy ({_dt_fr.today().strftime('%d/%m/%Y')}). "
-                                    "El Sheets puede no estar actualizado."
-                                )
-                        else:
-                            _mt_warn_detail = (
-                                f"No se pudo interpretar la MarcaTemporal: **'{_mt_str}'**. "
-                                "Verificá la celda AJ2 de la hoja Frescura."
-                            )
-                    else:
-                        _mt_warn_detail = (
-                            "Celda AJ2 (MarcaTemporal) vacía. "
-                            "No se puede confirmar que los datos sean del día."
-                        )
-
-                    # Construir Excel en memoria (Frescura + DDM)
-                    _wb_new = _opx_fr.Workbook()
-                    _wb_new.remove(_wb_new.active)
-                    for _sname, _sdata in [("Frescura", _fr_data), ("DDM", _ddm_data)]:
-                        _ws_new = _wb_new.create_sheet(title=_sname)
-                        for _srow in _sdata:
-                            _ws_new.append(_srow)
-                    _buf_fr = io.BytesIO()
-                    _wb_new.save(_buf_fr)
-                    _buf_fr.seek(0)
-                    _buf_fr.name = "Frescura_Sheets.xlsx"
-
-                    # Parsear DDM dict
-                    _ddm_dict_auto = {}
-                    _hdr_d = [str(v).strip().upper() if v else "" for v in _ddm_data[0]]
-                    def _ci_d(names):
-                        for n in names:
-                            if n in _hdr_d: return _hdr_d.index(n)
-                        return -1
-                    _ic_d   = _ci_d(["ARTÍCULO", "ARTICULO"]); _ic_d   = _ic_d   if _ic_d   >= 0 else 2
-                    _ig_d   = _ci_d(["BULTOS X PALLET"]);      _ig_d   = _ig_d   if _ig_d   >= 0 else 6
-                    _iun_d  = _ci_d(["UNIDADES","UN BULTO","UN/BULTO","UN X BULTO"]); _iun_d = _iun_d if _iun_d >= 0 else 13
-                    _ihl_d  = _ci_d(["VALOR HL"]);              _ihl_d  = _ihl_d  if _ihl_d  >= 0 else 15
-                    _ikg_d  = _ci_d(["PESO KG"]);               _ikg_d  = _ikg_d  if _ikg_d  >= 0 else 16
-                    _ican_d = _ci_d(["CAN","CANCHA"]);          _ican_d = _ican_d if _ican_d >= 0 else 14
-                    for _row_d in _ddm_data[1:]:
-                        try:
-                            _s_d = _row_d[_ic_d] if len(_row_d) > _ic_d else None
-                            if not _s_d: continue
-                            _sid_d = int(float(str(_s_d)))
-                            _ddm_dict_auto[_sid_d] = {
-                                "bxp":      float(_row_d[_ig_d])   if len(_row_d) > _ig_d   and _row_d[_ig_d]   else 50.0,
-                                "hl_unit":  float(_row_d[_ihl_d])  if len(_row_d) > _ihl_d  and _row_d[_ihl_d]  else 0.0,
-                                "kg_unit":  float(_row_d[_ikg_d])  if len(_row_d) > _ikg_d  and _row_d[_ikg_d]  else 0.0,
-                                "un_bulto": float(_row_d[_iun_d])  if len(_row_d) > _iun_d  and _row_d[_iun_d]  else 0.0,
-                                "can":      str(_row_d[_ican_d]).strip() if len(_row_d) > _ican_d and _row_d[_ican_d] else "",
-                            }
-                        except Exception:
-                            pass
-
-                    # Guardar en session_state
-                    st.session_state["t1_fr"] = _buf_fr
-                    st.session_state["t4_fr"] = _buf_fr
-                    st.session_state["tc_fr"] = _buf_fr
-                    st.session_state["df_ddm_dict"]       = _ddm_dict_auto
-                    st.session_state["fr_marca_temporal"] = _mt_str
-                    st.session_state["fr_mt_ok"]          = _mt_ok
-                    st.session_state["fr_mt_warn"]        = _mt_warn_detail
-                    st.session_state["fr_fuente"]         = "sheets"
-                    st.session_state["fr_n_skus"]         = len(_ddm_dict_auto)
-                    st.session_state[_fr_cache_key]       = True   # marcar cargado hoy
-
-                except Exception as _ef_auto:
-                    # Guardar el error para mostrarlo abajo (no bloquea el render)
-                    st.session_state["fr_error"] = str(_ef_auto)
-                    import traceback as _tb_fr
-                    st.session_state["fr_error_tb"] = _tb_fr.format_exc()
-
-        # ── Mostrar estado de Frescura ────────────────────────────────────────
-        _fr_error = st.session_state.get("fr_error", "")
-        _fr_mt_ok   = st.session_state.get("fr_mt_ok", False)
-        _fr_mt_warn = st.session_state.get("fr_mt_warn", "")
-        _fr_mt_str  = st.session_state.get("fr_marca_temporal", "")
-        _fr_n_skus  = st.session_state.get("fr_n_skus", 0)
-
-        if _fr_error:
-            st.error(f"❌ Frescura no cargada — {_fr_error}")
-            with st.expander("🔍 Detalle del error"):
-                st.code(st.session_state.get("fr_error_tb", ""))
-            # Ofrecer fallback manual solo si hay error
-            fr_file_fb = st.file_uploader(
-                "Subir Frescura 3.0.xlsx (fallback)",
-                type=["xlsx"], key="arch_fr", accept_multiple_files=False,
-            )
-            if fr_file_fb:
-                st.session_state["t1_fr"] = fr_file_fb
-                st.session_state["t4_fr"] = fr_file_fb
-                st.session_state["tc_fr"] = fr_file_fb
-                st.session_state["fr_fuente"] = "upload"
-                st.session_state["fr_error"]  = ""
-                try:
-                    import openpyxl as _ox_fb
-                    _wb_fb = _ox_fb.load_workbook(fr_file_fb, read_only=True, data_only=True)
-                    fr_file_fb.seek(0)
-                    _ws_fb = _wb_fb["DDM"]
-                    _rows_fb = list(_ws_fb.iter_rows(min_row=1, values_only=True))
-                    if _rows_fb:
-                        _hdr_fb = [str(v).strip().upper() if v else "" for v in _rows_fb[0]]
-                        def _ci_fb(ns):
-                            for n in ns:
-                                if n in _hdr_fb: return _hdr_fb.index(n)
-                            return -1
-                        _ic_fb  = _ci_fb(["ARTÍCULO","ARTICULO"]); _ic_fb  = _ic_fb  if _ic_fb  >= 0 else 2
-                        _ig_fb  = _ci_fb(["BULTOS X PALLET"]);     _ig_fb  = _ig_fb  if _ig_fb  >= 0 else 6
-                        _iun_fb = _ci_fb(["UNIDADES","UN BULTO","UN/BULTO","UN X BULTO"]); _iun_fb = _iun_fb if _iun_fb >= 0 else 13
-                        _ihl_fb = _ci_fb(["VALOR HL"]);             _ihl_fb = _ihl_fb if _ihl_fb >= 0 else 15
-                        _ikg_fb = _ci_fb(["PESO KG"]);              _ikg_fb = _ikg_fb if _ikg_fb >= 0 else 16
-                        _ican_fb= _ci_fb(["CAN","CANCHA"]);         _ican_fb= _ican_fb if _ican_fb>= 0 else 14
-                        _ddm_fb = {}
-                        for _r_fb in _rows_fb[1:]:
-                            try:
-                                _s_fb = _r_fb[_ic_fb]
-                                if not _s_fb: continue
-                                _sid_fb = int(float(str(_s_fb)))
-                                _ddm_fb[_sid_fb] = {
-                                    "bxp":      float(_r_fb[_ig_fb])  if len(_r_fb)>_ig_fb  and _r_fb[_ig_fb]  else 50.0,
-                                    "hl_unit":  float(_r_fb[_ihl_fb]) if len(_r_fb)>_ihl_fb and _r_fb[_ihl_fb] else 0.0,
-                                    "kg_unit":  float(_r_fb[_ikg_fb]) if len(_r_fb)>_ikg_fb and _r_fb[_ikg_fb] else 0.0,
-                                    "un_bulto": float(_r_fb[_iun_fb]) if len(_r_fb)>_iun_fb and _r_fb[_iun_fb] else 0.0,
-                                    "can":      str(_r_fb[_ican_fb]).strip() if len(_r_fb)>_ican_fb and _r_fb[_ican_fb] else "",
-                                }
-                            except Exception:
-                                pass
-                        st.session_state["df_ddm_dict"] = _ddm_fb
-                        st.session_state["fr_n_skus"]   = len(_ddm_fb)
-                    _wb_fb.close()
-                except Exception:
-                    st.session_state["df_ddm_dict"] = {}
-                st.success(f"✅ {fr_file_fb.name[:18]} · {st.session_state.get('fr_n_skus',0)} SKUs")
-        elif st.session_state.get("t1_fr"):
-            if _fr_mt_ok:
-                st.success(f"✅ Sheets · {_fr_n_skus} SKUs")
-                if _fr_mt_str:
-                    st.caption(f"🕐 Actualizado: {_fr_mt_str}")
-            elif _fr_mt_warn:
-                st.warning(f"⚠️ {_fr_mt_warn}")
-            else:
-                st.info(f"📎 Sheets · {_fr_n_skus} SKUs")
-        else:
-            st.warning("Sin datos de Frescura")
 
     # ── COL C — ANR ────────────────────────────────────────────────────────
     with col_c:
